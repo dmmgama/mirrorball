@@ -154,6 +154,7 @@ const MUSIC = {
   /* ---- Camada 1: mapeamento forte (§0.1 ponto 3) ----
    * Já não é (V,A)→âncoras. É DIRETO: cada knob tem a sua fonte e a sua amplitude, escolhida
    * para se NOTAR. A "amplitude visível" é o requisito, não a subtileza. */
+  activity: { low: 0.08, high: 0.45, beamsMin: 0.35, hatMin: 0.25, slowMax: 2.2 },  // densidade → atividade
   hat: { gain: 6, releaseSec: 0.12, beamGain: 1.0, opacityDip: 0.35 },   // agudos marcam: feixes sobem, opacidade dá um tique
   map: {
     // rpm ← kickPresence × energia. Sem bombo: 0.0-0.15. Bombo forte: 2.4-3.0.
@@ -375,9 +376,14 @@ function ingestFeatures(f) {
     const sub = f.sub != null ? +f.sub : bass, hat = f.hat != null ? +f.hat : high;
     state.subAvg = (state.subAvg == null ? sub : state.subAvg + (sub - state.subAvg) * kL);
     state.hatAvg = (state.hatAvg == null ? hat : state.hatAvg + (hat - state.hatAvg) * (1 - Math.exp(-dt / 1.0)));
+    // densidade espectral (sidecar `density`): muita informação → mais acontecimento na bola;
+    // pouca → subtileza. `act` escala amplitudes e acelera/abranda os taus (ver applyActivity).
+    const dens = f.density != null ? +f.density : 0.35;
+    state.densAvg = (state.densAvg == null ? dens : state.densAvg + (dens - state.densAvg) * (1 - Math.exp(-dt / 2.0)));
+    state.act = clamp((state.densAvg - MUSIC.activity.low) / (MUSIC.activity.high - MUSIC.activity.low), 0, 1);
     // marcação dos agudos: hat acima da sua média → pulso curto (release ~120 ms)
     const hatOver = clamp((hat - state.hatAvg) * MUSIC.hat.gain, 0, 1);
-    state.hatPulse = Math.max(hatOver, (state.hatPulse || 0) * Math.exp(-dt / MUSIC.hat.releaseSec));
+    state.hatPulse = Math.max(hatOver * lerp(MUSIC.activity.hatMin, 1, state.act), (state.hatPulse || 0) * Math.exp(-dt / MUSIC.hat.releaseSec));
     state.centroidAvg += ((+f.centroid || 0) - state.centroidAvg) * (1 - Math.exp(-dt / 1.2));
   }
 
@@ -828,7 +834,7 @@ function computeTargets() {
     // feixes ← high + onset: os hi-hats e a voz "seguem o tempo"
     const hi = clamp(Math.max(M.beamHighMix * state.highAvg + (1 - M.beamHighMix) * onset, 0.85 * loudN, 0.9 * state.kickPresence, MUSIC.hat.beamGain * (state.hatPulse || 0)), 0, 1);
     T.beamInt = lerp(M.beamIntFrom[0], M.beamIntFrom[1], hi);
-    T.beams = lerp(M.beamsFrom[0], M.beamsFrom[1], hi);
+    T.beams = lerp(M.beamsFrom[0], M.beamsFrom[1], hi) * lerp(MUSIC.activity.beamsMin, 1, state.act);
 
     // haze ← INVERSO de bass: breakdown (graves fora) = fumo. Lento (tau 1.5/4).
     T.haze = lerp(M.hazeFrom[0], M.hazeFrom[1], clamp(1 - state.bassShort, 0, 1));
@@ -969,7 +975,8 @@ function update(nowL) {
     // com o bombo a bater, um gesto com tau curto no rpm (nenhum tem hoje, mas é barato
     // garantir) não pode ser usado para o travar — o piso já está no alvo, aqui é o easing
     if (k === 'rpm' && spinLocked && gt) tau = MUSIC.tau.rpm;
-    o[k] = ease(o[k], state.target[k], [tau[0] * slow, tau[1] * slow], dt);
+    const slowAct = k === 'rpm' ? 1 : lerp(MUSIC.activity.slowMax, 1, state.act == null ? 1 : state.act);
+    o[k] = ease(o[k], state.target[k], [tau[0] * slow * slowAct, tau[1] * slow * slowAct], dt);
     o[k] = clamp(o[k], MUSIC.outMin[k] != null ? MUSIC.outMin[k] : -Infinity,
                        MUSIC.outMax[k] != null ? MUSIC.outMax[k] : Infinity);
   }
