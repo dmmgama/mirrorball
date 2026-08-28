@@ -334,6 +334,36 @@ function onMessage(d) {
 }
 if (typeof addEventListener === 'function') addEventListener('message', e => onMessage(e && e.data));
 
+/* ---------- driver autónomo (fora do OS): página servida pelo próprio audio-sidecar ----------
+ * Quando a bola é aberta em http://127.0.0.1:3739/app/index-v2.html?src=music (sem pai),
+ * liga-se diretamente ao WS do sidecar: /app-token dá o token (só same-origin), e as
+ * mensagens entram pelo mesmo onMessage. Dentro do OS o pai faz isto (useAudioDriver). */
+(function standaloneDriver() {
+  if (typeof window === 'undefined' || typeof fetch !== 'function') return;
+  if (window.parent !== window) return;                    // dentro do OS: o pai é o driver
+  if (!/^\/app\//.test(location.pathname)) return;         // só quando servida pelo sidecar
+  let ws = null;
+  async function connect() {
+    try {
+      const j = await (await fetch('/app-token', { cache: 'no-store' })).json();
+      ws = new WebSocket(`${j.ws}/ws?token=${encodeURIComponent(j.token)}`, ['agentos-audio', j.token]);
+      ws.onmessage = ev => {
+        try { const m = JSON.parse(ev.data);
+          if (m.type === 'clock') onMessage({ type: 'clock', id: m.id, tClient: m.tClient, tEmit: m.tServer }); else onMessage(m);
+        } catch (e) {}
+      };
+      ws.onclose = () => { onMessage({ type: 'features', silence: true }); setTimeout(connect, 2000); };
+      ws.onerror = () => ws && ws.close();
+    } catch (e) { setTimeout(connect, 3000); }
+  }
+  // clock-req: o motor posta na própria window quando não há pai; reencaminhar para o sidecar
+  addEventListener('message', e => {
+    const d = e && e.data;
+    if (d && d.type === 'clock-req' && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'clock', id: d.id, tClient: d.tClient }));
+  });
+  connect();
+})();
+
 const PROFILES = ['electronica', 'acustico', 'voz'];
 function setProfile(p) {
   if (PROFILES.indexOf(p) === -1 || p === MUSIC.profile) return;
