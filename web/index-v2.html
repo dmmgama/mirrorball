@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store">
+<title>MirrorBall v2 — sala branca</title>
+<!--
+  DESIGNER A — "fotográfico". Intenção: uma bola de espelhos sólida, densa e nítida, pendurada
+  numa corrente num vazio escuro com névoa fina; nada é desenhado à mão — a cena é um modelo 3D
+  mínimo (esfera facetada com normais por tile, K spots fora do ecrã, câmara em perspetiva, uma
+  sala implícita de 5 planos) e cada frame calcula, para cada tile × spot, a reflexão
+  R = L − 2(N·L)N. Dessa única equação saem os três fenómenos: o glint (N alinhado com o
+  half-vector spot/câmara, pow(N·H,k)), o feixe na névoa (wedge que nasce NA superfície do tile
+  na direção projetada de R, intensidade ∝ N·L × haze) e o ponto na parede (R intersetado com o
+  caixote da sala, elipse esticada pelo ângulo rasante, projetada em perspetiva). Só ω·t muda no
+  tempo, por isso tudo gira em bloco. Técnica: Canvas 2D, dpr-aware, polígonos por tile com
+  juntas por inset angular, bloom numa única passagem de blur num canvas offscreen a meia
+  resolução, grão pré-gerado em pattern, dotDensity adaptativo ao frame time. Greyscale puro.
+-->
+<style>
+  html,body{margin:0;height:100%;background:#070707;overflow:hidden}
+  canvas#mb{position:fixed;inset:0;width:100%;height:100%;display:block;background:#070707}
+  canvas#mbw{position:fixed;inset:0;width:100%;height:100%;display:block;filter:url(#tone);opacity:0;pointer-events:none}
+  #dbg{position:fixed;top:12px;left:12px;background:rgba(10,10,10,.86);color:#cfcfcf;
+       font:11px/1.6 ui-monospace,Consolas,monospace;padding:10px 12px;border:1px solid #2a2a2a;
+       display:none;min-width:230px;letter-spacing:.02em;z-index:9}
+  #dbg.on{display:block}
+  #dbg label{display:flex;justify-content:space-between;gap:10px;align-items:center}
+  #dbg input[type=range]{width:120px;accent-color:#bdbdbd}
+  #dbg .sp{display:flex;gap:10px;margin-top:6px}
+  #dbg h4{margin:0 0 6px;font-weight:400;color:#8a8a8a}
+  #cam{position:fixed;right:12px;bottom:12px;width:160px;height:120px;object-fit:cover;opacity:.35;border:1px solid #2a2a2a;transform:scaleX(-1);z-index:9}
+  #ui{position:fixed;left:12px;bottom:12px;display:flex;gap:8px;z-index:9}
+  #ui button{background:#111;color:#cfcfcf;border:1px solid #2a2a2a;font:11px ui-monospace,Consolas,monospace;padding:6px 10px;cursor:pointer;letter-spacing:.02em}
+  #ui button:disabled{opacity:.5;cursor:default}
+  #emo{position:fixed;top:12px;right:12px;background:rgba(10,10,10,.86);color:#cfcfcf;font:11px/1.5 ui-monospace,Consolas,monospace;
+       padding:10px 12px;border:1px solid #2a2a2a;white-space:pre;display:none;z-index:9}
+  #emo.on{display:block}
+</style>
+</head>
+<body>
+<canvas id="mb"></canvas>
+<canvas id="mbw"></canvas>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><filter id="tone" color-interpolation-filters="sRGB">
+  <feComponentTransfer>
+    <feFuncR type="table" tableValues="0.9529 0.7501 0.3551 0.0883 0.0784 0.0784 0.0784 0.0784 0.0784 0.0784 0.0784 0.0784 0.0784 0.0784 0.0784 0.0784 0.0784 0.0784 0.0811 0.1091 0.1635 0.2390 0.3303 0.4321 0.5392 0.6463 0.7482 0.8395 0.9150 0.9693 0.9974 1.0000 1.0000"/>
+    <feFuncG type="table" tableValues="0.9686 0.7876 0.4352 0.1970 0.1882 0.1882 0.1882 0.1882 0.1882 0.1882 0.1882 0.1882 0.1882 0.1882 0.1882 0.1882 0.1882 0.1882 0.1906 0.2152 0.2631 0.3296 0.4101 0.4998 0.5941 0.6885 0.7782 0.8586 0.9251 0.9730 0.9977 1.0000 1.0000"/>
+    <feFuncB type="table" tableValues="0.9765 0.8046 0.4698 0.2436 0.2353 0.2353 0.2353 0.2353 0.2353 0.2353 0.2353 0.2353 0.2353 0.2353 0.2353 0.2353 0.2353 0.2353 0.2375 0.2607 0.3059 0.3685 0.4443 0.5288 0.6176 0.7065 0.7910 0.8668 0.9294 0.9746 0.9978 1.0000 1.0000"/>
+  </feComponentTransfer></filter></svg>
+
+<video id="cam" muted playsinline></video>
+<div id="ui"><button id="start">ligar câmara</button><button id="usb">ligar USB</button><button id="skin">skin: auto</button></div>
+<div id="emo"></div>
+<div id="dbg"><h4>mirrorball-A · debug (d)</h4></div>
+<script>
+'use strict';
+/* ============================ CONFIG (único sítio com números) ============================ */
+const CONFIG = {
+  ballSizeVH: 0.52,          // diâmetro da bola em fração da altura do viewport
+  ballCenter: [0.5, 0.53],   // posição do centro (fração da largura/altura)
+  facetRows: 32,             // filas de latitude (tiles quadrados → equador tem ~2·facetRows tiles)
+  rotationRpm: 1.0,          // rotação real de uma bola (0.5–3 rpm)
+  spots: [                   // fontes FORA do ecrã; az/el em graus a partir da câmara; size = k inverso
+    { az:  -58, el: 34, intensity: 1.00, size: 55, period: 13 },
+    { az:   62, el: 22, intensity: 0.85, size: 40, period: 17 },
+    { az:   12, el: 58, intensity: 0.70, size: 70, period: 11 },
+  ],
+  haze: 0.65,                // densidade da névoa (só afeta feixes e a auréola)
+  beamMaxCount: 36,          // feixes visíveis no máximo
+  beamFraction: 0.55,        // fração dos tiles elegíveis a produzir feixe (subamostragem estável)
+  beamIntensity: 0.16,       // alpha máximo de um feixe (núcleo)
+  beamWidthDeg: 1.1,         // meia-largura angular do wedge exterior
+  beamLength: 0.78,          // comprimento em fração do viewport
+  dotDensity: 0.8,           // fração dos tiles elegíveis a projetar ponto na parede (adaptativo)
+  dotScale: 0.32,            // tamanho do ponto na parede relativo ao tile projetado
+  dotMaxGrey: 0xd8,          // teto de brilho dos pontos
+  bloomStrength: 0.75,       // alpha da passagem de bloom
+  bloomBlurPx: 9,            // raio do blur (em px CSS, a meia resolução)
+  sphereOpacity: 1.0,        // 1 = sólida; → 0 = raio-X (só malha + tiles ativos persistem)
+  seamDarkness: 0.02,        // cinza das juntas (0..1)
+  seamInset: 0.11,           // fração angular do tile reservada à junta (≈1–2 px)
+  rimStrength: 0.22,         // borda clara nas facetas rasantes
+  baseTileGrey: [0.045, 0.14], // intervalo do cinza das facetas apagadas (a sala escura refletida)
+  litSideGain: 0.55,         // facetas viradas para os spots refletem sala um pouco mais clara
+  glintK: 48,                // expoente base do pow(N·H, k) (modulado por spot.size)
+  camDistance: 7.0,          // distância da câmara em raios da bola (perspetiva ligeira)
+  room: { halfW: 5.2, ceil: 4.2, floor: -5.0, back: -7.0 }, // sala implícita em raios
+  dotFalloff: 0.028,         // atenuação dos pontos com a distância (1/(1+k·t²))
+  grain: 0.032,              // grão de filme (alpha)
+  vignette: 0.55,            // força da vinheta
+  chainLinkPx: 11,           // tamanho de cada elo da corrente
+  driftPeriod: 38,           // segundos da deriva lenta do cinza por tile
+  perf: { targetMs: 17.5, minDotDensity: 0.12 },
+  skin: 'auto',              // 'dark' | 'white' | 'auto' (auto = emoções decidem)
+  skinEase: 7.0,             // crossfade dark↔white (por segundo); o emotion.js já suaviza o alvo com attack/release
+  skinAutoValence: 1.6,      // auto: skinTarget = max(0, valência) × isto (neutro/triste → dark, feliz → white)
+};
+const PRESETS = {
+  ALIVE: { spotGain: 1.0,  rotationRpm: CONFIG.rotationRpm, sphereOpacity: CONFIG.sphereOpacity, haze: CONFIG.haze },
+  DEAD:  { spotGain: 0.22, rotationRpm: 0.12, sphereOpacity: 0.35, haze: 0.25 },
+};
+/* ========================================================================================= */
+
+const TAU = Math.PI * 2, D2R = Math.PI / 180;
+const cv = document.getElementById('mb'), ctx = cv.getContext('2d', { alpha: false });
+const cvw = document.getElementById('mbw'), wctx = cvw.getContext('2d', { alpha: false });
+const bloomCv = document.createElement('canvas'), bctx = bloomCv.getContext('2d');
+const grainCv = document.createElement('canvas');
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+let W = 0, H = 0, DPR = 1, grainPattern = null;
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  cvw.width = cv.width; cvw.height = cv.height;
+  bloomCv.width = Math.round(W * DPR / 2); bloomCv.height = Math.round(H * DPR / 2);
+  buildGrain();
+}
+function buildGrain() {
+  const s = 256; grainCv.width = grainCv.height = s;
+  const g = grainCv.getContext('2d'), img = g.createImageData(s, s), d = img.data;
+  for (let i = 0; i < d.length; i += 4) { const v = (Math.random() * 255) | 0; d[i] = d[i+1] = d[i+2] = v; d[i+3] = 255; }
+  g.putImageData(img, 0, 0);
+  grainPattern = ctx.createPattern(grainCv, 'repeat');
+}
+addEventListener('resize', resize); resize();
+
+/* ---------------- geometria da esfera: filas de latitude, normais por tile ---------------- */
+function hash(n) { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
+const tiles = [];
+(function buildTiles() {
+  const rows = CONFIG.facetRows, dphi = Math.PI / rows;
+  let id = 0;
+  for (let i = 0; i < rows; i++) {
+    const phi = -Math.PI / 2 + (i + 0.5) * dphi, cosphi = Math.cos(phi);
+    const n = Math.max(3, Math.round(TAU * cosphi / dphi)), dth = TAU / n;
+    for (let j = 0; j < n; j++) {
+      const h0 = hash(id), h1 = hash(id + 0.37), h2 = hash(id + 0.71);
+      tiles.push({
+        phi, th: j * dth + (i % 2) * dth * 0.5, dphi, dth,
+        grey: CONFIG.baseTileGrey[0] + h0 * (CONFIG.baseTileGrey[1] - CONFIG.baseTileGrey[0]),
+        driftPhase: h1 * TAU, beamHash: h2, dotHash: hash(id + 0.53),
+      });
+      id++;
+    }
+  }
+})();
+
+/* ---------------- estado runtime: health, câmara, spots ---------------- */
+let health = 1.0, dotDensityLive = CONFIG.dotDensity, frameEma = 16, lastT = performance.now();
+let angle = 0, grainOffset = [0, 0], grainTick = 0;
+let skinMix = 0, skinTarget = 0, skinAuto = 0; // 0 = dark, 1 = white
+const spotsOn = CONFIG.spots.map(() => true);
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function smooth(e0, e1, x) { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); }
+function effective() {
+  const A = PRESETS.ALIVE, D = PRESETS.DEAD, t = 1 - health;
+  A.rotationRpm = CONFIG.rotationRpm; A.sphereOpacity = CONFIG.sphereOpacity; A.haze = CONFIG.haze;
+  return {
+    spotGain: lerp(A.spotGain, D.spotGain, t),
+    rotationRpm: lerp(A.rotationRpm, D.rotationRpm, t) * (reducedMotion ? 0.03 : 1),
+    sphereOpacity: lerp(A.sphereOpacity, D.sphereOpacity, t),
+    haze: lerp(A.haze, D.haze, t),
+  };
+}
+function spotDir(s) { // direção da bola PARA o spot (unit); az=0 é atrás da câmara
+  const az = s.az * D2R, el = s.el * D2R, c = Math.cos(el);
+  return [c * Math.sin(az), Math.sin(el), c * Math.cos(az)];
+}
+function norm3(v) { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; }
+
+/* ---------------- render ---------------- */
+function frame(now) {
+  const dtMs = clamp(now - lastT, 0, 50); lastT = now;
+  frameEma = frameEma * 0.9 + dtMs * 0.1;
+  // degradação automática: se o frame escorregar, menos pontos; recupera devagar
+  if (frameEma > CONFIG.perf.targetMs) dotDensityLive = Math.max(CONFIG.perf.minDotDensity, dotDensityLive * 0.97);
+  else if (dotDensityLive < CONFIG.dotDensity) dotDensityLive = Math.min(CONFIG.dotDensity, dotDensityLive * 1.005);
+
+  skinTarget = CONFIG.skin === 'white' ? 1 : CONFIG.skin === 'dark' ? 0 : skinAuto;
+  skinMix += (skinTarget - skinMix) * (1 - Math.exp(-CONFIG.skinEase * dtMs / 1000));
+  const sk = skinMix, dk = 1 - skinMix;
+  const E = effective(), tSec = now / 1000;
+  angle += (E.rotationRpm / 60) * TAU * (dtMs / 1000);
+
+  const Rpx = CONFIG.ballSizeVH * H / 2, cx = W * CONFIG.ballCenter[0], cy = H * CONFIG.ballCenter[1];
+  const camD = CONFIG.camDistance;
+  const proj = (x, y, z) => { const k = camD / (camD - z); return [cx + Rpx * x * k, cy - Rpx * y * k, k]; };
+
+  // spots ativos com crossfade sinusoidal lento
+  const spots = [];
+  CONFIG.spots.forEach((s, i) => {
+    if (!spotsOn[i]) return;
+    const fade = reducedMotion ? 0.8 : 0.5 + 0.5 * Math.sin(TAU * tSec / s.period + i * 2.1);
+    const I = s.intensity * E.spotGain * (0.35 + 0.65 * fade);
+    if (I < 0.02) return;
+    const S = spotDir(s), Hv = norm3([S[0], S[1], S[2] + 1]); // half-vector spot/câmara (V = +z)
+    spots.push({ S, H: Hv, I, k: CONFIG.glintK * (55 / s.size) });
+  });
+
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  const bg = Math.round(7 * dk); ctx.fillStyle = `rgb(${bg},${bg},${bg})`; ctx.fillRect(0, 0, W, H);
+
+  // auréola de névoa à volta da bola (scatter difuso da luz que ela devolve)
+  const hz = ctx.createRadialGradient(cx, cy, Rpx * 0.9, cx, cy, Rpx * 2.6);
+  hz.addColorStop(0, `rgba(255,255,255,${(0.05 * E.haze * E.spotGain * dk).toFixed(3)})`);
+  hz.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = hz; ctx.fillRect(0, 0, W, H);
+
+  // ----- passagem 1: reflexões por tile × spot -----
+  const ca = Math.cos(angle), sa = Math.sin(angle), room = CONFIG.room;
+  const beams = [], dots = [], visible = [];
+  const bloomItems = [];
+  for (let t = 0; t < tiles.length; t++) {
+    const T = tiles[t];
+    const cph = Math.cos(T.phi), sph = Math.sin(T.phi), th = T.th + angle;
+    const N = [cph * Math.cos(th), sph, cph * Math.sin(th)];
+    // visibilidade em perspetiva: N·(cam − P) > 0, cam=(0,0,camD), P=N
+    const facing = N[2] * camD - 1;
+    let glint = 0, lit = 0;
+    for (let s = 0; s < spots.length; s++) {
+      const sp = spots[s], NdS = N[0] * sp.S[0] + N[1] * sp.S[1] + N[2] * sp.S[2];
+      if (NdS <= 0.02) continue;
+      lit = Math.max(lit, NdS * sp.I);
+      // L = −S (incidente), R = L − 2(N·L)N = 2(N·S)N − S
+      const R = [2 * NdS * N[0] - sp.S[0], 2 * NdS * N[1] - sp.S[1], 2 * NdS * N[2] - sp.S[2]];
+      if (facing > 0) {
+        const NdH = N[0] * sp.H[0] + N[1] * sp.H[1] + N[2] * sp.H[2];
+        if (NdH > 0) glint += Math.pow(NdH, sp.k) * sp.I;
+      }
+      // feixe na névoa: nasce na superfície do tile, direção R projetada
+      if (facing > 0 && T.beamHash < CONFIG.beamFraction) {
+        const inPlane = Math.hypot(R[0], R[1]);
+        if (inPlane > 0.25) beams.push({ x: N[0], y: N[1], z: N[2], dx: R[0] / inPlane, dy: -R[1] / inPlane,
+          len: inPlane, I: NdS * sp.I * E.haze });
+      }
+      // ponto na parede: interseção com a sala implícita
+      if (T.dotHash < dotDensityLive) {
+        let best = Infinity, nrm = null;
+        const P = N;
+        const cand = [[R[0] > 0 ? (room.halfW - P[0]) / R[0] : (-room.halfW - P[0]) / R[0], [1,0,0], R[0]],
+                      [R[1] > 0 ? (room.ceil - P[1]) / R[1] : (room.floor - P[1]) / R[1], [0,1,0], R[1]],
+                      [R[2] < 0 ? (room.back - P[2]) / R[2] : Infinity, [0,0,1], R[2]]];
+        for (const c of cand) if (c[0] > 0 && c[0] < best) { best = c[0]; nrm = c; }
+        if (nrm && isFinite(best)) {
+          const X = P[0] + R[0] * best, Y = P[1] + R[1] * best, Z = P[2] + R[2] * best;
+          if (Z < camD - 0.6) {
+            const pr = proj(X, Y, Z), graze = Math.abs(nrm[2]) / (Math.hypot(R[0], R[1], R[2]) || 1);
+            dots.push({ x: pr[0], y: pr[1], size: T.dphi * Rpx * pr[2] * CONFIG.dotScale, elong: clamp(1 / Math.max(graze, 0.2), 1, 4.5),
+              ang: Math.atan2(-R[1], R[0]), I: NdS * sp.I / (1 + CONFIG.dotFalloff * best * best) });
+          }
+        }
+      }
+    }
+    if (facing > 0) visible.push({ T, N, th, glint, lit });
+  }
+
+  // ----- pontos na parede (moldura, atrás de tudo) -----
+  for (const d of dots) {
+    if (d.x < -40 || d.x > W + 40 || d.y < -40 || d.y > H + 40) continue;
+    const v = Math.round(clamp(d.I, 0, 1) * CONFIG.dotMaxGrey);
+    if (v < 8) continue;
+    ctx.save(); ctx.translate(d.x, d.y); ctx.rotate(d.ang);
+    ctx.fillStyle = `rgb(${v},${v},${v})`;
+    ctx.beginPath(); ctx.ellipse(0, 0, Math.max(0.8, d.size * d.elong), Math.max(0.8, d.size), 0, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+
+  // ----- feixes (aditivos, com limite de contagem e de alpha por feixe) -----
+  beams.sort((a, b) => b.I - a.I);
+  ctx.globalCompositeOperation = 'lighter';
+  const nb = Math.min(beams.length, CONFIG.beamMaxCount), Lmax = CONFIG.beamLength * Math.max(W, H);
+  const wOuter = CONFIG.beamWidthDeg * D2R, widths = [wOuter, wOuter * 0.55, wOuter * 0.22], aw = [0.22, 0.32, 0.46];
+  for (let i = 0; i < nb; i++) {
+    const b = beams[i], pr = proj(b.x, b.y, b.z), len = Lmax * (0.45 + 0.55 * b.len);
+    const base = clamp(b.I, 0, 1) * CONFIG.beamIntensity * smooth(0, 6, nb - i); // os últimos esbatem
+    const ex = pr[0] + b.dx * len, ey = pr[1] + b.dy * len;
+    const g = ctx.createLinearGradient(pr[0], pr[1], ex, ey);
+    for (let w = 0; w < 3; w++) {
+      const a = base * aw[w];
+      const gg = ctx.createLinearGradient(pr[0], pr[1], ex, ey);
+      gg.addColorStop(0, `rgba(255,255,255,${a.toFixed(4)})`);
+      gg.addColorStop(0.35, `rgba(255,255,255,${(a * 0.55).toFixed(4)})`);
+      gg.addColorStop(1, 'rgba(255,255,255,0)');
+      const px = -b.dy, py = b.dx, half = Math.tan(widths[w]) * len;
+      ctx.fillStyle = gg; ctx.beginPath();
+      ctx.moveTo(pr[0], pr[1]); ctx.lineTo(ex + px * half, ey + py * half); ctx.lineTo(ex - px * half, ey - py * half);
+      ctx.closePath(); ctx.fill();
+    }
+    void g;
+  }
+
+  // ----- corrente -----
+  ctx.globalCompositeOperation = 'source-over';
+  drawChain(cx, cy - Rpx, spots);
+
+  // ----- a bola: disco (juntas) + facetas -----
+  const op = E.sphereOpacity;
+  ctx.globalAlpha = op;
+  ctx.fillStyle = `rgb(${Math.round(CONFIG.seamDarkness * 255)},${Math.round(CONFIG.seamDarkness * 255)},${Math.round(CONFIG.seamDarkness * 255)})`;
+  ctx.beginPath(); ctx.arc(cx, cy, Rpx * (camD / Math.sqrt(camD * camD - 1)) * Math.sqrt(1 - 1 / (camD * camD)), 0, TAU); ctx.fill();
+  ctx.globalAlpha = 1;
+
+  const inset = CONFIG.seamInset, meshAlpha = (1 - op) * 0.45;
+  bctx.setTransform(DPR / 2, 0, 0, DPR / 2, 0, 0);
+  bctx.globalCompositeOperation = 'source-over';
+  bctx.clearRect(0, 0, W, H);
+  for (const v of visible) {
+    const T = v.T, N = v.N;
+    const p0 = T.phi - T.dphi * (0.5 - inset / 2), p1 = T.phi + T.dphi * (0.5 - inset / 2);
+    const t0 = v.th - T.dth * (0.5 - inset / 2), t1 = v.th + T.dth * (0.5 - inset / 2);
+    const c0 = Math.cos(p0), s0 = Math.sin(p0), c1 = Math.cos(p1), s1 = Math.sin(p1);
+    const A = proj(c0 * Math.cos(t0), s0, c0 * Math.sin(t0)), B = proj(c0 * Math.cos(t1), s0, c0 * Math.sin(t1));
+    const C = proj(c1 * Math.cos(t1), s1, c1 * Math.sin(t1)), D = proj(c1 * Math.cos(t0), s1, c1 * Math.sin(t0));
+    // tom da faceta apagada: sala escura + deriva lenta + lado iluminado + rim/banda
+    const nz = N[2];
+    const drift = 0.015 * Math.sin(TAU * tSec / CONFIG.driftPeriod + T.driftPhase);
+    let g = (T.grey + drift) * (1 + CONFIG.litSideGain * v.lit);
+    g += CONFIG.rimStrength * smooth(0.28, 0.0, nz);            // borda clara rasante
+    g -= 0.035 * smooth(0.05, 0.22, nz) * smooth(0.5, 0.25, nz); // banda mais escura logo dentro
+    g *= 0.75 + 0.25 * nz;                                       // volume suave
+    const gl = clamp(v.glint, 0, 1);
+    const val = clamp(g + gl * (1.0 - g) * 1.15, 0, 1);
+    const vv = Math.round(val * 255);
+    const alpha = lerp(op, 1, gl); // em raio-X só os tiles ativos persistem
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = `rgb(${vv},${vv},${vv})`;
+    ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.lineTo(C[0], C[1]); ctx.lineTo(D[0], D[1]); ctx.closePath(); ctx.fill();
+    if (meshAlpha > 0.01) { // malha tipo osso no raio-X
+      ctx.globalAlpha = meshAlpha * (0.4 + 0.6 * smooth(0.5, 0, nz));
+      ctx.strokeStyle = 'rgb(210,210,210)'; ctx.lineWidth = 0.6; ctx.stroke();
+    }
+    if (gl > 0.35) bloomItems.push([A, B, C, D, gl]);
+  }
+  ctx.globalAlpha = 1;
+
+  // ----- bloom: uma passagem de blur num canvas a meia resolução -----
+  if (bloomItems.length) {
+    for (const it of bloomItems) {
+      bctx.fillStyle = `rgba(255,255,255,${(it[4] * 0.9).toFixed(3)})`;
+      bctx.beginPath(); bctx.moveTo(it[0][0], it[0][1]); bctx.lineTo(it[1][0], it[1][1]); bctx.lineTo(it[2][0], it[2][1]); bctx.lineTo(it[3][0], it[3][1]); bctx.closePath(); bctx.fill();
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = CONFIG.bloomStrength;
+    ctx.filter = `blur(${CONFIG.bloomBlurPx}px)`;
+    ctx.drawImage(bloomCv, 0, 0, W, H);
+    ctx.filter = 'none'; ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ----- vinheta + grão -----
+  const vg = ctx.createRadialGradient(cx, cy, Math.min(W, H) * 0.35, cx, cy, Math.hypot(W, H) * 0.62);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, `rgba(0,0,0,${(CONFIG.vignette * dk).toFixed(3)})`);
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+  if (now - grainTick > 400) { grainTick = now; grainOffset = [Math.random() * 256, Math.random() * 256]; } // < 3 Hz
+  ctx.save(); ctx.translate(grainOffset[0], grainOffset[1]);
+  ctx.globalAlpha = CONFIG.grain * dk; ctx.fillStyle = grainPattern;
+  ctx.fillRect(-grainOffset[0], -grainOffset[1], W, H);
+  ctx.restore();
+
+  // ----- skin white: mesma imagem, tonemap SVG no overlay, crossfade por opacidade -----
+  if (sk > 0.002) { wctx.setTransform(1, 0, 0, 1, 0, 0); wctx.drawImage(cv, 0, 0); }
+  cvw.style.opacity = sk.toFixed(3);
+  document.body.style.background = `rgb(${Math.round(lerp(7, 243, sk))},${Math.round(lerp(7, 247, sk))},${Math.round(lerp(7, 249, sk))})`;
+  requestAnimationFrame(frame);
+}
+
+function drawChain(x, yTop, spots) {
+  const L = CONFIG.chainLinkPx, litSide = spots.reduce((a, s) => a + s.S[0] * s.I, 0);
+  let y = yTop - L * 0.4, i = 0;
+  // gancho
+  ctx.strokeStyle = 'rgb(120,120,120)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(x, yTop - L * 0.25, L * 0.32, 0, TAU); ctx.stroke();
+  while (y > -L) {
+    const flat = i % 2 === 0; // elos alternam: um de frente (elipse), um de lado (barra)
+    const shade = 70 + 45 * Math.max(0, Math.sin(i * 0.9)) + 30 * Math.abs(litSide);
+    const v = Math.round(clamp(shade, 40, 170));
+    ctx.strokeStyle = `rgb(${v},${v},${v})`; ctx.lineWidth = flat ? 1.6 : 2.4;
+    ctx.beginPath();
+    if (flat) ctx.ellipse(x, y - L * 0.5, L * 0.28, L * 0.5, 0, 0, TAU); else { ctx.moveTo(x, y - L * 0.05); ctx.lineTo(x, y - L * 0.95); }
+    ctx.stroke();
+    y -= L * 0.82; i++;
+  }
+}
+
+/* ---------------- API pública ---------------- */
+window.MIRRORBALL = {
+  setHealth(h) { health = clamp(+h || 0, 0, 1); syncPanel(); },
+  getHealth() { return health; },
+  config: CONFIG,
+  setSpot(i, partial) { if (CONFIG.spots[i]) Object.assign(CONFIG.spots[i], partial || {}); },
+  setSkin(mode) { CONFIG.skin = mode; syncSkinBtn(); },      // 'dark' | 'white' | 'auto'
+  setSkinAuto(v) { skinAuto = clamp(+v || 0, 0, 1); },       // alvo contínuo usado em modo auto
+  getSkin() { return { mode: CONFIG.skin, mix: skinMix, target: skinTarget }; },
+};
+
+/* ---------------- painel de debug (tecla d) ---------------- */
+const dbg = document.getElementById('dbg');
+const sliders = [
+  ['rotationRpm', 0, 3, 0.05, v => CONFIG.rotationRpm = v, () => CONFIG.rotationRpm],
+  ['haze', 0, 1, 0.01, v => CONFIG.haze = v, () => CONFIG.haze],
+  ['sphereOpacity', 0, 1, 0.01, v => CONFIG.sphereOpacity = v, () => CONFIG.sphereOpacity],
+  ['health', 0, 1, 0.01, v => health = v, () => health],
+];
+const inputs = {};
+for (const [name, mn, mx, st, set, get] of sliders) {
+  const lab = document.createElement('label');
+  lab.innerHTML = `<span>${name}</span>`;
+  const inp = document.createElement('input'); inp.type = 'range'; inp.min = mn; inp.max = mx; inp.step = st; inp.value = get();
+  inp.oninput = () => set(+inp.value);
+  lab.appendChild(inp); dbg.appendChild(lab); inputs[name] = inp;
+}
+const spRow = document.createElement('div'); spRow.className = 'sp';
+CONFIG.spots.forEach((s, i) => {
+  const l = document.createElement('label'); const c = document.createElement('input'); c.type = 'checkbox'; c.checked = true;
+  c.onchange = () => spotsOn[i] = c.checked; l.appendChild(c); l.append(` spot ${i}`); spRow.appendChild(l);
+});
+dbg.appendChild(spRow);
+const fpsEl = document.createElement('div'); fpsEl.style.color = '#777'; dbg.appendChild(fpsEl);
+setInterval(() => { if (dbg.classList.contains('on')) fpsEl.textContent = `frame ${frameEma.toFixed(1)} ms · dots ${dotDensityLive.toFixed(2)} · tiles ${tiles.length}`; }, 500);
+function syncPanel() { inputs.health.value = health; }
+addEventListener('keydown', e => { if (e.key === 'd' || e.key === 'D') dbg.classList.toggle('on'); if (e.key === 'w' || e.key === 'W') cycleSkin(); });
+const skinBtn = document.getElementById('skin'), SKINS = ['dark', 'white', 'auto'];
+function syncSkinBtn() { skinBtn.textContent = 'skin: ' + CONFIG.skin; }
+function cycleSkin() { CONFIG.skin = SKINS[(SKINS.indexOf(CONFIG.skin) + 1) % SKINS.length]; syncSkinBtn(); }
+skinBtn.onclick = cycleSkin; syncSkinBtn();
+
+requestAnimationFrame(frame);
+</script>
+<script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+<script src="bridge.js?v=2"></script>
+<script src="emotion-v2.js?v=1"></script>
+</body>
+</html>
