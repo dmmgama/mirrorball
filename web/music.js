@@ -167,7 +167,7 @@ const MUSIC = {
     beamIntFrom: [0.06, 0.18],    // ← high + onset (hi-hats/voz). TETO 0.18, inviolável
     beamsFrom: [12, 56],
     beamHighMix: 0.65,            // peso de `high` vs `onset` no sinal dos feixes
-    hazeFrom: [0.22, 0.95],       // ← INVERSO de bass (breakdown sem graves = fumo)
+    hazeFrom: [0.60, 0.95],       // ← INVERSO de bass (breakdown sem graves = fumo)
     opacityFrom: [0.12, 1.00],    // ← loudness curto
     opacityFloorGroove: 0.20,     // §0.1: a bola não pode ficar fantasma sem razão em GROOVE
     // INVARIANTE (David, 2ª audição): "enquanto houver bombo a bola DEVE girar — só sem bombo
