@@ -121,13 +121,13 @@ const MUSIC = {
    * um trecho só-graves. Refratário de 200 ms → teto de 300 BPM, mata o duplo-disparo do mesmo
    * transiente sem cortar hi-hats (que não passam o teste do bass de qualquer modo). */
   kick: {
-    bassRatio: 1.30,      // bass > média móvel × isto
+    bassRatio: 1.08,      // bass > média móvel × isto
     bassAvgSec: 1.6,      // janela da média móvel de bass (longa: é a "cor" da faixa)
-    onsetMin: 0.30,       // onset mínimo para candidatar a kick
-    rmsMin: 0.06,         // piso de energia: silêncio não tem kicks
+    onsetMin: 0.12,       // onset mínimo para candidatar a kick
+    rmsMin: 0.03,         // piso de energia: silêncio não tem kicks
     refractoryMs: 200,
     rateWindowSec: 2.0,   // janela de kicks/s
-    rateFull: 2.6,        // kicks/s que equivalem a presença 1.0 (≈156 BPM em 4-on-the-floor)
+    rateFull: 1.6,        // kicks/s que equivalem a presença 1.0 (≈156 BPM em 4-on-the-floor)
     presenceTau: [0.30, 1.50],   // attack 0.3 s / release 1.5 s (§ ponto 2 do brief)
     // Duas fases na queda, e é isto que faz a rotação PARAR (não "abrandar"):
     //  1) enquanto o bombo pode só ter saltado uma batida, o alvo desce devagar (tau 1.5 s);
@@ -135,7 +135,7 @@ const MUSIC = {
     //     nessa altura já não é uma dúvida, é uma decisão musical, e o David pediu que a bola
     //     PARE. Sem isto, 1.5 s de dúvida + 3τ de release davam ~6 s para chegar a zero.
     // 0.7 s ≈ 1.5 batidas a 126 BPM: tempo para uma batida falhada, não para uma secção.
-    gapDeadSec: 0.7,      // sem kick há mais de isto (com música a tocar) → alvo 0
+    gapDeadSec: 1.6,      // sem kick há mais de isto (com música a tocar) → alvo 0
     deadTau: 0.40,        // release depois de confirmado o silêncio de bombo
   },
 
@@ -156,24 +156,24 @@ const MUSIC = {
   map: {
     // rpm ← kickPresence × energia. Sem bombo: 0.0-0.15. Bombo forte: 2.4-3.0.
     rpmIdle: [0.00, 0.15],        // [mínimo, máximo] do repouso — escolhido por energia residual
-    rpmDrive: [2.40, 3.00],       // [mínimo, máximo] com bombo — escolhido por loudness
-    rpmKnee: 0.18,                // presença abaixo disto = repouso puro (evita meio-termo morno)
+    rpmDrive: [2.80, 3.00],       // [mínimo, máximo] com bombo — escolhido por loudness
+    rpmKnee: 0.08,                // presença abaixo disto = repouso puro (evita meio-termo morno)
     spotBase: [0.35, 1.45],       // intensidade dos spots ← loudness (curva sobre a base do CONFIG)
     spotDomGain: 1.30, spotSubGain: 0.62,   // foco dominante vs os outros dois
     spotSwapBars: 8,              // foco dominante roda na fronteira de 8 compassos
-    beamIntFrom: [0.02, 0.18],    // ← high + onset (hi-hats/voz). TETO 0.18, inviolável
-    beamsFrom: [4, 52],
+    beamIntFrom: [0.06, 0.18],    // ← high + onset (hi-hats/voz). TETO 0.18, inviolável
+    beamsFrom: [12, 56],
     beamHighMix: 0.65,            // peso de `high` vs `onset` no sinal dos feixes
     hazeFrom: [0.22, 0.95],       // ← INVERSO de bass (breakdown sem graves = fumo)
-    opacityFrom: [0.35, 1.00],    // ← loudness curto
-    opacityFloorGroove: 0.55,     // §0.1: a bola não pode ficar fantasma sem razão em GROOVE
+    opacityFrom: [0.12, 1.00],    // ← loudness curto
+    opacityFloorGroove: 0.20,     // §0.1: a bola não pode ficar fantasma sem razão em GROOVE
     // INVARIANTE (David, 2ª audição): "enquanto houver bombo a bola DEVE girar — só sem bombo
     // é que pára". Piso DURO no rpm, aplicado DEPOIS dos gestos: nem `freeze`, nem `fog`, nem
     // `ghost` podem travar a rotação enquanto há bombo. Esses gestos continuam a valer — mas
     // em opacity/spots/haze/feixes, que é onde o David os quer. O `freeze` de rotação fica
     // reservado para quando o bombo já parou (e aí o piso está desligado por definição).
-    spinLockPresence: 0.30,       // acima desta presença de bombo, o piso está ativo
-    spinLockRpm: 1.20,            // rpm mínimo enquanto há bombo
+    spinLockPresence: 0.12,       // acima desta presença de bombo, o piso está ativo
+    spinLockRpm: 2.6,            // rpm mínimo enquanto há bombo
   },
 
   // τ (s) [attack, release]. Do brief da Fase 5, ponto 3. Nada oscila acima de 3 Hz.
@@ -813,7 +813,7 @@ function computeTargets() {
     T.spot = lerp(M.spotBase[0], M.spotBase[1], loudN);
 
     // feixes ← high + onset: os hi-hats e a voz "seguem o tempo"
-    const hi = clamp(M.beamHighMix * state.highAvg + (1 - M.beamHighMix) * onset, 0, 1);
+    const hi = clamp(Math.max(M.beamHighMix * state.highAvg + (1 - M.beamHighMix) * onset, 0.85 * loudN, 0.9 * state.kickPresence), 0, 1);
     T.beamInt = lerp(M.beamIntFrom[0], M.beamIntFrom[1], hi);
     T.beams = lerp(M.beamsFrom[0], M.beamsFrom[1], hi);
 
@@ -821,7 +821,7 @@ function computeTargets() {
     T.haze = lerp(M.hazeFrom[0], M.hazeFrom[1], clamp(1 - state.bassShort, 0, 1));
 
     // opacity ← loudness curto, com piso em GROOVE
-    T.opacity = lerp(M.opacityFrom[0], M.opacityFrom[1], loudN);
+    T.opacity = lerp(M.opacityFrom[0], M.opacityFrom[1], clamp(loudN * 1.4 - 0.15, 0, 1));
     if (state.fsm === 'GROOVE') T.opacity = Math.max(T.opacity, M.opacityFloorGroove);
 
     // ---- comportamentos por estado (a camada 1 só prepara o terreno; os gestos fazem o resto)

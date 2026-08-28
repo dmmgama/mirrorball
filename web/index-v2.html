@@ -112,6 +112,7 @@ const CONFIG = {
     Object.assign(CONFIG, { ballSizeVH: 0.66, ballCenter: [0.5, 0.56], chainLinkPx: 6, beamLength: 1.0, beamWidthDeg: 1.6,
       dotScale: 0.5, bloomBlurPx: 5, grain: 0.02, vignette: 0.35, facetRows: 26 });
     document.documentElement.classList.add('mini');
+    CONFIG.skin = q.get('light') === '1' ? 'white' : 'dark';   // quadrado segue a skin do OS
   }
   CONFIG.ballSizeVH *= scale;
 })();
@@ -455,6 +456,6 @@ requestAnimationFrame(frame);
 <script src="core.js?v=1"></script>
 <script src="bridge.js?v=2"></script>
 <script src="emotion-v2.js?v=1"></script>
-<script src="music.js?v=6"></script>
+<script src="music.js?v=7"></script>
 </body>
 </html>
