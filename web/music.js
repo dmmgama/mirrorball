@@ -154,7 +154,7 @@ const MUSIC = {
   /* ---- Camada 1: mapeamento forte (§0.1 ponto 3) ----
    * Já não é (V,A)→âncoras. É DIRETO: cada knob tem a sua fonte e a sua amplitude, escolhida
    * para se NOTAR. A "amplitude visível" é o requisito, não a subtileza. */
-  activity: { low: 0.08, high: 0.45, beamsMin: 0.35, hatMin: 0.25, slowMax: 2.2 },  // densidade → atividade
+  activity: { low: 0.10, high: 0.45, beamsMin: 0.55, hatMin: 0.35, slowMax: 1.8 },  // densidade → atividade
   hat: { gain: 6, releaseSec: 0.12, beamGain: 1.0, opacityDip: 0.35 },   // agudos marcam: feixes sobem, opacidade dá um tique
   map: {
     // rpm ← kickPresence × energia. Sem bombo: 0.0-0.15. Bombo forte: 2.4-3.0.
