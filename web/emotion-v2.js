@@ -60,15 +60,27 @@ const state = {
   target: {},
 };
 
-const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
-const lerp = (a, b, t) => a + (b - a) * t;
-const smooth = x => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
+const { clamp, lerp, smooth, anchor, ease } = window.MB_CORE;
 function contrast(x) { let y = Math.abs(x); for (let i = 0; i < EMO.contrast; i++) y = smooth(y); if (EMO.contrast % 1) y = lerp(y, smooth(y), EMO.contrast % 1); return Math.sign(x) * y; }
-function anchor(k, t) { return t >= 0 ? lerp(k[1], k[2], t) : lerp(k[1], k[0], -t); }
-function ease(cur, tgt, tau, dt) { const t = tgt > cur ? tau[0] : tau[1]; return cur + (tgt - cur) * (1 - Math.exp(-dt / t)); }
+
+/* ---------- face-api carregado sob pedido: sem câmara, zero pedidos a CDN ---------- */
+let faceApiLoading = null;
+function loadFaceApi() {
+  if (window.faceapi) return Promise.resolve();
+  if (faceApiLoading) return faceApiLoading;
+  faceApiLoading = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('face-api falhou a carregar'));
+    document.head.appendChild(s);
+  });
+  return faceApiLoading;
+}
 
 /* ---------- câmara + modelos ---------- */
 async function startCamera() {
+  await loadFaceApi();
   const video = document.getElementById('cam');
   const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240, facingMode: 'user' }, audio: false });
   video.srcObject = stream; await video.play();
@@ -132,8 +144,11 @@ function update(now) {
   state.anger = ease(state.anger, angerT, EMO.anger.tau, dt);
   const blink = 0.5 + 0.5 * Math.sin(2 * Math.PI * now / 1000 / EMO.anger.periodSec);
   state.toneFinal = state.anger > EMO.anger.minAmp ? lerp(o.tone, blink, smooth((state.anger - EMO.anger.minAmp) / (1 - EMO.anger.minAmp))) : o.tone;
-  applyToBall(o);
-  if (window.BRIDGE) window.BRIDGE.send({ rpm: o.rpm, spotGain: o.spot, haze: o.haze, valence: V, arousal: state.A, health: o.opacity });
+  // o estado interno evolui sempre; só escreve no CONFIG/hardware se formos o dono da fonte
+  if (window.MB_SOURCE && window.MB_SOURCE.owner === 'camera') {
+    applyToBall(o);
+    if (window.BRIDGE) window.BRIDGE.send({ rpm: o.rpm, spotGain: o.spot, haze: o.haze, valence: V, arousal: state.A, health: o.opacity });
+  }
   updateHud(o);
 }
 
@@ -167,9 +182,9 @@ addEventListener('keydown', ev => { if (ev.key === 'e' || ev.key === 'E') hud.cl
 (function loop(now) { update(now); requestAnimationFrame(loop); })(performance.now());
 document.getElementById('start').addEventListener('click', async function () {
   this.disabled = true; this.textContent = 'a ligar câmara…';
-  try { await startCamera(); this.remove(); hud.classList.add('on'); }
+  try { await startCamera(); if (window.MB_SOURCE) window.MB_SOURCE.set('camera'); this.remove(); hud.classList.add('on'); }
   catch (e) { this.textContent = 'câmara falhou: ' + e.message; console.error(e); }
 });
 // simulação sem câmara (consola): EMOTION.fake({happy:0.7, neutral:0.3})
-window.EMOTION = { state, config: EMO, fake(e) { state.raw = e; state.faceSeen = performance.now(); ingest(e); } };
+window.EMOTION = { state, config: EMO, fake(e) { if (window.MB_SOURCE) window.MB_SOURCE.set('camera'); state.raw = e; state.faceSeen = performance.now(); ingest(e); } };
 })();
