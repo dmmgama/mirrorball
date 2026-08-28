@@ -37,6 +37,7 @@
   #emo{position:fixed;top:12px;right:12px;background:rgba(10,10,10,.86);color:#cfcfcf;font:11px/1.5 ui-monospace,Consolas,monospace;
        padding:10px 12px;border:1px solid #2a2a2a;white-space:pre;display:none;z-index:9}
   #emo.on{display:block}
+  html.mini #ui,html.mini #cam{display:none}
   /* HUD do motor musical (tecla m) — canto inferior esquerdo, para não colidir com #emo (topo/direita) */
   #mus{position:fixed;left:12px;bottom:44px;background:rgba(10,10,10,.86);color:#cfcfcf;font:11px/1.5 ui-monospace,Consolas,monospace;
        padding:10px 12px;border:1px solid #2a2a2a;white-space:pre;display:none;z-index:9;max-height:70vh;overflow:hidden}
@@ -102,6 +103,18 @@ const CONFIG = {
   skinAutoValence: 1.6,      // auto: skinTarget = max(0, valência) × isto (neutro/triste → dark, feliz → white)
   spotFadeMix: 1.0,          // 1 = fade interno dos spots como hoje; 0 = intensidade constante, para uma fonte externa coreografar
 };
+// Quadrado do OS (sidebar): ?mini=1 encolhe a corrente, sobe a bola, alonga feixes e pontos
+// para lerem num quadrado de ~200 px; ?scale=1.2 = bola +20% (mesmo contrato das bolas A/D do OS).
+(function () {
+  const q = new URLSearchParams(location.search);
+  const scale = parseFloat(q.get('scale')) || 1;
+  if (q.get('mini') === '1') {
+    Object.assign(CONFIG, { ballSizeVH: 0.66, ballCenter: [0.5, 0.56], chainLinkPx: 6, beamLength: 1.0, beamWidthDeg: 1.6,
+      dotScale: 0.5, bloomBlurPx: 5, grain: 0.02, vignette: 0.35, facetRows: 26 });
+    document.documentElement.classList.add('mini');
+  }
+  CONFIG.ballSizeVH *= scale;
+})();
 const PRESETS = {
   ALIVE: { spotGain: 1.0,  rotationRpm: CONFIG.rotationRpm, sphereOpacity: CONFIG.sphereOpacity, haze: CONFIG.haze },
   DEAD:  { spotGain: 0.22, rotationRpm: 0.12, sphereOpacity: 0.35, haze: 0.25 },
