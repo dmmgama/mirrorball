@@ -82,7 +82,9 @@ const MB_CLOCK = (() => {
     const id = ++reqId, tClient = now();
     pending.set(id, tClient);
     // no futuro: o pai reencaminha para o sidecar. Na Fase 2 responde o gerador local.
-    (target || window).postMessage({ type: 'clock-req', id, tClient }, '*');
+    const ext = window.MUSIC && window.MUSIC.gen && window.MUSIC.gen.isExternal && window.MUSIC.gen.isExternal();
+    const to = target || (ext && window.parent !== window ? window.parent : window);
+    to.postMessage({ type: 'clock-req', id, tClient }, '*');
     // limpeza: pedidos sem resposta ao fim de 5 s deixam de contar
     if (pending.size > 32) for (const [k, v] of pending) if (now() - v > 5000) pending.delete(k);
   }
@@ -763,7 +765,8 @@ const GEN = (() => {
     tick, nextPhase,
     get on() { return on.v; },
     toggle() { on.v = !on.v; if (on.v) { t0 = MB_CLOCK.now(); lastBarEmitted = -1; } },
-    markExternal(t) { lastExternal = t; },   // features sem `hint` → há emissor real, cala-te
+    markExternal(t) { lastExternal = t; },
+    isExternal() { return MB_CLOCK.now() - lastExternal < MUSIC.gen.externalGraceMs; },   // features sem `hint` → há emissor real, cala-te
     answerClock(req) { post({ type: 'clock', id: req.id, tClient: req.tClient, tEmit: MB_CLOCK.now() }); },
     get phase() { return phase; }, get cycle() { return cycle; },
   };
@@ -836,6 +839,7 @@ if (typeof requestAnimationFrame === 'function') {
   })();
   // handshake de relógio ao arrancar: 5 amostras espaçadas, fica com as de menor RTT
   for (let i = 0; i < 5; i++) setTimeout(() => MB_CLOCK.request(), 120 + i * 180);
+  setInterval(() => MB_CLOCK.request(), 10000);
 }
 
 })();
