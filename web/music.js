@@ -123,8 +123,9 @@ const MUSIC = {
   kick: {
     bassRatio: 1.08,      // bass > média móvel × isto
     bassAvgSec: 1.6,      // janela da média móvel de bass (longa: é a "cor" da faixa)
-    onsetMin: 0.12,       // onset mínimo para candidatar a kick
-    rmsMin: 0.03,         // piso de energia: silêncio não tem kicks
+    onsetMin: 0.22,       // subOnset (flux só nos graves) — medido: p90 0.17, picos 0.86
+    subOver: 0.02,        // sub acima da média (escala dB 0..1: 0.02 ≈ +1.2 dB)       // onset mínimo para candidatar a kick
+    rmsMin: 0.008,        // rms real de música a volume normal ≈ 0.02-0.05         // piso de energia: silêncio não tem kicks
     refractoryMs: 200,
     rateWindowSec: 2.0,   // janela de kicks/s
     rateFull: 1.6,        // kicks/s que equivalem a presença 1.0 (≈156 BPM em 4-on-the-floor)
@@ -153,6 +154,7 @@ const MUSIC = {
   /* ---- Camada 1: mapeamento forte (§0.1 ponto 3) ----
    * Já não é (V,A)→âncoras. É DIRETO: cada knob tem a sua fonte e a sua amplitude, escolhida
    * para se NOTAR. A "amplitude visível" é o requisito, não a subtileza. */
+  hat: { gain: 6, releaseSec: 0.12, beamGain: 1.0, opacityDip: 0.35 },   // agudos marcam: feixes sobem, opacidade dá um tique
   map: {
     // rpm ← kickPresence × energia. Sem bombo: 0.0-0.15. Bombo forte: 2.4-3.0.
     rpmIdle: [0.00, 0.15],        // [mínimo, máximo] do repouso — escolhido por energia residual
@@ -369,6 +371,13 @@ function ingestFeatures(f) {
     state.bassShort += (bass - state.bassShort) * kS;
     const kH = 1 - Math.exp(-dt / 0.40);
     state.highAvg += (high - state.highAvg) * kH;
+    // sidecar ≥ 2026-08-28: `sub` (40-120 Hz, corpo do bombo) e `hat` (≥ 6 kHz) em dB próprio
+    const sub = f.sub != null ? +f.sub : bass, hat = f.hat != null ? +f.hat : high;
+    state.subAvg = (state.subAvg == null ? sub : state.subAvg + (sub - state.subAvg) * kL);
+    state.hatAvg = (state.hatAvg == null ? hat : state.hatAvg + (hat - state.hatAvg) * (1 - Math.exp(-dt / 1.0)));
+    // marcação dos agudos: hat acima da sua média → pulso curto (release ~120 ms)
+    const hatOver = clamp((hat - state.hatAvg) * MUSIC.hat.gain, 0, 1);
+    state.hatPulse = Math.max(hatOver, (state.hatPulse || 0) * Math.exp(-dt / MUSIC.hat.releaseSec));
     state.centroidAvg += ((+f.centroid || 0) - state.centroidAvg) * (1 - Math.exp(-dt / 1.2));
   }
 
@@ -394,10 +403,14 @@ function ingestFeatures(f) {
  * Refratário de 200 ms: o mesmo transiente produz 2-3 frames de flux alto a 50 Hz. */
 function detectKick(nowL, f) {
   const K = MUSIC.kick;
-  const onset = +f.onset || 0, bass = +f.bass || 0, rms = +f.rms || 0;
+  const rms = +f.rms || 0;
+  const hasSub = f.subOnset != null;
+  const onset = hasSub ? +f.subOnset : (+f.onset || 0);
+  const band = hasSub ? +f.sub : (+f.bass || 0);
+  const avg = hasSub ? state.subAvg : state.bassAvg;
   const isKick = !f.silence &&
     onset >= K.onsetMin &&
-    bass > state.bassAvg * K.bassRatio &&
+    (hasSub ? band > avg + K.subOver : band > avg * K.bassRatio) &&
     rms >= K.rmsMin &&
     (nowL - state.lastKickT) > K.refractoryMs;
 
@@ -813,7 +826,7 @@ function computeTargets() {
     T.spot = lerp(M.spotBase[0], M.spotBase[1], loudN);
 
     // feixes ← high + onset: os hi-hats e a voz "seguem o tempo"
-    const hi = clamp(Math.max(M.beamHighMix * state.highAvg + (1 - M.beamHighMix) * onset, 0.85 * loudN, 0.9 * state.kickPresence), 0, 1);
+    const hi = clamp(Math.max(M.beamHighMix * state.highAvg + (1 - M.beamHighMix) * onset, 0.85 * loudN, 0.9 * state.kickPresence, MUSIC.hat.beamGain * (state.hatPulse || 0)), 0, 1);
     T.beamInt = lerp(M.beamIntFrom[0], M.beamIntFrom[1], hi);
     T.beams = lerp(M.beamsFrom[0], M.beamsFrom[1], hi);
 
@@ -892,7 +905,7 @@ function applyToBall(o, gestInfo) {
   C.haze = clamp(o.haze, MUSIC.outMin.haze, MUSIC.outMax.haze);
   C.beamMaxCount = Math.round(clamp(o.beams, 0, MUSIC.outMax.beams));
   C.beamIntensity = clamp(o.beamInt, 0, MUSIC.outMax.beamInt);       // teto inviolável 0.18
-  C.sphereOpacity = clamp(o.opacity, MUSIC.outMin.opacity, 1);
+  C.sphereOpacity = clamp(o.opacity * (1 - MUSIC.hat.opacityDip * (state.hatPulse || 0)), MUSIC.outMin.opacity, 1);
   C.spotFadeMix = 0;   // §3.6: os fades internos (11/17/13 s) não são períodos musicais
   // ⚠ NADA de setSkinAuto aqui (§0.1 ponto 1): a skin é do utilizador, ponto final.
   if (MB.setHealth && MB.getHealth() !== state.health) MB.setHealth(state.health);
