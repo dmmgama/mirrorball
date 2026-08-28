@@ -1,8 +1,17 @@
-/* harness-f2.js — verificação da Fase 2 (music.js) num vm de Node.
+/* test-music-f2.js — verificação do motor musical (Fase 5: "motor forte").
  *
- * Corre core.js + music.js num sandbox com window/document/performance/rAF/postMessage
- * falsos e um relógio VIRTUAL, para simular ~3 minutos de "set" em segundos reais.
- * Afirma as 5 propriedades pedidas no brief da Fase 2.
+ * Corre core.js + music.js num sandbox de Node com window/document/performance/rAF/postMessage
+ * falsos e um relógio VIRTUAL, para simular minutos de "set" em segundos reais.
+ *
+ * O que se afirma (brief da Fase 5, ponto 7):
+ *   (a) owner=manual → ZERO escritas no CONFIG
+ *   (b) rpm > 2.0 com bombo a bater
+ *   (c) rpm < 0.3 em ≤ 2.5 s depois de o bombo parar
+ *   (d) nenhuma escrita em skin (setSkinAuto/skin) por parte do motor
+ *   (e) beamIntensity ≤ 0.18 em todo o lado
+ *   (f) ≥ 3 gestos DISTINTOS em 10 min simulados
+ *   (g) perfil muda por postMessage e por tecla `p`
+ *   (h) silêncio → health → 0
  */
 'use strict';
 const fs = require('fs');
@@ -10,19 +19,13 @@ const path = require('path');
 const vm = require('vm');
 
 const WEB = process.argv[2] || __dirname;
-const SIM_MS = 3 * 60 * 1000;   // 3 minutos simulados (a) e (d)
-// (b) precisa de vários drops para valer como prova: a 126 BPM um ciclo GROOVE+BUILD são 48
-// compassos ≈ 91 s, e o BREAKDOWN entra a cada 3 ciclos. 20 min cobrem ~12 drops, incluindo
-// os ciclos com breakdown e o drop "contido" de 1 em 4.
-const LONG_MS = 20 * 60 * 1000;
 const STEP = 16;                // ~60 fps
 
-function makeEnv({ owner }) {
+function makeEnv({ owner, seed }) {
   let clock = 0;
   const rafQueue = [];
   const timers = [];
   const listeners = {};
-  const keys = {};
 
   // --- CONFIG mínimo, com a mesma forma do index-v2.html ---
   const CONFIG = {
@@ -36,7 +39,7 @@ function makeEnv({ owner }) {
   };
   let health = 1, skinAuto = 0;
   const writes = { count: 0 };
-  // proxy de contagem: qualquer escrita nas chaves que o motor toca conta
+  const skinWrites = { auto: 0, mode: 0, modes: [] };
   const watched = ['rotationRpm', 'haze', 'beamMaxCount', 'beamIntensity', 'sphereOpacity', 'spotFadeMix'];
   const raw = {};
   for (const k of watched) {
@@ -47,6 +50,14 @@ function makeEnv({ owner }) {
       enumerable: true, configurable: true,
     });
   }
+  // `skin` é vigiada à parte: §0.1 ponto 1 diz que o motor não lhe toca. A única exceção
+  // permitida é a normalização 'auto' → 'dark' ao entrar em modo música (uma vez).
+  let skinRaw = CONFIG.skin;
+  Object.defineProperty(CONFIG, 'skin', {
+    get() { return skinRaw; },
+    set(v) { if (v !== skinRaw) { skinWrites.mode++; skinWrites.modes.push(v); } skinRaw = v; },
+    enumerable: true, configurable: true,
+  });
 
   const MIRRORBALL = {
     config: CONFIG,
@@ -54,23 +65,23 @@ function makeEnv({ owner }) {
     getHealth() { return health; },
     setSpot(i, p) { if (CONFIG.spots[i]) { writes.count++; Object.assign(CONFIG.spots[i], p || {}); } },
     setSkin(m) { CONFIG.skin = m; },
-    setSkinAuto(v) { if (v !== skinAuto) writes.count++; skinAuto = v; },
+    setSkinAuto(v) { skinWrites.auto++; writes.count++; skinAuto = v; },
     getSkin() { return { mode: CONFIG.skin, mix: skinAuto, target: skinAuto }; },
   };
 
-  const hudEl = { classList: { _on: false, contains() { return this._on; }, toggle() { this._on = !this._on; }, add() { this._on = true; } }, textContent: '' };
+  const hudEl = { classList: { _on: false, contains() { return this._on; }, toggle() { this._on = !this._on; } }, textContent: '' };
 
   const sandbox = {
     console: { log() {}, warn() {}, error(...a) { console.error('[sandbox]', ...a); } },
     performance: { now: () => clock },
-    Date: Date, Math: Math, JSON: JSON, Object, Array, Promise, Error, String, Number, Boolean, Symbol, Map, Set, isFinite, parseFloat, parseInt,
+    Date, Math, JSON, Object, Array, Promise, Error, String, Number, Boolean, Symbol, Map, Set, isFinite, parseFloat, parseInt,
     requestAnimationFrame(fn) { rafQueue.push(fn); return rafQueue.length; },
     setTimeout(fn, ms) { timers.push({ at: clock + (ms || 0), fn }); return timers.length; },
     clearTimeout() {},
     setInterval() { return 0; }, clearInterval() {},
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
     removeEventListener() {},
-    postMessage(data) { queueMessage(data); },
+    postMessage(data) { msgQueue.push(data); },
     location: { search: `?src=${owner}` },
     URLSearchParams,
     matchMedia: () => ({ matches: false }),
@@ -80,17 +91,16 @@ function makeEnv({ owner }) {
       head: { appendChild() {} }, body: { style: {} },
     },
     MIRRORBALL,
-    // fetch ausente de propósito: music.config.json é opcional
   };
   sandbox.window = sandbox;
   sandbox.self = sandbox;
-  sandbox.parent = sandbox;      // sem pai: emitState não sai
+  sandbox.parent = sandbox;
   sandbox.globalThis = sandbox;
 
   const msgQueue = [];
-  function queueMessage(data) { msgQueue.push(data); }
   function drainMessages() {
-    while (msgQueue.length) {
+    let guard = 0;
+    while (msgQueue.length && guard++ < 4096) {
       const d = msgQueue.shift();
       for (const fn of (listeners.message || [])) fn({ data: d });
     }
@@ -101,20 +111,47 @@ function makeEnv({ owner }) {
   for (const f of ['core.js', 'music.js']) {
     vm.runInContext(fs.readFileSync(path.join(WEB, f), 'utf8'), ctx, { filename: f });
   }
+  if (seed != null && sandbox.MUSIC && sandbox.MUSIC.setSeed) sandbox.MUSIC.setSeed(seed);
 
   function tick(dt) {
     clock += dt;
-    // timers agendados
     for (let i = 0; i < timers.length; i++) {
       if (timers[i] && timers[i].at <= clock) { const t = timers[i]; timers[i] = null; t.fn(); }
     }
-    drainMessages();               // mensagens emitidas antes do frame
+    drainMessages();
     const q = rafQueue.splice(0, rafQueue.length);
     for (const fn of q) fn(clock);
-    drainMessages();               // mensagens emitidas pelo gerador dentro do frame
+    drainMessages();
   }
 
-  return { sandbox, ctx, tick, writes, CONFIG, MIRRORBALL, fireKey, get clock() { return clock; }, get health() { return health; }, hudEl };
+  // Emissor "sidecar falso": features a 50 Hz sem `hint`, para exercitar o caminho real.
+  // `kicks:false` → sem bombo (breakdown/build), `kicks:true` → 4-on-the-floor a `bpm`.
+  function feed(ms, opts) {
+    const o = Object.assign({ bpm: 126, kicks: true, loud: 0.55, high: 0.30, bassBase: 0.30, silence: false }, opts || {});
+    const period = 60000 / o.bpm;
+    const start = clock;
+    let lastEmit = -Infinity;
+    while (clock - start < ms) {
+      if (clock - lastEmit >= 20) {           // 50 Hz
+        lastEmit = clock;
+        const beatPhase = ((clock - start) / period) % 1;
+        const env = o.kicks ? Math.exp(-beatPhase * 14) : 0;
+        const hat = ((clock - start) / (period / 2)) % 1 < 0.08 ? 0.30 : 0;
+        msgQueue.push({
+          type: 'features', t: clock,
+          rms: Math.min(1, o.loud * (0.65 + 0.35 * env)),
+          bass: Math.min(1, o.bassBase + 0.42 * env),
+          mid: 0.40, high: o.high, centroid: 0.42,
+          onset: Math.min(1, 0.85 * env + hat),
+          loudness: o.loud, silence: o.silence,
+        });
+      }
+      tick(STEP);
+    }
+  }
+
+  return { sandbox, ctx, tick, feed, writes, skinWrites, CONFIG, MIRRORBALL, fireKey,
+           get clock() { return clock; }, get health() { return health; }, hudEl };
 }
 
 /* ================================ execução + asserções ================================ */
@@ -123,126 +160,139 @@ function check(name, ok, detail) { results.push({ name, ok, detail }); }
 
 /* ---- (a) owner 'manual' → zero escritas no CONFIG ---- */
 {
-  const env = makeEnv({ owner: 'manual' });
-  for (let t = 0; t < SIM_MS; t += STEP) env.tick(STEP);
+  const env = makeEnv({ owner: 'manual', seed: 12345 });
+  for (let t = 0; t < 3 * 60 * 1000; t += STEP) env.tick(STEP);
   check('(a) owner=manual → zero escritas no CONFIG', env.writes.count === 0,
-    `escritas=${env.writes.count} · estado final=${env.sandbox.MUSIC.state.fsm} · bar=${env.sandbox.MUSIC.state.bar}`);
+    `escritas=${env.writes.count} · escritas em skin=${env.skinWrites.auto + env.skinWrites.mode} · estado=${env.sandbox.MUSIC.state.fsm}`);
 }
 
-/* ---- (b,c,d) owner 'music' ---- */
+/* ---- (b,c) rpm segue o bombo — o requisito central do David ---- */
 {
-  const env = makeEnv({ owner: 'music' });
+  const env = makeEnv({ owner: 'music', seed: 4242 });
   const S = env.sandbox.MUSIC.state;
+  env.sandbox.MUSIC.gen.toggle();                 // gerador off: alimentamos nós, sem `hint`
 
-  const transitions = [];          // {t, from, to}
+  env.feed(20000, { kicks: true, bpm: 126, loud: 0.62 });   // 20 s de bombo
+  const rpmWithKick = env.CONFIG.rotationRpm;
+  const presWithKick = S.kickPresence;
+  const bpmSeen = S.bpmEst ? 60000 / S.bpmEst : 0;
+  const confSeen = S.gridConf;
+
+  check('(b) rpm > 2.0 com bombo a bater', rpmWithKick > 2.0,
+    `rpm=${rpmWithKick.toFixed(2)} · kickPresence=${presWithKick.toFixed(2)} · ${S.kickRate.toFixed(1)} kicks/s · BPM detetado=${bpmSeen.toFixed(1)} (conf ${confSeen.toFixed(2)})`);
+
+  // bombo pára (ambiente continua: loud desce um pouco, hi-hats mantêm-se)
+  const t0 = env.clock;
+  let tUnder = null;
+  const stepMs = 100;
+  for (let t = 0; t < 6000; t += stepMs) {
+    env.feed(stepMs, { kicks: false, loud: 0.45, high: 0.42, bassBase: 0.16 });
+    if (tUnder === null && env.CONFIG.rotationRpm < 0.3) tUnder = env.clock - t0;
+  }
+  check('(c) rpm < 0.3 em ≤ 2.5 s depois de o bombo parar', tUnder !== null && tUnder <= 2500,
+    `chegou a <0.3 em ${tUnder === null ? 'nunca' : (tUnder / 1000).toFixed(2) + ' s'} · rpm final=${env.CONFIG.rotationRpm.toFixed(3)} · presença=${S.kickPresence.toFixed(3)} · estado=${S.fsm}`);
+}
+
+/* ---- (d,e,f) 10 minutos de set com o gerador sintético ---- */
+{
+  const env = makeEnv({ owner: 'music', seed: 90210 });
+  const S = env.sandbox.MUSIC.state;
+  const LONG_MS = 10 * 60 * 1000;
+
+  let maxBeamInt = 0, maxRpm = 0, minRpm = 99;
+  let maxSpot = 0;
+  const transitions = [];
   let lastFsm = S.fsm;
-  let maxBeamInt = 0;
-  // (d) "mudança de sinal da derivada" só conta se o movimento for PERCETÍVEL. Uma inversão
-  // de 1e-6 num knob é dither de vírgula flutuante, não flicker: a bola nem consegue
-  // renderizar a diferença. O deadband por knob é ~0.2% do seu curso útil — abaixo disso o
-  // movimento é ruído numérico e contá-lo mediria o float, não o comportamento.
-  const knobs = ['tone', 'opacity', 'rpm', 'beams', 'beamInt', 'haze', 'spot'];
-  const DEADBAND = { tone: 0.002, opacity: 0.002, rpm: 0.006, beams: 0.11, beamInt: 0.0004, haze: 0.002, spot: 0.003 };
-  const prev = {}, prevSign = {}, signFlips = {};   // por knob: timestamps das mudanças de sinal
-  for (const k of knobs) { prev[k] = null; prevSign[k] = 0; signFlips[k] = []; }
-  const dropBars = [];
-  let sawPreDropSinceGroove = false;
-  const dropsWithoutPreDrop = [];
+  const gestSeen = {};
+  let lastGest = null;
 
   for (let t = 0; t < LONG_MS; t += STEP) {
     env.tick(STEP);
-    const now = env.clock;
-
-    if (S.fsm !== lastFsm) {
-      transitions.push({ t: now, from: lastFsm, to: S.fsm, bar: S.bar });
-      if (S.fsm === 'PRE_DROP') sawPreDropSinceGroove = true;
-      if (S.fsm === 'DROP') {
-        dropBars.push({ bar: S.bar, pre: sawPreDropSinceGroove });
-        if (!sawPreDropSinceGroove) dropsWithoutPreDrop.push(S.bar);
-        sawPreDropSinceGroove = false;
-      }
-      lastFsm = S.fsm;
-    }
-
-    // (c) teto de beamIntensity, medido no CONFIG real (o que a bola vê)
     maxBeamInt = Math.max(maxBeamInt, env.CONFIG.beamIntensity);
-
-    // (d) inversões de direção com deadband: `prev[k]` guarda o último EXTREMO confirmado.
-    // Só quando o knob se afasta desse extremo mais do que o deadband é que se declara uma
-    // direção; inverter a direção declarada é que conta como flip.
-    const o = S.out;
-    for (const k of knobs) {
-      const v = o[k];
-      if (prev[k] == null) { prev[k] = v; continue; }
-      const d = v - prev[k];
-      if (Math.abs(d) < DEADBAND[k]) continue;          // ainda dentro do ruído: nada a dizer
-      const s = d > 0 ? 1 : -1;
-      if (prevSign[k] !== 0 && s !== prevSign[k]) signFlips[k].push(now);
-      prevSign[k] = s;
-      prev[k] = v;                                      // novo extremo confirmado
-    }
+    maxRpm = Math.max(maxRpm, env.CONFIG.rotationRpm);
+    minRpm = Math.min(minRpm, env.CONFIG.rotationRpm);
+    for (const s of env.CONFIG.spots) maxSpot = Math.max(maxSpot, s.intensity);
+    if (S.fsm !== lastFsm) { transitions.push({ t: env.clock, from: lastFsm, to: S.fsm, bar: S.bar }); lastFsm = S.fsm; }
+    const gn = S.gest ? S.gest.name : null;
+    if (gn && gn !== lastGest) { gestSeen[gn] = (gestSeen[gn] || 0) + 1; }
+    lastGest = gn;
   }
 
-  // (b) PRE_DROP antes de cada DROP + DROP no barIndex % 16 === 0
-  const badBar = dropBars.filter(d => d.bar % 16 !== 0);
-  check('(b1) PRE_DROP ocorre antes de cada DROP',
-    dropBars.length > 0 && dropsWithoutPreDrop.length === 0,
-    `drops=${dropBars.length} · sem pre-drop=${dropsWithoutPreDrop.length} ${dropsWithoutPreDrop.length ? '(bars ' + dropsWithoutPreDrop.join(',') + ')' : ''}`);
-  check('(b2) DROP cai em barIndex % 16 === 0',
-    dropBars.length > 0 && badBar.length === 0,
-    `bars dos drops=[${dropBars.map(d => d.bar).join(', ')}] · fora da frase=${badBar.length}`);
+  check('(d) o motor NUNCA escreve na skin',
+    env.skinWrites.auto === 0 && env.skinWrites.modes.filter(m => m !== 'dark').length === 0,
+    `setSkinAuto=${env.skinWrites.auto} · setSkin=[${env.skinWrites.modes.join(',') || '—'}] (só a normalização auto→dark é permitida)`);
 
-  check('(c) beamIntensity nunca > 0.18', maxBeamInt <= 0.18 + 1e-9,
+  check('(e) beamIntensity nunca > 0.18', maxBeamInt <= 0.18 + 1e-9,
     `máx observado no CONFIG = ${maxBeamInt.toFixed(6)}`);
 
-  // (d) janela deslizante de 1 s: nenhum knob muda de sinal de derivada mais de 3×
-  let worst = { knob: '-', n: 0, at: 0 };
-  for (const k of knobs) {
-    const ts = signFlips[k];
-    for (let i = 0; i < ts.length; i++) {
-      let n = 1;
-      for (let j = i + 1; j < ts.length && ts[j] - ts[i] <= 1000; j++) n++;
-      if (n > worst.n) worst = { knob: k, n, at: ts[i] };
-    }
-  }
-  check('(d) nenhum knob muda de sinal de derivada > 3×/s', worst.n <= 3,
-    `pior: ${worst.knob} com ${worst.n} inversões numa janela de 1 s (t=${(worst.at / 1000).toFixed(1)}s)`);
+  const distinct = Object.keys(gestSeen);
+  check('(f) ≥ 3 gestos distintos em 10 min simulados', distinct.length >= 3,
+    `${distinct.length} distintos, ${Object.values(gestSeen).reduce((a, b) => a + b, 0)} ocorrências: ${distinct.map(k => k + '×' + gestSeen[k]).join(', ') || '—'}`);
 
-  console.log('\n--- transições observadas (owner=music, 3 min simulados) ---');
-  for (const tr of transitions.slice(0, 40)) {
+  check('(g) amplitude de rpm visível ao longo do set', maxRpm > 2.0 && minRpm < 0.4,
+    `rpm ∈ [${minRpm.toFixed(2)}, ${maxRpm.toFixed(2)}] · spot máx=${maxSpot.toFixed(2)} · escritas no CONFIG=${env.writes.count}`);
+
+  console.log('\n--- transições (owner=music, 10 min simulados, gerador sintético) ---');
+  for (const tr of transitions.slice(0, 32)) {
     console.log(`  ${(tr.t / 1000).toFixed(1).padStart(7)}s  bar ${String(tr.bar).padStart(4)}  ${tr.from} → ${tr.to}`);
   }
-  if (transitions.length > 40) console.log(`  … +${transitions.length - 40} transições`);
-  console.log(`  total: ${transitions.length} transições · ${dropBars.length} drops`);
+  if (transitions.length > 32) console.log(`  … +${transitions.length - 32} transições`);
+  console.log(`  total: ${transitions.length} transições · ${transitions.filter(t => t.to === 'DROP').length} drops`);
+  console.log(`  gestos: ${distinct.map(k => k + '×' + gestSeen[k]).join(', ') || '—'}`);
 
-  // HUD: ligar e confirmar que produz texto (o `m` tem de mostrar alguma coisa)
+  // HUD
   env.fireKey('m');
   env.tick(STEP);
-  check('(HUD) tecla m produz conteúdo', env.hudEl.textContent.length > 100 && /estado\s+\w+/.test(env.hudEl.textContent),
+  check('(HUD) tecla m produz conteúdo com a linha BOMBO',
+    env.hudEl.textContent.length > 100 && /BOMBO/.test(env.hudEl.textContent),
     `${env.hudEl.textContent.split('\n').length} linhas`);
   console.log('\n--- HUD (tecla m) ---');
   console.log(env.hudEl.textContent.split('\n').map(l => '  ' + l).join('\n'));
 }
 
-/* ---- (e) silêncio → health → 0 em ≤ 5 s ---- */
+/* ---- (h) perfil: postMessage e tecla `p` ---- */
 {
-  const env = makeEnv({ owner: 'music' });
+  const env = makeEnv({ owner: 'music', seed: 7 });
+  const M = env.sandbox.MUSIC;
+  const start = M.config.profile;
+  env.sandbox.postMessage({ type: 'profile', value: 'voz' });
+  env.tick(STEP);
+  const afterMsg = M.config.profile;
+  env.fireKey('p');
+  env.tick(STEP);
+  const afterKey = M.config.profile;
+  check('(h) perfil muda por postMessage e por tecla p',
+    start === 'electronica' && afterMsg === 'voz' && afterKey === 'electronica',
+    `${start} → (postMessage voz) ${afterMsg} → (tecla p) ${afterKey}`);
+
+  // `voz` = rpm 0.3 fixo
+  M.setProfile('voz');
+  env.sandbox.MUSIC.gen.toggle();
+  env.feed(8000, { kicks: true, loud: 0.7 });
+  check('(i) perfil voz → rpm ≈ 0.3 mesmo com bombo',
+    Math.abs(env.CONFIG.rotationRpm - 0.30) < 0.05,
+    `rpm=${env.CONFIG.rotationRpm.toFixed(3)} com bombo a bater e perfil=voz`);
+}
+
+/* ---- (j) silêncio → health → 0 em ≤ 5 s ---- */
+{
+  const env = makeEnv({ owner: 'music', seed: 3 });
   const S = env.sandbox.MUSIC.state;
-  for (let t = 0; t < 30000; t += STEP) env.tick(STEP);      // 30 s a tocar
+  for (let t = 0; t < 30000; t += STEP) env.tick(STEP);
   const hBefore = S.health;
-  env.sandbox.MUSIC.gen.toggle();                            // gerador off → sem features
+  env.sandbox.MUSIC.gen.toggle();
   const t0 = env.clock;
   let tZero = null;
   for (let t = 0; t < 15000; t += STEP) {
     env.tick(STEP);
     if (tZero === null && S.health <= 0.001) tZero = env.clock - t0;
   }
-  check('(e) silêncio → health → 0 em ≤ 5 s', tZero !== null && tZero <= 5000,
-    `health antes=${hBefore.toFixed(2)} · chegou a 0 em ${tZero === null ? 'nunca' : (tZero / 1000).toFixed(2) + ' s'} · health final=${S.health.toFixed(3)}`);
+  check('(j) silêncio → health → 0 em ≤ 5 s', tZero !== null && tZero <= 5000,
+    `health antes=${hBefore.toFixed(2)} · chegou a 0 em ${tZero === null ? 'nunca' : (tZero / 1000).toFixed(2) + ' s'} · rpm final=${env.CONFIG.rotationRpm.toFixed(3)}`);
 }
 
 /* ==================================== relatório ==================================== */
-console.log('\n=== VERIFICAÇÃO FASE 2 ===');
+console.log('\n=== VERIFICAÇÃO FASE 5 (motor forte) ===');
 let failed = 0;
 for (const r of results) {
   console.log(`${r.ok ? 'PASS' : 'FALHA'}  ${r.name}\n        ${r.detail}`);
