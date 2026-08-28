@@ -205,6 +205,12 @@ function check(name, ok, detail) { results.push({ name, ok, detail }); }
   let lastFsm = S.fsm;
   const gestSeen = {};
   let lastGest = null;
+  // (k) INVARIANTE DO BOMBO: presença > 0.3 → rpm ≥ 1.2. Com uma GRAÇA de 1.5 s depois de a
+  // presença cruzar o limiar, porque nesse instante a bola pode estar legitimamente a subir de
+  // parada: o invariante é sobre o regime, não sobre a rampa de arranque.
+  const SPIN_GRACE_MS = 1500;
+  let presAboveSince = null;
+  let spinViol = null, spinChecked = 0;
 
   for (let t = 0; t < LONG_MS; t += STEP) {
     env.tick(STEP);
@@ -212,6 +218,17 @@ function check(name, ok, detail) { results.push({ name, ok, detail }); }
     maxRpm = Math.max(maxRpm, env.CONFIG.rotationRpm);
     minRpm = Math.min(minRpm, env.CONFIG.rotationRpm);
     for (const s of env.CONFIG.spots) maxSpot = Math.max(maxSpot, s.intensity);
+
+    if (S.kickPresence > 0.3) {
+      if (presAboveSince === null) presAboveSince = env.clock;
+      if (env.clock - presAboveSince > SPIN_GRACE_MS) {
+        spinChecked++;
+        if (env.CONFIG.rotationRpm < 1.2 - 1e-9 && !spinViol) {
+          spinViol = { t: env.clock, rpm: env.CONFIG.rotationRpm, pres: S.kickPresence,
+                       fsm: S.fsm, gest: S.gest ? S.gest.name : '—', w: S.gestWeight };
+        }
+      }
+    } else presAboveSince = null;
     if (S.fsm !== lastFsm) { transitions.push({ t: env.clock, from: lastFsm, to: S.fsm, bar: S.bar }); lastFsm = S.fsm; }
     const gn = S.gest ? S.gest.name : null;
     if (gn && gn !== lastGest) { gestSeen[gn] = (gestSeen[gn] || 0) + 1; }
@@ -228,6 +245,12 @@ function check(name, ok, detail) { results.push({ name, ok, detail }); }
   const distinct = Object.keys(gestSeen);
   check('(f) ≥ 3 gestos distintos em 10 min simulados', distinct.length >= 3,
     `${distinct.length} distintos, ${Object.values(gestSeen).reduce((a, b) => a + b, 0)} ocorrências: ${distinct.map(k => k + '×' + gestSeen[k]).join(', ') || '—'}`);
+
+  check('(k) INVARIANTE: kickPresence > 0.3 → rpm ≥ 1.2 (a bola gira enquanto há bombo)',
+    spinViol === null && spinChecked > 0,
+    spinViol
+      ? `VIOLADO a ${(spinViol.t / 1000).toFixed(1)}s: rpm=${spinViol.rpm.toFixed(3)} com presença=${spinViol.pres.toFixed(2)} · estado=${spinViol.fsm} · gesto=${spinViol.gest} (peso ${spinViol.w.toFixed(2)})`
+      : `${spinChecked} frames em regime com bombo, mínimo respeitado (grace de 1.5 s na rampa de arranque)`);
 
   check('(g) amplitude de rpm visível ao longo do set', maxRpm > 2.0 && minRpm < 0.4,
     `rpm ∈ [${minRpm.toFixed(2)}, ${maxRpm.toFixed(2)}] · spot máx=${maxSpot.toFixed(2)} · escritas no CONFIG=${env.writes.count}`);
@@ -248,6 +271,57 @@ function check(name, ok, detail) { results.push({ name, ok, detail }); }
     `${env.hudEl.textContent.split('\n').length} linhas`);
   console.log('\n--- HUD (tecla m) ---');
   console.log(env.hudEl.textContent.split('\n').map(l => '  ' + l).join('\n'));
+}
+
+/* ---- (l) o caso adversarial: um gesto que MATA a rotação, com o bombo a bater ----
+ * O invariante só vale se resistir ao pior caso. `freeze` faz rpm→0 e `fog` faz rpm→0.4; com
+ * o bombo a bater, nenhum dos dois pode travar a bola — só podem mexer em opacity/spots/haze/
+ * feixes. Injetamos o gesto à mão (é assim que o motor o faria em BREAKDOWN) e verificamos. */
+{
+  for (const gname of ['freeze', 'fog', 'ghost']) {
+    const env = makeEnv({ owner: 'music', seed: 555 });
+    const S = env.sandbox.MUSIC.state;
+    env.sandbox.MUSIC.gen.toggle();
+    env.feed(15000, { kicks: true, bpm: 126, loud: 0.62 });    // bola a girar com bombo
+    const rpmBefore = env.CONFIG.rotationRpm;
+    // força o gesto e deixa a rampa entrar por completo, sempre com bombo. Re-fixado a cada
+    // passo: o motor troca de gesto sozinho e mediríamos o dele, não o que queremos testar.
+    const pin = () => {
+      S.gestQueue.length = 0;
+      if (!S.gest || S.gest.name !== gname) S.gest = { name: gname, t0: env.clock, until: env.clock + 60000, period: 25, why: 'teste' };
+      else S.gest.until = env.clock + 60000;
+    };
+    let minDuring = 99;
+    for (let i = 0; i < 120; i++) {
+      pin();
+      env.feed(100, { kicks: true, bpm: 126, loud: 0.62 });
+      if (i > 20) minDuring = Math.min(minDuring, env.CONFIG.rotationRpm);   // depois da rampa
+    }
+    check(`(l:${gname}) gesto ${gname} não trava a bola enquanto há bombo`,
+      minDuring >= 1.2 - 1e-9,
+      `rpm antes=${rpmBefore.toFixed(2)} · mínimo durante o gesto=${minDuring.toFixed(3)} · peso=${S.gestWeight.toFixed(2)} · presença=${S.kickPresence.toFixed(2)}`);
+  }
+}
+
+/* ---- (m) e sem bombo, o mesmo `freeze` PARA mesmo a bola (o gesto não ficou inútil) ----
+ * ⚠ O motor troca de gesto sozinho quando entra em BREAKDOWN (fila encadeada), por isso o
+ * `freeze` tem de ser re-fixado a cada passo — senão o que se mede é o gesto que ELE escolheu
+ * (visto no primeiro run: o `fog`, com o seu rpm 0.4 correto, a parecer uma falha do freeze). */
+{
+  const env = makeEnv({ owner: 'music', seed: 556 });
+  const S = env.sandbox.MUSIC.state;
+  env.sandbox.MUSIC.gen.toggle();
+  env.feed(15000, { kicks: true, bpm: 126, loud: 0.62 });
+  const pin = () => {
+    S.gestQueue.length = 0;
+    if (!S.gest || S.gest.name !== 'freeze') {
+      S.gest = { name: 'freeze', t0: env.clock, until: env.clock + 60000, period: 25, why: 'teste' };
+    } else S.gest.until = env.clock + 60000;
+  };
+  for (let i = 0; i < 80; i++) { pin(); env.feed(100, { kicks: false, loud: 0.45, high: 0.42, bassBase: 0.16 }); }
+  check('(m) sem bombo, o `freeze` para mesmo a rotação (o gesto não ficou inútil)',
+    env.CONFIG.rotationRpm < 0.15,
+    `rpm=${env.CONFIG.rotationRpm.toFixed(3)} · presença=${S.kickPresence.toFixed(3)} · peso do gesto=${S.gestWeight.toFixed(2)} · gesto=${S.gest ? S.gest.name : '—'}`);
 }
 
 /* ---- (h) perfil: postMessage e tecla `p` ---- */

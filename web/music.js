@@ -167,6 +167,13 @@ const MUSIC = {
     hazeFrom: [0.22, 0.95],       // ← INVERSO de bass (breakdown sem graves = fumo)
     opacityFrom: [0.35, 1.00],    // ← loudness curto
     opacityFloorGroove: 0.55,     // §0.1: a bola não pode ficar fantasma sem razão em GROOVE
+    // INVARIANTE (David, 2ª audição): "enquanto houver bombo a bola DEVE girar — só sem bombo
+    // é que pára". Piso DURO no rpm, aplicado DEPOIS dos gestos: nem `freeze`, nem `fog`, nem
+    // `ghost` podem travar a rotação enquanto há bombo. Esses gestos continuam a valer — mas
+    // em opacity/spots/haze/feixes, que é onde o David os quer. O `freeze` de rotação fica
+    // reservado para quando o bombo já parou (e aí o piso está desligado por definição).
+    spinLockPresence: 0.30,       // acima desta presença de bombo, o piso está ativo
+    spinLockRpm: 1.20,            // rpm mínimo enquanto há bombo
   },
 
   // τ (s) [attack, release]. Do brief da Fase 5, ponto 3. Nada oscila acima de 3 Hz.
@@ -570,6 +577,8 @@ function onBarBoundary(bar) {
  * A rampa é o que impede um corte; sem ela, "opacidade → 0.05 súbito" seria um pisca. */
 const GESTURES = {
   // rpm→0, spots mantêm, feixes seguem `high`. O gesto do breakdown por excelência.
+  // ⚠ Só tem efeito no rpm quando o bombo já parou: o piso `spinLock` (aplicado depois dos
+  // gestos) manda enquanto houver bombo. Com bombo, o que se vê deste gesto são os feixes.
   'freeze': (ctx) => ({ rpm: { set: 0.0 }, beamInt: { set: lerp(0.03, 0.18, ctx.high) }, beams: { set: lerp(6, 30, ctx.high) } }),
   // opacity→0.05 súbito (tau 0.15) + spots→0; rpm mantém. A bola desaparece e continua a girar.
   'ghost': () => ({ opacity: { set: 0.05, tau: [0.15, 0.15] }, spot: { set: 0.0, tau: [0.15, 0.4] } }),
@@ -921,6 +930,13 @@ function update(nowL) {
   computeTargets();
   const gestInfo = applyGesture(state.target);
 
+  // ---- INVARIANTE DO BOMBO (ver MUSIC.map.spinLock*) ----
+  // Aplicado DEPOIS dos gestos, de propósito: é o único ponto onde um gesto não tem a última
+  // palavra. Enquanto o bombo bate, a bola gira — o resto do gesto passa na mesma.
+  const spinLocked = MUSIC.profile === 'electronica' &&
+                     state.kickPresence > MUSIC.map.spinLockPresence && !state.silent;
+  if (spinLocked) state.target.rpm = Math.max(state.target.rpm, MUSIC.map.spinLockRpm);
+
   // rampa de posse: logo após ganhar o CONFIG, suaviza mais ainda (nunca corte)
   const hand = clamp((nowL - state.handoverT) / (MUSIC.handover.rampSec * 1000), 0, 1);
   const slow = lerp(2.5, 1, hand);
@@ -937,9 +953,17 @@ function update(nowL) {
     const gt = gestInfo && gestInfo.taus[k];
     let tau = gt || MUSIC.tau[k];
     if (k === 'rpm' && stopping && !gt) tau = [tau[0], MUSIC.rpmStopTau];
+    // com o bombo a bater, um gesto com tau curto no rpm (nenhum tem hoje, mas é barato
+    // garantir) não pode ser usado para o travar — o piso já está no alvo, aqui é o easing
+    if (k === 'rpm' && spinLocked && gt) tau = MUSIC.tau.rpm;
     o[k] = ease(o[k], state.target[k], [tau[0] * slow, tau[1] * slow], dt);
     o[k] = clamp(o[k], MUSIC.outMin[k] != null ? MUSIC.outMin[k] : -Infinity,
                        MUSIC.outMax[k] != null ? MUSIC.outMax[k] : Infinity);
+  }
+  // garantia dura na SAÍDA: se o bombo já bate mas a bola vinha de parada, ela sobe por rampa
+  // (o alvo manda) — mas nunca fica ABAIXO do piso por causa de um gesto que a puxe para baixo.
+  if (spinLocked && o.rpm < MUSIC.map.spinLockRpm) {
+    o.rpm = Math.min(MUSIC.map.spinLockRpm, o.rpm + (MUSIC.map.spinLockRpm / 0.8) * dt);
   }
 
   const owner = window.MB_SOURCE ? window.MB_SOURCE.owner : 'manual';
