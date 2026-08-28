@@ -295,7 +295,10 @@ function frame(now) {
   // ----- feixes (aditivos, com limite de contagem e de alpha por feixe) -----
   beams.sort((a, b) => b.I - a.I);
   ctx.globalCompositeOperation = 'lighter';
-  const nb = Math.min(beams.length, CONFIG.beamMaxCount), Lmax = CONFIG.beamLength * Math.max(W, H);
+  // Guarda defensiva: um NaN vindo de uma fonte externa (music.js/emotion) daria nb = NaN e o
+  // ciclo abaixo nunca corria — feixes desaparecidos SEM erro nenhum na consola.
+  const bmc = Number.isFinite(CONFIG.beamMaxCount) ? CONFIG.beamMaxCount : 0;
+  const nb = Math.min(beams.length, bmc), Lmax = CONFIG.beamLength * Math.max(W, H);
   const wOuter = CONFIG.beamWidthDeg * D2R, widths = [wOuter, wOuter * 0.55, wOuter * 0.22], aw = [0.22, 0.32, 0.46];
   for (let i = 0; i < nb; i++) {
     const b = beams[i], pr = proj(b.x, b.y, b.z), len = Lmax * (0.45 + 0.55 * b.len);
@@ -456,6 +459,6 @@ requestAnimationFrame(frame);
 <script src="core.js?v=1"></script>
 <script src="bridge.js?v=2"></script>
 <script src="emotion-v2.js?v=1"></script>
-<script src="music.js?v=11"></script>
+<script src="music.js?v=12"></script>
 </body>
 </html>

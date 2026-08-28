@@ -268,6 +268,11 @@ const state = {
   feat: null, lastFeatLocal: -Infinity, silent: true,
   loudAvg: 0, loudAccT: 0, loudShort: 0,
   bassAvg: 0.35, bassShort: 0.35, highAvg: 0.25, centroidAvg: 0.45, rmsShort: 0,
+  // `act` (densidade espectral → atividade) só é calculado quando chega a 1.ª feature. Tem de
+  // nascer definido: o rAF corre `computeTargets()` ANTES da 1.ª feature, e um `undefined` aqui
+  // dava `lerp(0.55, 1, undefined) = NaN` em `T.beams` — NaN é absorvente no `ease`, logo
+  // `beamMaxCount` ficava NaN para sempre e `for (i=0; i<NaN; i++)` NUNCA desenhava um feixe.
+  act: 1, densAvg: null, subAvg: null, hatAvg: null, hatPulse: 0,
   // --- kick / bombo ---
   kickTimes: [], lastKickT: -Infinity, kickRate: 0, kickPresence: 0, kickFlash: 0,
   // --- BPM / grelha local ---
@@ -834,7 +839,9 @@ function computeTargets() {
     // feixes ← high + onset: os hi-hats e a voz "seguem o tempo"
     const hi = clamp(Math.max(M.beamHighMix * state.highAvg + (1 - M.beamHighMix) * onset, 0.85 * loudN, 0.9 * state.kickPresence, MUSIC.hat.beamGain * (state.hatPulse || 0)), 0, 1);
     T.beamInt = lerp(M.beamIntFrom[0], M.beamIntFrom[1], hi);
-    T.beams = lerp(M.beamsFrom[0], M.beamsFrom[1], hi) * lerp(MUSIC.activity.beamsMin, 1, state.act);
+    // ⚠ `state.act == null ? 1 : state.act` como na rampa de saída: um NaN aqui propaga-se pelo
+    // `ease` e mata o desenho dos feixes na bola (nb = min(n, NaN) → o ciclo não corre).
+    T.beams = lerp(M.beamsFrom[0], M.beamsFrom[1], hi) * lerp(MUSIC.activity.beamsMin, 1, state.act == null ? 1 : state.act);
 
     // haze ← INVERSO de bass: breakdown (graves fora) = fumo. Lento (tau 1.5/4).
     T.haze = lerp(M.hazeFrom[0], M.hazeFrom[1], clamp(1 - state.bassShort, 0, 1));
