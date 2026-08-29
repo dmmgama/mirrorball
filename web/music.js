@@ -279,6 +279,14 @@ const MUSIC = {
     seed: 0,                      // 0 = seed por sessão (Date.now); qualquer outro = determinístico
   },
 
+  /* ---- Explosão (efeito em index-v2.html: MIRRORBALL.explode/rewind) ---- */
+  explode: {
+    on: true,
+    skipRestrained: true,   // o drop "contido" (1 em 4) não estoira — a contenção é o gesto
+    hold: 'breakdown',      // 'breakdown' = fica em estilhaços até ao fim do breakdown (PRE_DROP ou volta a GROOVE)
+                            // 'drop' = recompõe-se no fim da abertura do drop
+  },
+
   /* ---- Silêncio (§3.5) ---- */
   silence: { noFeaturesMs: 500, decaySec: 4.0 },
 
@@ -573,9 +581,34 @@ function logNote(why) {
 function setState(next, why) {
   if (next === state.fsm) return;
   logEvent(next, why);
+  const prev = state.fsm;
   state.fsm = next;
   state.fsmSince = MB_CLOCK.now();
   state.fsmBar = state.bar;
+  explodeOnTransition(prev, next);
+}
+
+/* Explosão da bola: decisão do técnico presa às transições da máquina de estados.
+ * Estoira no DROP e fica em estilhaços; a sucção de volta é o fim do breakdown — ou porque
+ * entra em PRE_DROP (recompõe-se para voltar a estoirar no próximo drop) ou porque a música
+ * voltou a GROOVE sem drop. Silêncio e mudança de perfil recompõem sempre. */
+function explodeOnTransition(prev, next) {
+  const MB = (typeof window !== 'undefined') && window.MIRRORBALL, X = MUSIC.explode;
+  if (!MB || typeof MB.explode !== 'function' || !X || !X.on) return;
+  const ex = MB.getExplode ? MB.getExplode() : { phase: 'idle' };
+  const shattered = ex.phase !== 'idle' && ex.phase !== 'back';
+  if (next === 'DROP') {
+    if (X.skipRestrained && state.restrainThis) { logNote('explosão: drop contido, fica inteira'); return; }
+    MB.explode({ autoHold: false });
+    logNote(`explosão: drop #${state.dropCount}`);
+    return;
+  }
+  if (!shattered) return;
+  const rewind =
+    next === 'PRE_DROP' ||                                   // fim do breakdown: recompõe antes do próximo drop
+    (next === 'GROOVE' && prev !== 'DROP') ||                // breakdown/build desfez-se, silêncio, perfil
+    (X.hold === 'drop' && prev === 'DROP');                  // variante: recompõe no fim da abertura
+  if (rewind) { MB.rewind(); logNote(`rewind: ${prev} → ${next}`); }
 }
 
 /* ================================ entrada de mensagens ================================ */
