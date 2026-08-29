@@ -1718,20 +1718,21 @@ function onBarBoundary(bar) {
       state.sceneNextBar = bar + Math.round(rng2Range(SC.everyBars));
       if (state.scene !== prev) logNote(`cena de feixes: ${state.scene}`);
     }
-    const SB = MUSIC.strobe;
-    if (state.fsm === 'GROOVE' && SB && SB.grooveEveryBars) {
-      // intervalo AO VIVO: o slider `strobe: frequência ×` (painel d) divide o intervalo por rate² e baixa o limiar
-      // de atividade — a 2× fica 4× mais frequente e já não exige a música "cheia"; a 3× é quase um estrobo por frase
-      const rate = strobeRate();
-      let mul = state.scene === 'none' ? (SB.noneBeamsMul == null ? 0.4 : SB.noneBeamsMul) : 1;   // sem feixes → mais estrobo
-      if (rate > 1) mul /= rate * rate;
-      if (state.strobeIntervalBars == null) state.strobeIntervalBars = Math.round(rng2Range(SB.grooveEveryBars));
-      const due = bar - state.strobeLastBar >= Math.max(1, Math.round(state.strobeIntervalBars * mul));
-      if (due) {
-        state.strobeLastBar = bar; state.strobeIntervalBars = Math.round(rng2Range(SB.grooveEveryBars));
-        const actMin = (SB.grooveAct == null ? 0.6 : SB.grooveAct) / Math.max(1, rate);
-        if ((state.act == null ? 1 : state.act) >= actMin) fireStrobe('groove', 1);
-      }
+  }
+  // §ESPAÇOS — verificado a CADA compasso (estava dentro da fronteira de frase: só corria a cada 16 bars e o slider não se sentia)
+  const SB = MUSIC.strobe;
+  if (state.fsm === 'GROOVE' && SB && SB.grooveEveryBars) {
+    // intervalo AO VIVO: o slider `strobe: frequência ×` (painel d) divide o intervalo por rate² e baixa o limiar
+    // de atividade — a 2× fica 4× mais frequente e já não exige a música "cheia"; a 3× é quase um estrobo por frase
+    const rate = strobeRate();
+    let mul = state.scene === 'none' ? (SB.noneBeamsMul == null ? 0.4 : SB.noneBeamsMul) : 1;   // sem feixes → mais estrobo
+    if (rate > 1) mul /= rate * rate;
+    if (state.strobeIntervalBars == null) state.strobeIntervalBars = Math.round(rng2Range(SB.grooveEveryBars));
+    const due = bar - state.strobeLastBar >= Math.max(1, Math.round(state.strobeIntervalBars * mul));
+    if (due) {
+      state.strobeLastBar = bar; state.strobeIntervalBars = Math.round(rng2Range(SB.grooveEveryBars));
+      const actMin = (SB.grooveAct == null ? 0.6 : SB.grooveAct) / Math.max(1, rate);
+      if ((state.act == null ? 1 : state.act) >= actMin) fireStrobe('groove', 1);
     }
   }
   // gesto leve em GROOVE: a cada 16-32 compassos, 30% das vezes

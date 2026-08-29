@@ -440,7 +440,11 @@ function frame(now) {
       const along = dx0 * sp.S[0] + dy0 * sp.S[1] + dz0 * sp.S[2];
       const dist = Math.hypot(dx0 - along * sp.S[0], dy0 - along * sp.S[1], dz0 - along * sp.S[2]);
       const inCone = sp.wide ? 1 : smooth(sp.r, sp.r * (1 - CONFIG.spotEdge), dist);
-      if (inCone <= 0.001) continue;
+      // pontos na parede: o knob `dotDensity` (> 1) alarga o cone ELEGÍVEL para pontos — mais espelhos a projetar,
+      // mesmo os da orla fraca do foco (numa sala real a mancha tem uma coroa de luz que ainda dá pontos)
+      const dm = Math.max(1, CONFIG.dotDensity || 1), rDot = sp.r * dm;
+      const dotCone = sp.wide ? 0 : smooth(rDot, rDot * (1 - CONFIG.spotEdge), dist);
+      if (inCone <= 0.001 && dotCone <= 0.001) continue;
       if (sp.wide) { // luz indireta: ÁREA larga da sala refletida — cada espelho devolve-a com o seu brilho (efeito de espelho, não foco)
         if (facing > 0) { const NdH = N[0] * sp.H[0] + N[1] * sp.H[1] + N[2] * sp.H[2];
           if (NdH > 0) { const ang = Math.acos(Math.min(1, NdH)); // desvio entre a normal e a meia-direção fonte↔câmara
@@ -450,7 +454,7 @@ function frame(now) {
       }
       // L = −S (incidente), R = L − 2(N·L)N = 2(N·S)N − S
       const R = [2 * NdS * N[0] - sp.S[0], 2 * NdS * N[1] - sp.S[1], 2 * NdS * N[2] - sp.S[2]];
-      if (facing > 0) { // foco: base uniforme + brilho especular para a câmara marca por dentro
+      if (facing > 0 && inCone > 0.001) { // foco: base uniforme + brilho especular para a câmara marca por dentro
         const NdH = N[0] * sp.H[0] + N[1] * sp.H[1] + N[2] * sp.H[2];
         const spec = NdH > 0 ? Math.pow(NdH, sp.k) : 0;
         glint += CONFIG.mirrorGain * inCone * Math.min(1.6, sp.I) * (1 - CONFIG.glintSharp + CONFIG.glintSharp * spec) * (0.55 + 0.45 * NdS);
@@ -460,7 +464,7 @@ function frame(now) {
         beams.push({ x: P[0], y: P[1], z: P[2], R, I: inCone * NdS * sp.I * E.haze });
       }
       // ponto na parede: interseção com a sala implícita
-      if (T.dotHash < dotDensityLive) {
+      if (dotCone > 0.001 && T.dotHash < Math.min(1, dotDensityLive)) {
         let best = Infinity, nrm = null;
         const cand = [[R[0] > 0 ? (room.halfW - P[0]) / R[0] : (-room.halfW - P[0]) / R[0], [1,0,0], R[0]],
                       [R[1] > 0 ? (room.ceil - P[1]) / R[1] : (room.floor - P[1]) / R[1], [0,1,0], R[1]],
@@ -471,7 +475,7 @@ function frame(now) {
           if (Z < camD - 0.6) {
             const pr = proj(X, Y, Z), graze = Math.abs(nrm[2]) / (Math.hypot(R[0], R[1], R[2]) || 1);
             dots.push({ x: pr[0], y: pr[1], size: T.dphi * Rpx * pr[2] * CONFIG.dotScale, elong: clamp(1 / Math.max(graze, 0.2), 1, 4.5),
-              ang: Math.atan2(-R[1], R[0]), I: NdS * sp.I / (1 + CONFIG.dotFalloff * best * best) });
+              ang: Math.atan2(-R[1], R[0]), I: dotCone * (0.6 + 0.4 * dm) * NdS * sp.I / (1 + CONFIG.dotFalloff * best * best) });
           }
         }
       }
@@ -801,7 +805,7 @@ const sliders = [
   ['fundo: claridade (dark)', 0, 60, 1, v => CONFIG.bgGrey = v, () => CONFIG.bgGrey],
   ['strobe fundo (0/1)', 0, 1, 1, v => CONFIG.strobe.enabled = v >= 1, () => CONFIG.strobe.enabled ? 1 : 0],
   ['strobe: frequência ×', 0, 3, 0.1, v => CONFIG.strobeRate = v, () => CONFIG.strobeRate],
-  ['pontos na parede (densidade)', 0, 2, 0.05, v => { CONFIG.dotDensity = v; dotDensityLive = Math.min(dotDensityLive, v); }, () => CONFIG.dotDensity],
+  ['pontos na parede (densidade)', 0, 3, 0.05, v => { CONFIG.dotDensity = v; dotDensityLive = Math.min(dotDensityLive, v); }, () => CONFIG.dotDensity],
   ['strobe: força', 0, 1, 0.05, v => CONFIG.strobe.level = v, () => CONFIG.strobe.level],
   ['strobe: dura ms', 20, 200, 5, v => CONFIG.strobe.lenMs = v, () => CONFIG.strobe.lenMs],
   ['luz indireta', 0, 0.4, 0.01, v => AMB.intensity = v, () => AMB.intensity],
@@ -906,7 +910,7 @@ requestAnimationFrame(frame);
 <script src="core.js?v=1"></script>
 <script src="bridge.js?v=2"></script>
 <script src="emotion-v2.js?v=1"></script>
-<script src="music.js?v=57"></script>
+<script src="music.js?v=58"></script>
 <!-- painel de calibração ao vivo (tecla k). Inerte sem window.MUSIC (bola manual/câmara). -->
 <script src="tuner.js?v=1"></script>
 </body>
