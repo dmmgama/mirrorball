@@ -25,11 +25,19 @@
  * Tudo chega por `postMessage` à window do iframe (do pai, ou do gerador local de testes).
  * Origem não é validada: é loopback local (mesma regra do core.js).
  *
- * 1) FEATURES — contínuas, ~50 Hz, 0..1 (é EXATAMENTE o que o audio-sidecar :3739 emite):
- *    { type:'features', t, rms, bass, mid, high, centroid, onset, loudness, silence }
- *    ⚠ `bass`/`mid`/`high` vêm normalizados a bandMax no sidecar (server.js:146) — são a FORMA
- *      do espectro, não energia absoluta. Um kick sobe `bass` relativamente a mid/high; é isso
- *      que o detetor usa, cruzado com `rms`/`onset` para não disparar em música só de graves.
+ * 1) FEATURES — contínuas, ~50 Hz (é EXATAMENTE o que o audio-sidecar :3739 emite):
+ *    { type:'features', t, rms, bass, mid, high, sub, hat, centroid, density,
+ *      onset, subOnset, subFluxRaw, hatFluxRaw, loudness, silence }
+ *    ⚠ As bandas (`bass`/`mid`/`high`/`sub`/`hat`) vêm 0..1 sobre uma escala de **dB própria de
+ *      cada banda** (referência = máximo lento ~40 s, estilo Milkdrop). NÃO são normalizadas
+ *      umas contra as outras — fazê-lo punha `bass≡1.0` e matava a variância de que qualquer
+ *      detetor de batida precisa (medido 2026-08-28; ver server.js `bandUnit`).
+ *    ⚠ `onset`/`subOnset` são 0..1 normalizados ao máximo CORRENTE de flux — cómodos para
+ *      visualização, inúteis como limiar (o máximo corrente achata todas as batidas a ~1.0).
+ *      Para detetar batidas usam-se `subFluxRaw`/`hatFluxRaw`: flux LINEAR CRU da banda, sem
+ *      normalização nenhuma. Normalizar é decisão do consumidor, não do produtor.
+ *    ⚠ Campos `*Raw` podem FALTAR (sidecar antigo, gerador sintético `g`, replays gravados
+ *      antes de 2026-08-28). Todo o consumidor tem fallback — ver §KICK e §BANDONSET.
  *    ⚠ O sidecar NÃO emite `grid` nem `hint`. Ambos nascem aqui.
  *
  * 2) GRELHA — emitida LOCALMENTE por este ficheiro (§GRID) pelo mesmo `onMessage`, para a
@@ -140,6 +148,47 @@ const MUSIC = {
     deadTau: 0.40,        // release depois de confirmado o silêncio de bombo
   },
 
+  /* ---- §BANDONSET — limiar por MEDIANA + variância (docs/beat-detection-research.md §6/§7) ----
+   * Substitui o par "média móvel + limiares fixos" quando o sidecar manda `subFluxRaw`/`hatFluxRaw`
+   * (flux LINEAR cru da banda). Três peças, todas de Patin/aubio:
+   *   · mediana de N=50 frames (1 s @50 Hz — os 43 frames de Patin) em vez de média: um transiente
+   *     enorme não levanta o limiar durante 1 s inteiro, que é o defeito da média.
+   *   · teste de variância (o V0 de Patin): `std > minStdRatio · mediana`. É o que separa uma
+   *     BATIDA de ruído estacionário — a condição que faltava por completo.
+   *   · C adaptativo: C desce quando a variância relativa sobe (forma de Patin, reescalada porque
+   *     a nossa unidade é flux linear e não energia).
+   * ⚠ A CALIBRAÇÃO FINAL DE `C0` FAZ-SE COM MÚSICA REAL (§9 da pesquisa): a escala do flux depende
+   *   da janela, do Hann e do ganho do loopback. O HUD `m` mostra mediana/std/C/BPM para isso. */
+  bandOnset: {
+    N: 50,                // frames de histórico = 1 s @ 50 Hz
+    minStdRatio: 0.15,    // filtro V0 de Patin: std tem de exceder isto × mediana
+    cFloor: 1.15,         // C nunca desce abaixo disto
+    cVarGain: 0.35,       // quanto o C desce por unidade de std/mediana
+    kickC0: 1.6,          // C base do bombo (sub 40-120 Hz)
+    kickRefractMs: 120,   // 120 ms protege até 500 BPM; os 200 ms antigos cortavam kicks duplos
+    hatC0: 1.4,           // hi-hats são mais densos e regulares → C mais baixo
+    hatRefractMs: 60,     // 1/16 a 140 BPM ≈ 107 ms; 60 ms dá margem
+    hatEnvTau: [0.5, 0.08],  // envelope de um pólo [attack, release] — o "Fall" do Resolume
+    presenceWindowMs: 2000,  // janela onde se conta a fração de batidas esperadas
+    presenceMinBpm: 60,   // sem BPM fiável, assume-se isto para o divisor (não divide por zero)
+    keepTimesMs: 8000,    // histórico de tempos de kick guardado (autocorrelação do §GRID)
+  },
+
+  /* ---- Autocorrelação de BPM (§8 da pesquisa) — DESEMPATE, não substituição ----
+   * A mediana de intervalos + fold de oitava do §GRID mantém-se: é a receita certa no caso comum
+   * e é mais barata. Falha só quando o detetor perde batidas alternadas (mede o dobro do período
+   * e o `foldToPrior` "corrige" para o BPM errado). A autocorrelação pontua k=1..4 batidas por
+   * intervalo, logo é imune a isso — por isso entra APENAS quando `gridConf` está abaixo de
+   * `confBelow`, e só se ela própria tiver score suficiente. */
+  bpmAuto: {
+    enabled: true,
+    confBelow: 0.35,      // só desempata quando a confiança da mediana está abaixo disto
+    minTimes: 4,          // menos kicks do que isto = sem opinião
+    step: 0.5,            // resolução da varredura, em BPM
+    minScore: 1.5,        // abaixo disto a autocorrelação também não sabe → não desempata
+    tolerance: 4,         // penalização do erro relativo (1 - err·4 ⇒ tolerância ±25%)
+  },
+
   /* ---- Estimador de BPM + grelha local (§0.1: emite `grid` para a Camada 2 já existente) ---- */
   bpm: {
     keep: 8,              // intervalos guardados (mediana dos últimos 8)
@@ -248,6 +297,188 @@ const MUSIC = {
   },
 };
 
+/* ======================= §TUNE — esquema dos knobs afináveis ao vivo =======================
+ * UMA fonte de verdade para três coisas ao mesmo tempo: os limites que validam o JSON externo,
+ * os limites dos sliders do painel (tecla `k`) e o texto que os descreve. Sem isto, os ranges
+ * viviam duplicados no painel e no validador e divergiam ao primeiro ajuste.
+ *
+ * `path`: caminho no CONFIG · `[min,max]` · `step` · rótulo.
+ *
+ * ⚠ Os TETOS AQUI SÃO OS TETOS DO CLAUDE.md, não sugestões. `beamIntensity ≤ 0.18` e o limite
+ *   de 3 Hz são invioláveis: os sliders não conseguem passar deles porque o `max` do range é
+ *   esse valor, e o merge do JSON faz clamp ao mesmo intervalo. Não há caminho — painel, JSON
+ *   ou ficheiro editado à mão — que ponha o motor fora das regras.
+ * ⚠ A skin NÃO está aqui e não pode estar: é do utilizador (regra 1), o motor não lhe toca. */
+const TUNE = {
+  detector: {
+    label: 'Detetor (bombo/agudos)',
+    knobs: [
+      { path: 'bandOnset.kickC0',       range: [1.15, 3.0],  step: 0.01, label: 'kick C0 (limiar)' },
+      { path: 'bandOnset.minStdRatio',  range: [0.0, 0.60],  step: 0.01, label: 'kick var. mín (V0)' },
+      { path: 'bandOnset.kickRefractMs', range: [60, 400],   step: 5,    label: 'kick refratário ms' },
+      { path: 'bandOnset.hatC0',        range: [1.05, 3.0],  step: 0.01, label: 'hat C0 (limiar)' },
+      { path: 'bandOnset.hatEnvTau.0',  range: [0.05, 1.0],  step: 0.01, label: 'hat env attack' },
+      { path: 'bandOnset.hatEnvTau.1',  range: [0.01, 0.60], step: 0.01, label: 'hat env release' },
+      { path: 'bandOnset.presenceWindowMs', range: [500, 5000], step: 50, label: 'janela presença ms' },
+      { path: 'bpmAuto.confBelow',      range: [0.0, 1.0],   step: 0.01, label: 'autocorr. abaixo de conf' },
+    ],
+  },
+  mapping: {
+    label: 'Mapeamento (o que se vê)',
+    knobs: [
+      // rpm — o teto 3.00 é `outMax.rpm`; o piso com bombo é a invariante do David.
+      { path: 'map.rpmDrive.0',   range: [0.5, 3.0],  step: 0.05, label: 'rpm com bombo (mín)' },
+      { path: 'map.rpmDrive.1',   range: [0.5, 3.0],  step: 0.05, label: 'rpm com bombo (máx)' },
+      { path: 'map.rpmIdle.1',    range: [0.0, 1.5],  step: 0.01, label: 'rpm em repouso (máx)' },
+      { path: 'map.rpmKnee',      range: [0.0, 0.5],  step: 0.01, label: 'joelho da presença' },
+      { path: 'map.spinLockRpm',  range: [0.0, 3.0],  step: 0.05, label: 'piso rpm com bombo' },
+      // feixes — TETO 0.18 (regra 6), imposto pelo max do range
+      { path: 'map.beamIntFrom.0', range: [0.0, 0.18], step: 0.005, label: 'feixes intens. (mín)' },
+      { path: 'map.beamIntFrom.1', range: [0.0, 0.18], step: 0.005, label: 'feixes intens. (máx)' },
+      { path: 'map.beamsFrom.0',  range: [0, 56],     step: 1,    label: 'nº feixes (mín)' },
+      { path: 'map.beamsFrom.1',  range: [0, 56],     step: 1,    label: 'nº feixes (máx)' },
+      // haze / opacidade
+      { path: 'map.hazeFrom.0',   range: [0.0, 1.0],  step: 0.01, label: 'haze (mín)' },
+      { path: 'map.hazeFrom.1',   range: [0.0, 1.0],  step: 0.01, label: 'haze (máx)' },
+      { path: 'map.opacityFrom.0', range: [0.0, 1.0], step: 0.01, label: 'opacidade (mín)' },
+      { path: 'map.opacityFrom.1', range: [0.0, 1.0], step: 0.01, label: 'opacidade (máx)' },
+      { path: 'map.opacityFloorGroove', range: [0.0, 1.0], step: 0.01, label: 'piso opac. GROOVE' },
+      // agudos → o quanto se nota
+      { path: 'hat.beamGain',     range: [0.0, 2.0],  step: 0.05, label: 'ganho agudos→feixes' },
+      { path: 'hat.opacityDip',   range: [0.0, 1.0],  step: 0.01, label: 'tique de opacidade' },
+      // atividade (densidade espectral)
+      { path: 'activity.low',     range: [0.0, 0.5],  step: 0.01, label: 'densidade → act (baixo)' },
+      { path: 'activity.high',    range: [0.05, 1.0], step: 0.01, label: 'densidade → act (alto)' },
+      { path: 'activity.beamsMin', range: [0.0, 1.0], step: 0.01, label: 'feixes mín. c/ act baixa' },
+    ],
+  },
+};
+
+/* Defaults IMUTÁVEIS do código. É o que o `reset` repõe e o que vale quando não há ficheiro,
+ * quando o ficheiro está corrompido, ou quando um valor não passa a validação. O motor nunca
+ * fica sem arrancar por causa de um JSON externo. */
+const TUNE_DEFAULTS = (() => {
+  const d = {};
+  for (const sec of Object.values(TUNE)) for (const k of sec.knobs) d[k.path] = getPath(MUSIC, k.path);
+  return d;
+})();
+const TUNE_KNOBS = (() => {
+  const m = new Map();
+  for (const sec of Object.values(TUNE)) for (const k of sec.knobs) m.set(k.path, k);
+  return m;
+})();
+
+function getPath(obj, p) {
+  let cur = obj;
+  for (const part of p.split('.')) { if (cur == null) return undefined; cur = cur[part]; }
+  return cur;
+}
+function setPath(obj, p, v) {
+  const parts = p.split('.');
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) { if (cur[parts[i]] == null) return false; cur = cur[parts[i]]; }
+  cur[parts[parts.length - 1]] = v;
+  return true;
+}
+
+/* Valida UM valor contra o esquema. Um número fora do range é CLAMPED (não recusado): um
+ * ficheiro antigo com um valor que entretanto saiu do intervalo continua a servir, mas nunca
+ * põe o motor fora das regras. Tipo errado / NaN / Infinity → null, e o chamador mantém o
+ * default. `NaN` num knob é exatamente o que já matou os feixes uma vez (regra 7). */
+function coerceKnob(path, raw) {
+  const k = TUNE_KNOBS.get(path);
+  if (!k) return null;
+  const n = typeof raw === 'number' ? raw : (typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN);
+  if (!isFinite(n)) return null;
+  return clamp(n, k.range[0], k.range[1]);
+}
+
+/* Aplica um objeto {path: valor} ao CONFIG vivo. Devolve quantos entraram. Usado pelo painel
+ * (a cada gesto de slider) e pelo carregamento do ficheiro. */
+function applyTuning(flat) {
+  let n = 0;
+  if (!flat || typeof flat !== 'object') return 0;
+  for (const [p, v] of Object.entries(flat)) {
+    const val = coerceKnob(p, v);
+    if (val == null) continue;
+    if (setPath(MUSIC, p, val)) n++;
+  }
+  return n;
+}
+
+/* Deep-merge de um JSON externo ({bandOnset:{kickC0:1.4}, map:{...}}) para a forma achatada.
+ * Só chaves do esquema sobrevivem; tudo o resto é ignorado em silêncio (uma chave desconhecida
+ * é um ficheiro de outra versão, não um erro que valha assustar quem está a ouvir música). */
+function flattenKnown(obj, prefix, out) {
+  out = out || {};
+  if (!obj || typeof obj !== 'object') return out;
+  for (const [k, v] of Object.entries(obj)) {
+    const p = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === 'object' && !Array.isArray(v)) flattenKnown(v, p, out);
+    else if (Array.isArray(v)) v.forEach((el, i) => { if (TUNE_KNOBS.has(`${p}.${i}`)) out[`${p}.${i}`] = el; });
+    else if (TUNE_KNOBS.has(p)) out[p] = v;
+  }
+  return out;
+}
+
+/* Estado do ficheiro de config, para o painel poder dizer o que carregou e de onde. Tudo
+ * inicializado (regra 7) — o painel lê isto antes de qualquer fetch responder. */
+const TUNE_STATE = {
+  loaded: false, from: null, path: '', locations: [], active: null,
+  dirty: false, saving: false, msg: '', canSave: false, token: null,
+};
+
+/* Carrega `music-config.json` no arranque. Funciona nos DOIS contextos:
+ *  · servida pelo sidecar em /app/  → pergunta ao sidecar as localizações e tenta cada uma;
+ *  · servida pelo python http.server em :8080 → tenta o ficheiro ao lado da página.
+ * Falhar é NORMAL (o ficheiro pode não existir): nada de erros na consola que assustem. */
+async function loadTuningFile() {
+  if (typeof fetch !== 'function') return;
+  const tryUrl = async (url) => {
+    try {
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) return null;
+      const txt = await r.text();
+      if (!txt || !txt.trim()) return null;
+      return JSON.parse(txt);           // JSON corrompido cai no catch: defaults, sem drama
+    } catch (e) { return null; }
+  };
+  const servedByApp = typeof location !== 'undefined' && /^\/app\//.test(location.pathname || '');
+
+  if (servedByApp) {
+    try {
+      const t = await (await fetch('/app-token', { cache: 'no-store' })).json();
+      TUNE_STATE.token = t.token;
+      const r = await fetch(`/app-config/locations?token=${encodeURIComponent(t.token)}`, { cache: 'no-store' });
+      if (r.ok) {
+        const j = await r.json();
+        TUNE_STATE.locations = Array.isArray(j.locations) ? j.locations : [];
+        TUNE_STATE.active = j.active || null;
+        TUNE_STATE.canSave = true;
+      }
+    } catch (e) { /* sidecar antigo, sem a rota: fica sem save, o painel diz porquê */ }
+  }
+  // Ordem: a localização ativa primeiro, depois as outras, depois o ficheiro ao lado da página.
+  const cands = [];
+  const ordered = TUNE_STATE.locations.slice().sort((a, b) =>
+    (a.id === TUNE_STATE.active ? -1 : 0) - (b.id === TUNE_STATE.active ? -1 : 0));
+  for (const l of ordered) if (l.exists) cands.push({ id: l.id, url: `/app/music-config.json?t=${Date.now()}`, path: l.path });
+  cands.push({ id: 'local', url: `music-config.json?t=${Date.now()}`, path: 'music-config.json (ao lado da página)' });
+
+  for (const c of cands) {
+    const j = await tryUrl(c.url);
+    if (!j) continue;
+    const flat = flattenKnown(j, '', {});
+    const n = applyTuning(flat);
+    TUNE_STATE.loaded = true; TUNE_STATE.from = c.id; TUNE_STATE.path = c.path;
+    TUNE_STATE.msg = `${n} valores carregados`;
+    if (typeof TUNER_SYNC === 'function') TUNER_SYNC();
+    return;
+  }
+  TUNE_STATE.msg = 'sem ficheiro — defaults do código';
+  if (typeof TUNER_SYNC === 'function') TUNER_SYNC();
+}
+
 /* ============================== RNG com seed de sessão ==============================
  * Os gestos têm de variar entre sessões (§3.3: "previsível é o oposto de quase mágica") mas
  * têm de ser reproduzíveis num teste. `MUSIC.gesture.seed = 0` → seed por sessão. */
@@ -275,6 +506,31 @@ const state = {
   act: 1, densAvg: null, subAvg: null, hatAvg: null, hatPulse: 0,
   // --- kick / bombo ---
   kickTimes: [], lastKickT: -Infinity, kickRate: 0, kickPresence: 0, kickFlash: 0,
+  // §BANDONSET. Os detetores são criados abaixo (precisam do MUSIC já definido); `kickDet`/
+  // `hatDet`/`hatEnv` nascem a null e são preenchidos por `resetDetectors()` — que corre
+  // imediatamente, mas o valor inicial tem de existir aqui na mesma (regra 7 do CLAUDE.md:
+  // um `undefined` neste literal já matou os feixes uma vez).
+  kickDet: null, hatDet: null, hatEnv: null,
+  kickHistory: [],       // tempos de kick até 8 s (autocorrelação de desempate)
+  kickExpected: 0,       // batidas esperadas na janela de presença (HUD)
+  hatLevel: 0,           // envelope dos agudos por banda (0..1) — alimenta feixes/opacidade
+  hatFlash: 0,           // evento discreto de agudo (decai como o kickFlash)
+  /* --- §DETSTATS — a estatística interna do §BANDONSET publicada POR FRAME ---
+   * O `BandOnset` já calcula tudo isto; o que faltava era um sítio onde o resto do mundo o
+   * pudesse LER a cada frame. Serve o HUD `m` e, sobretudo, o `tuner-lab.html`: sem a mediana e
+   * o C efetivos não há como desenhar a linha de limiar por cima da curva do flux, e sem essa
+   * linha o David não distingue "o detetor falhou a batida" de "o detetor acertou e o mapeamento
+   * suavizou" — que é o problema todo.
+   * NÃO altera o comportamento do detetor: são cópias de valores já calculados.
+   * Regra 7 do CLAUDE.md: tudo inicializado aqui, nunca undefined. `path` diz qual dos dois
+   * caminhos do §KICK correu neste frame ('raw' = §BANDONSET, 'fallback' = média móvel). */
+  det: {
+    path: 'fallback',
+    kickFlux: 0, kickMed: 0, kickStd: 0, kickVRel: 0, kickC: 0, kickThr: 0, kickBeat: 0,
+    hatFlux: 0, hatMed: 0, hatStd: 0, hatVRel: 0, hatC: 0, hatThr: 0, hatBeat: 0,
+  },
+  bpmAuto: 0,            // BPM da autocorrelação (0 = sem opinião) — só desempate + HUD
+  bpmSource: 'mediana',  // 'mediana' | 'autocorr' — o que decidiu o BPM atual (HUD)
   // --- BPM / grelha local ---
   intervals: [], bpmEst: 0, gridConf: 0, gridT0: 0, gridBar: 0, lastGridEmit: 0,
   // grelha recebida (a nossa, ou a de um emissor externo que a mande)
@@ -419,6 +675,35 @@ function ingestFeatures(f) {
     // marcação dos agudos: hat acima da sua média → pulso curto (release ~120 ms)
     const hatOver = clamp((hat - state.hatAvg) * MUSIC.hat.gain, 0, 1);
     state.hatPulse = Math.max(hatOver * lerp(MUSIC.activity.hatMin, 1, state.act), (state.hatPulse || 0) * Math.exp(-dt / MUSIC.hat.releaseSec));
+
+    /* --- Receita B (pesquisa §7): agudos POR BANDA, com o mesmo limiar por mediana ---
+     * Quando o sidecar manda `hatFluxRaw`, os feixes deixam de seguir `high`+`onset` GLOBAL
+     * (que sobe com qualquer coisa: voz, crash, sintetizador) e passam a seguir o transiente
+     * real de 6-16 kHz. Aqui não interessa o evento discreto e sim o ENVELOPE (attack 0.5 /
+     * release 0.08 — o "Fall" do Resolume): é o que acende os feixes sem os fazer piscar.
+     * O nível é o flux relativo à sua própria mediana, comprimido a 0..1. */
+    const hasRawHat = f.hatFluxRaw != null && isFinite(+f.hatFluxRaw);
+    if (hasRawHat) {
+      const hf = +f.hatFluxRaw;
+      const hbeat = state.hatDet.push(hf, nowL);
+      if (hbeat) state.hatFlash = 1;
+      const med = state.hatDet.med;
+      // rácio flux/mediana mapeado 1..(1+C) → 0..1: abaixo da mediana não há agudo nenhum.
+      const ratio = med > 0 ? hf / med : 0;
+      const span = Math.max(0.2, state.hatDet.C - 1);
+      state.hatLevel = state.hatEnv.push(clamp((ratio - 1) / span, 0, 1));
+      // §DETSTATS (agudos) — cópias, tal como no kick. Ver o comentário no literal de `state`.
+      const D = state.det, hd = state.hatDet;
+      D.hatFlux = hd.last; D.hatMed = hd.med; D.hatStd = hd.std; D.hatVRel = hd.vRel;
+      D.hatC = hd.C; D.hatThr = hd.C * hd.med; D.hatBeat = hbeat ? 1 : 0;
+    } else {
+      // Fallback: o pulso antigo por banda `hat` (ou `high`) contra a média móvel.
+      state.hatLevel = state.hatPulse;
+      const D = state.det;
+      D.hatFlux = state.hatPulse; D.hatMed = 0; D.hatStd = 0; D.hatVRel = 0;
+      D.hatC = 0; D.hatThr = 0; D.hatBeat = 0;
+    }
+    state.hatFlash *= 0.90;
     state.centroidAvg += ((+f.centroid || 0) - state.centroidAvg) * (1 - Math.exp(-dt / 1.2));
   }
 
@@ -434,26 +719,133 @@ function ingestFeatures(f) {
   }
 }
 
+/* ================== §BANDONSET — limiar por mediana + variância (Patin/aubio) ==================
+ * `docs/beat-detection-research.md` §6/§7/§9. Consome o flux LINEAR CRU de uma banda
+ * (`subFluxRaw`/`hatFluxRaw`) e decide "é batida" contra a MEDIANA do próprio histórico.
+ * Porquê mediana e não média: a média é levantada pelo próprio kick que se quer detetar e fica
+ * levantada durante toda a janela; a mediana ignora o outlier. Porquê o teste de variância: sem
+ * ele, ruído estacionário (ou um pad denso) passa o rácio e dispara em falso — é o V0 de Patin. */
+class Env {
+  constructor(attack, release) { this.a = attack; this.r = release; this.v = 0; }
+  push(x) {
+    const y = +x || 0;                        // NaN/undefined → 0 (regra 7: nada de NaN a jusante)
+    const k = y > this.v ? this.a : this.r;
+    this.v += k * (y - this.v);
+    return this.v;
+  }
+}
+
+class BandOnset {
+  /* `kind` = 'kick' | 'hat'. Os limiares são lidos do CONFIG A CADA FRAME, nunca copiados no
+   * construtor: copiá-los faria com que mexer no slider `kickC0` (painel `k` ou ficheiro) não
+   * tivesse efeito nenhum até se reinstanciar o detetor — que é exatamente o bug que o
+   * instrumento apanhou (C0 de 1.6 a 6.0 dava sempre os mesmos 259 kicks). Só `N` fica fixo:
+   * mudá-lo a meio invalidaria o histórico já acumulado. */
+  constructor(opts) {
+    const B = MUSIC.bandOnset, o = opts || {};
+    this.kind = o.kind === 'hat' ? 'hat' : 'kick';
+    this.N = o.N || B.N;
+    this.hist = [];
+    this.lastBeat = -Infinity;
+    // Instrumentação para o HUD — inicializada, nunca undefined (regra 7 / lição 2 do handoff).
+    this.med = 0; this.std = 0; this.vRel = 0; this.C = this.C0; this.last = 0;
+  }
+  /* Limiar base e refratário VIVOS: lidos do CONFIG a cada uso. */
+  get C0() { const B = MUSIC.bandOnset; return this.kind === 'hat' ? B.hatC0 : B.kickC0; }
+  get refractMs() { const B = MUSIC.bandOnset; return this.kind === 'hat' ? B.hatRefractMs : B.kickRefractMs; }
+  push(x, tMs) {
+    const v = +x || 0;
+    this.last = v;
+    this.hist.push(v);
+    if (this.hist.length > this.N) this.hist.shift();
+    if (this.hist.length < this.N) return false;   // ainda a encher: nunca dispara
+
+    const s = this.hist.slice().sort((a, b) => a - b);
+    const med = s[s.length >> 1];
+    let mean = 0;
+    for (const h of this.hist) mean += h;
+    mean /= this.N;
+    let varr = 0;
+    for (const h of this.hist) varr += (h - mean) * (h - mean);
+    varr /= this.N;
+    const std = Math.sqrt(varr);
+
+    // C adaptativo, na forma de Patin (C desce quando a variância sobe). Patin usa
+    // C = -0.0025714·V + 1.5142857 sobre energia linear; aqui normaliza-se V pela mediana
+    // para a constante não depender do ganho do loopback.
+    const B = MUSIC.bandOnset;
+    const vRel = med > 0 ? std / med : 0;
+    const C = Math.max(B.cFloor, this.C0 - B.cVarGain * Math.min(vRel, 1));
+
+    this.med = med; this.std = std; this.vRel = vRel; this.C = C;
+
+    const isBeat = med > 0 &&
+      v > C * med &&
+      std > B.minStdRatio * med &&
+      (tMs - this.lastBeat) > this.refractMs;
+    if (isBeat) this.lastBeat = tMs;
+    return isBeat;
+  }
+}
+
+// Instanciados uma vez (e re-instanciáveis se o CONFIG for sobreposto em runtime). Corre já,
+// aqui, para que `state.kickDet` nunca seja null quando a 1.ª feature chegar.
+function resetDetectors() {
+  const B = MUSIC.bandOnset;
+  state.kickDet = new BandOnset({ N: B.N, kind: 'kick' });
+  state.hatDet = new BandOnset({ N: B.N, kind: 'hat' });
+  state.hatEnv = new Env(B.hatEnvTau[0], B.hatEnvTau[1]);
+}
+resetDetectors();
+
 /* ================== §KICK — deteção de bombo a partir das features 50 Hz ==================
- * O sidecar dá `bass` NORMALIZADO a bandMax (server.js:146): é a forma do espectro, não energia
- * absoluta. Um kick empurra essa forma para os graves — daí a razão contra a própria média
- * móvel. Três condições em conjunção, porque cada uma sozinha dispara em falso:
- *   onset alto        → mas um crash de pratos também tem onset
- *   bass > média×1.3  → mas um baixo sustentado mantém bass alto sem ser batida
- *   rms acima do piso → mata o ruído de fundo entre faixas
- * Refratário de 200 ms: o mesmo transiente produz 2-3 frames de flux alto a 50 Hz. */
+ * DOIS caminhos, escolhidos pelo que o emissor manda:
+ *
+ * (1) PREFERIDO — sidecar ≥ 2026-08-28 manda `subFluxRaw` (flux linear cru da sub-banda
+ *     40-120 Hz): usa-se o §BANDONSET acima (mediana + variância + C adaptativo). Flux e não
+ *     energia porque o flux ignora baixo SUSTENTADO e só reage a transientes — é essa a
+ *     diferença entre o bombo e a linha de baixo.
+ *
+ * (2) FALLBACK — sidecar antigo, gerador sintético (`g`) ou replay gravado antes desta mudança:
+ *     o caminho original, `subOnset`/`sub` (ou `onset`/`bass`) contra a média móvel, com o
+ *     refratário de 200 ms. Mantido INTACTO de propósito: o harness e o `replay-real.js`
+ *     alimentam features sem `*Raw` e têm de continuar a dar o mesmo resultado.
+ *
+ * Em ambos, as condições de guarda (silêncio, piso de rms) são as mesmas. */
 function detectKick(nowL, f) {
   const K = MUSIC.kick;
   const rms = +f.rms || 0;
-  const hasSub = f.subOnset != null;
-  const onset = hasSub ? +f.subOnset : (+f.onset || 0);
-  const band = hasSub ? +f.sub : (+f.bass || 0);
-  const avg = hasSub ? state.subAvg : state.bassAvg;
-  const isKick = !f.silence &&
-    onset >= K.onsetMin &&
-    (hasSub ? band > avg + K.subOver : band > avg * K.bassRatio) &&
-    rms >= K.rmsMin &&
-    (nowL - state.lastKickT) > K.refractoryMs;
+  const hasRawSub = f.subFluxRaw != null && isFinite(+f.subFluxRaw);
+  let isKick;
+
+  if (hasRawSub) {
+    // Caminho novo: mediana + variância sobre o flux cru. As guardas de silêncio/rms ficam,
+    // porque o flux cru não sabe nada sobre o nível absoluto da sala.
+    const beat = state.kickDet.push(+f.subFluxRaw, nowL);
+    isKick = beat && !f.silence && rms >= K.rmsMin;
+    // §DETSTATS: espelha o que o detetor acabou de calcular (só cópias — não decide nada).
+    // `kickThr` é o limiar EFETIVO deste frame: é esta a linha tracejada do tuner-lab.
+    const D = state.det, kd = state.kickDet;
+    D.path = 'raw';
+    D.kickFlux = kd.last; D.kickMed = kd.med; D.kickStd = kd.std; D.kickVRel = kd.vRel;
+    D.kickC = kd.C; D.kickThr = kd.C * kd.med; D.kickBeat = isKick ? 1 : 0;
+  } else {
+    const hasSub = f.subOnset != null;
+    const onset = hasSub ? +f.subOnset : (+f.onset || 0);
+    const band = hasSub ? +f.sub : (+f.bass || 0);
+    const avg = hasSub ? state.subAvg : state.bassAvg;
+    isKick = !f.silence &&
+      onset >= K.onsetMin &&
+      (hasSub ? band > avg + K.subOver : band > avg * K.bassRatio) &&
+      rms >= K.rmsMin &&
+      (nowL - state.lastKickT) > K.refractoryMs;
+    // §DETSTATS no caminho antigo: aqui não há mediana nem C — o que se pode publicar é o par
+    // (sinal, limiar) equivalente, para o tuner-lab desenhar a mesma leitura em vez de nada.
+    const D = state.det;
+    D.path = 'fallback';
+    D.kickFlux = onset; D.kickMed = 0; D.kickStd = 0; D.kickVRel = 0;
+    D.kickC = 0; D.kickThr = K.onsetMin; D.kickBeat = isKick ? 1 : 0;
+  }
 
   if (isKick) {
     if (state.lastKickT > -Infinity) {
@@ -464,10 +856,15 @@ function detectKick(nowL, f) {
     state.lastKickSeenT = nowL;
     state.kickFlash = 1;
     state.kickTimes.push(nowL);
+    state.kickHistory.push(nowL);
     updateBpm(nowL);
     onKickBeat(nowL);
   }
   state.kickFlash *= 0.92;
+
+  // histórico longo de tempos de kick — alimenta a autocorrelação de desempate do §GRID
+  const keepCut = nowL - MUSIC.bandOnset.keepTimesMs;
+  while (state.kickHistory.length && state.kickHistory[0] < keepCut) state.kickHistory.shift();
 
   // kickRate: kicks/s numa janela de 2 s
   const cut = nowL - K.rateWindowSec * 1000;
@@ -477,9 +874,26 @@ function detectKick(nowL, f) {
   // kickPresence 0..1 suavizado: attack 0.3 s / release 1.5 s. Se o bombo parou há mais de
   // `gapDeadSec`, o alvo é 0 mesmo que ainda haja kicks na janela — é isto que faz a rotação
   // PARAR quando o bombo pára, e não apenas abrandar.
+  //
+  // O ALVO é a fração das batidas ESPERADAS encontradas na janela (pesquisa §6 ponto 5), e não
+  // o antigo `kickRate/rateFull` fixo. Com o divisor fixo, uma faixa a 110 BPM nunca chegava a
+  // presença 1.0 só por ser mais lenta — a bola ficava permanentemente a meio gás em tudo o que
+  // não fosse ~156 BPM. Com o BPM estimado, 4 kicks em 2 s a 128 BPM (esperadas 4.27) ⇒ 0.94.
+  // Sem BPM fiável ainda (arranque, ou `bpmEst` a 0) cai-se em `presenceMinBpm`, que reproduz
+  // aproximadamente o comportamento antigo em vez de dividir por zero.
+  const BO = MUSIC.bandOnset;
+  const win = BO.presenceWindowMs;
+  let found = 0;
+  for (let i = state.kickTimes.length - 1; i >= 0 && nowL - state.kickTimes[i] <= win; i--) found++;
+  const bpmNow = state.bpmEst > 0 ? 60000 / state.bpmEst : 0;
+  const bpmForPresence = bpmNow > 0 ? bpmNow : BO.presenceMinBpm;
+  const expected = (bpmForPresence / 60) * (win / 1000);
+  state.kickExpected = expected;
+  const raw = expected > 0 ? clamp(found / expected, 0, 1) : 0;
+
   const gap = nowL - state.lastKickT;
   const dead = !(gap < K.gapDeadSec * 1000);
-  const tgt = dead ? 0 : clamp(state.kickRate / K.rateFull, 0, 1);
+  const tgt = dead ? 0 : raw;
   const dt = Math.min(0.1, 0.02);
   const tau = dead ? [K.presenceTau[0], K.deadTau] : K.presenceTau;
   state.kickPresence = ease(state.kickPresence, tgt, tau, dt);
@@ -509,6 +923,32 @@ function foldToPrior(periodMs) {
   while (p > hiMs && guard++ < 8) p /= 2;
   return p;
 }
+/* Autocorrelação sobre a LISTA DE TEMPOS de kick (pesquisa §8/§9). Pontua cada BPM candidato
+ * pela quantidade de intervalos que são um múltiplo INTEIRO k=1..4 do seu período. É por isso
+ * que é imune ao erro que mata a mediana: se o detetor perder batidas alternadas, a mediana
+ * mede o dobro do período e o `foldToPrior` "corrige" para o BPM errado com toda a confiança;
+ * aqui, um intervalo do dobro pontua na mesma para o BPM certo (com k=2).
+ * Devolve 0 = "sem opinião" — e nesse caso não se desempata coisa nenhuma. */
+function estimateBpm(times) {
+  const A = MUSIC.bpmAuto, B = MUSIC.bpm;
+  if (!times || times.length < A.minTimes) return 0;
+  let best = 0, bestScore = 0;
+  for (let bpm = B.lo; bpm <= B.hi; bpm += A.step) {
+    const period = 60000 / bpm;
+    let score = 0;
+    for (let i = 1; i < times.length; i++) {
+      const d = times[i] - times[i - 1];
+      const k = Math.round(d / period);
+      if (k >= 1 && k <= 4) {
+        const err = Math.abs(d - k * period) / period;
+        score += Math.max(0, 1 - err * A.tolerance);
+      }
+    }
+    if (score > bestScore) { bestScore = score; best = bpm; }
+  }
+  return bestScore > A.minScore ? best : 0;
+}
+
 function updateBpm(nowL) {
   const B = MUSIC.bpm;
   if (state.intervals.length < 3) return;
@@ -524,15 +964,29 @@ function updateBpm(nowL) {
   const conf = clamp(1 - mad / B.confSpreadFull, 0, 1) * clamp(state.intervals.length / B.keep, 0, 1);
   state.gridConf = state.gridConf + (conf - state.gridConf) * 0.25;
 
-  const cur = state.bpmEst ? 60000 / state.bpmEst : 0;
-  const newBpm = 60000 / med;
-  if (!state.bpmEst || Math.abs(med - state.bpmEst) / state.bpmEst > B.hysteresis) {
-    state.bpmEst = med;
+  /* --- DESEMPATE por autocorrelação (pesquisa §8) — não substituição ---
+   * A mediana continua a mandar sempre que está confiante. Só quando `gridConf` cai abaixo de
+   * `confBelow` (mediana a não convergir — o cenário em que ela mede o dobro do período e o
+   * `foldToPrior` a "corrige" para o BPM errado) é que se aceita a opinião da autocorrelação,
+   * e mesmo aí só se ela tiver score suficiente (senão `estimateBpm` devolve 0). */
+  let period = med;
+  state.bpmSource = 'mediana';
+  const A = MUSIC.bpmAuto;
+  if (A.enabled) {
+    const auto = estimateBpm(state.kickHistory);
+    state.bpmAuto = auto;
+    if (auto > 0 && state.gridConf < A.confBelow) {
+      period = 60000 / auto;
+      state.bpmSource = 'autocorr';
+    }
+  }
+
+  if (!state.bpmEst || Math.abs(period - state.bpmEst) / state.bpmEst > B.hysteresis) {
+    state.bpmEst = period;
     // realinhar o "1" a este kick, mas manter a contagem de compassos contínua
     state.gridT0 = nowL;
     state.gridBar = state.bar;
   }
-  void cur; void newBpm;
 }
 // Emite a grelha pelo MESMO caminho de mensagens — a Camada 2 (updateGrid) não sabe nem precisa
 // de saber que a grelha nasceu aqui dentro. Republica-se a cada 500 ms com um `t0` que é sempre
@@ -867,7 +1321,9 @@ function computeTargets() {
     T.spot = lerp(M.spotBase[0], M.spotBase[1], loudN);
 
     // feixes ← high + onset: os hi-hats e a voz "seguem o tempo"
-    const hi = clamp(Math.max(M.beamHighMix * state.highAvg + (1 - M.beamHighMix) * onset, 0.85 * loudN, 0.9 * state.kickPresence, MUSIC.hat.beamGain * (state.hatPulse || 0)), 0, 1);
+    // `hatLevel` = envelope do detetor de banda quando há `hatFluxRaw`; sem ele, é o `hatPulse`
+    // antigo (fallback transparente). `high`+`onset` global continuam no mix como piso.
+    const hi = clamp(Math.max(M.beamHighMix * state.highAvg + (1 - M.beamHighMix) * onset, 0.85 * loudN, 0.9 * state.kickPresence, MUSIC.hat.beamGain * (state.hatLevel || 0)), 0, 1);
     T.beamInt = lerp(M.beamIntFrom[0], M.beamIntFrom[1], hi);
     // ⚠ `state.act == null ? 1 : state.act` como na rampa de saída: um NaN aqui propaga-se pelo
     // `ease` e mata o desenho dos feixes na bola (nb = min(n, NaN) → o ciclo não corre).
@@ -948,7 +1404,7 @@ function applyToBall(o, gestInfo) {
   C.haze = clamp(o.haze, MUSIC.outMin.haze, MUSIC.outMax.haze);
   C.beamMaxCount = Math.round(clamp(o.beams, 0, MUSIC.outMax.beams));
   C.beamIntensity = clamp(o.beamInt, 0, MUSIC.outMax.beamInt);       // teto inviolável 0.18
-  C.sphereOpacity = clamp(o.opacity * (1 - MUSIC.hat.opacityDip * (state.hatPulse || 0)), MUSIC.outMin.opacity, 1);
+  C.sphereOpacity = clamp(o.opacity * (1 - MUSIC.hat.opacityDip * (state.hatLevel || 0)), MUSIC.outMin.opacity, 1);
   C.spotFadeMix = 0;   // §3.6: os fades internos (11/17/13 s) não são períodos musicais
   // ⚠ NADA de setSkinAuto aqui (§0.1 ponto 1): a skin é do utilizador, ponto final.
   if (MB.setHealth && MB.getHealth() !== state.health) MB.setHealth(state.health);
@@ -1117,8 +1573,10 @@ const GEN = (() => {
     const isDropBar = phase === 'GROOVE' && inBar === 0 && bar > 0 && barPhase < 0.25;
     if (isDropBar) { loud = 0.95; bassBase = 0.60; mid = 0.70; high = 0.62; centroid = 0.45; hasKick = true; }
 
-    // `bass` no sidecar é normalizado a bandMax: o kick empurra a forma do espectro para os
-    // graves. Reproduzimos isso — base baixa + pico no kick — para o detetor ver o que verá.
+    // `bass` no sidecar é 0..1 sobre a escala de dB da PRÓPRIA banda: o kick levanta os graves
+    // acima da linha de base da faixa. Reproduzimos isso — base baixa + pico no kick — para o
+    // detetor ver o que verá. O gerador NÃO emite `subFluxRaw`/`hatFluxRaw` de propósito: é
+    // assim que se exercita o caminho de fallback do §KICK sem ter o sidecar a correr.
     const kickAmt = hasKick ? kickEnv : 0;
     const bass = clamp(bassBase + 0.42 * kickAmt, 0, 1);
     const onset = clamp((hasKick ? 0.85 * kickEnv : 0) + hat + (isDropBar ? 0.3 : 0), 0, 1);
@@ -1164,11 +1622,29 @@ function updateHud(o) {
   const bpm = state.bpmEst ? 60000 / state.bpmEst : 0;
   const posBar = g ? ((state.bar % g.barsPerPhrase) + g.barsPerPhrase) % g.barsPerPhrase : 0;
   const MB = window.MIRRORBALL;
+  // Só se mostram os números do detetor novo quando ele está mesmo a ser usado (a última feature
+  // trouxe `*Raw`). Com o gerador `g` ou um replay antigo isto lê "fallback", que é a informação
+  // relevante: os knobs de `bandOnset` não estão a fazer nada.
+  const fRaw = state.feat;
+  const det = (fRaw && fRaw.subFluxRaw != null && state.kickDet) ? state.kickDet : null;
+  const hatDet = (fRaw && fRaw.hatFluxRaw != null && state.hatDet) ? state.hatDet : null;
   const lines = [
     `estado  ${state.fsm.padEnd(10)} ${((nowL - state.fsmSince) / 1000).toFixed(1)}s` +
       (state.fsm === 'PRE_DROP' ? `  ↓${state.preDropAmount.toFixed(2)}` : '') +
       (state.fsm === 'DROP' ? `  ↑${state.dropOpen.toFixed(2)}${state.restrainThis ? ' (contido)' : ''}` : ''),
-    `BOMBO   ${bar12(state.kickPresence, 16)} ${state.kickPresence.toFixed(2)}   ${state.kickRate.toFixed(1)} kicks/s   gap ${((nowL - state.lastKickT) / 1000).toFixed(1)}s`,
+    `BOMBO   ${bar12(state.kickPresence, 16)} ${state.kickPresence.toFixed(2)}   ${state.kickRate.toFixed(1)} kicks/s   gap ${((nowL - state.lastKickT) / 1000).toFixed(1)}s   esp ${state.kickExpected.toFixed(2)}`,
+    // Linha de CALIBRAÇÃO do detetor (pesquisa §9): a escala do flux depende do Hann, da janela
+    // e do ganho do loopback, por isso o `C0` só se afina com música real a tocar. Ler assim:
+    //  · flux vs med — o flux tem de saltar CLARAMENTE acima da mediana a cada bombo;
+    //  · std/med  — se ficar abaixo de 0.15, o teste de variância bloqueia tudo (nada dispara);
+    //  · C  — o limiar efetivo depois do ajuste adaptativo (desce quando a variância sobe);
+    //  · fonte — `raw` = detetor novo por banda; `fallback` = caminho antigo (subOnset/bass).
+    `detetor ${det ? 'raw' : 'fallback'}  flux ${det ? det.last.toFixed(1) : '—'}  med ${det ? det.med.toFixed(1) : '—'}  ` +
+      `std/med ${det ? det.vRel.toFixed(2) : '—'}  C ${det ? det.C.toFixed(2) : '—'}  ` +
+      `lim ${det ? state.det.kickThr.toFixed(1) : '—'}  ` +
+      `bpm ${bpm ? bpm.toFixed(1) : '—'} (${state.bpmSource}${state.bpmAuto ? ', auto ' + state.bpmAuto.toFixed(1) : ''})`,
+    `agudos  ${bar12(state.hatLevel, 16)} ${state.hatLevel.toFixed(2)}  ${hatDet ? 'raw' : 'fallback'}` +
+      (hatDet ? `  med ${hatDet.med.toFixed(1)}  std/med ${hatDet.vRel.toFixed(2)}  C ${hatDet.C.toFixed(2)}` : ''),
     `grelha  bar ${state.bar} (${posBar + 1}/${g ? g.barsPerPhrase : '—'})  frase ${state.phrase}  ${bpm ? bpm.toFixed(1) : '—'} bpm  conf ${state.gridConf.toFixed(2)}`,
     `batida  ${bar12(state.beatPhase, 16)}  bar ${bar12(state.barPhase, 16)}`,
     `gesto   ${(state.gest ? state.gest.name : '—').padEnd(12)} peso ${state.gestWeight.toFixed(2)}  fila [${state.gestQueue.join(' ')}]  total ${state.gestCount}`,
@@ -1218,11 +1694,98 @@ if (typeof fetch === 'function') {
 }
 
 /* ======================================= arranque ======================================= */
+// O painel (tuner.js) chama isto quando o ficheiro acaba de carregar; declarado aqui para o
+// `loadTuningFile` o poder invocar sem saber se o painel existe.
+function TUNER_SYNC() { if (window.MUSIC && typeof window.MUSIC.tunerSync === 'function') window.MUSIC.tunerSync(); }
+
 window.MUSIC = {
   config: MUSIC, state, gen: GEN, clock: MB_CLOCK, update, onMessage,
   gestures: GESTURE_NAMES, setProfile,
   setSeed(s) { RNG = makeRng(s); },
+
+  /* API do painel de calibração (§TUNE). Tudo o que o `tuner.js` precisa, e nada mais — o
+   * painel não mexe no CONFIG a não ser por aqui, para a validação ser sempre a mesma. */
+  tune: {
+    schema: TUNE,
+    defaults: TUNE_DEFAULTS,
+    state: TUNE_STATE,
+    get: (p) => getPath(MUSIC, p),
+    /* Escreve UM knob no CONFIG vivo, já validado/clamped. É isto que dá o efeito imediato. */
+    set(p, v) {
+      const val = coerceKnob(p, v);
+      if (val == null) return false;
+      const ok = setPath(MUSIC, p, val);
+      if (ok) TUNE_STATE.dirty = true;
+      return ok;
+    },
+    /* Repõe os defaults do CÓDIGO (não os do ficheiro): o estado de referência conhecido. */
+    reset() {
+      for (const [p, v] of Object.entries(TUNE_DEFAULTS)) setPath(MUSIC, p, v);
+      TUNE_STATE.dirty = true;
+      TUNE_STATE.msg = 'defaults do código repostos (por gravar)';
+    },
+    /* Quantos knobs estão fora do default — é o "há alterações por gravar" do painel. */
+    dirtyCount() {
+      let n = 0;
+      for (const [p, d] of Object.entries(TUNE_DEFAULTS)) {
+        const v = getPath(MUSIC, p);
+        if (typeof v === 'number' && isFinite(v) && Math.abs(v - d) > 1e-9) n++;
+      }
+      return n;
+    },
+    /* `raw` = o detetor novo por banda está mesmo a ser usado; `fallback` = sidecar por
+     * reiniciar (ou gerador/replay), e nesse caso os knobs do Detetor não mudam nada. */
+    detectorPath() {
+      const f = state.feat;
+      return (f && f.subFluxRaw != null) ? 'raw' : 'fallback';
+    },
+    /* Grava no sidecar. O destino é um ID da lista que o servidor ofereceu — nunca um caminho
+     * construído aqui (é essa a guarda contra path traversal, do lado de lá também). */
+    async save(locationId) {
+      if (!TUNE_STATE.canSave || typeof fetch !== 'function') return { ok: false, error: 'sem sidecar' };
+      TUNE_STATE.saving = true;
+      try {
+        // Reconstrói o JSON aninhado a partir dos caminhos do esquema (só knobs conhecidos).
+        const cfg = {};
+        for (const p of TUNE_KNOBS.keys()) {
+          const v = getPath(MUSIC, p);
+          if (typeof v !== 'number' || !isFinite(v)) continue;
+          const parts = p.split('.');
+          let cur = cfg;
+          for (let i = 0; i < parts.length - 1; i++) {
+            const key = parts[i], nextIsIndex = /^\d+$/.test(parts[i + 1]);
+            if (cur[key] == null) cur[key] = nextIsIndex ? [] : {};
+            cur = cur[key];
+          }
+          cur[parts[parts.length - 1]] = v;
+        }
+        const body = JSON.stringify({ location: locationId || TUNE_STATE.active || undefined, config: cfg });
+        const r = await fetch('/app-config', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-audio-token': TUNE_STATE.token || '' },
+          body,
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { TUNE_STATE.msg = j.error || `erro ${r.status}`; return { ok: false, error: j.error || `erro ${r.status}` }; }
+        TUNE_STATE.dirty = false;
+        TUNE_STATE.active = j.location || TUNE_STATE.active;
+        TUNE_STATE.path = j.path || TUNE_STATE.path;
+        TUNE_STATE.msg = `gravado em ${j.path || '?'}`;
+        // Reflete o `exists` para o painel mostrar o ponto na localização certa.
+        for (const l of TUNE_STATE.locations) if (l.id === TUNE_STATE.active) l.exists = true;
+        return { ok: true, path: j.path };
+      } catch (e) {
+        TUNE_STATE.msg = 'falha de rede ao gravar';
+        return { ok: false, error: 'rede' };
+      } finally { TUNE_STATE.saving = false; }
+    },
+  },
 };
+
+// Carrega o music-config.json depois de `window.MUSIC` existir (o painel pode já querer ler
+// TUNE_STATE). Assíncrono e tolerante: sem ficheiro, ficheiro corrompido ou sidecar antigo, o
+// motor arranca à mesma com os defaults do código.
+loadTuningFile();
 
 if (typeof requestAnimationFrame === 'function') {
   (function loop() {

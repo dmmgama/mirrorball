@@ -1,0 +1,194 @@
+<!doctype html>
+<!--
+  tuner-lab.html — instrumento de afinação do detetor de bombo (MirrorBall).
+
+  ============================== COMO SE USA ==============================
+
+  1. GRAVAR  (com o sidecar a correr e a música a tocar)
+         node tools/cap.js 60 tools/feat.json
+     O script imprime percentis de subFluxRaw/hatFluxRaw/sub/hat/rms — já dá a primeira pista
+     sobre onde o limiar devia estar.
+
+  2. ABRIR   esta página. Tem de ser SERVIDA (ela lê core.js/music.js por fetch, e file:// bloqueia):
+         · com o sidecar a correr:   http://127.0.0.1:3739/app/tuner-lab.html
+         · ou:                       MirrorBall-Start.bat  →  http://127.0.0.1:8080/tuner-lab.html
+     "Amostra sintética" mostra o instrumento a funcionar sem gravar nada.
+
+  3. AFINAR   mexer nos sliders à esquerda. O MESMO ficheiro é reprocessado na hora (~100 ms para
+     60 s de música), com o `music.js` REAL — não há aqui cópia nenhuma do algoritmo.
+     Ler a pista de cima:
+       · a curva cinzenta é o `subFluxRaw` (o que o detetor viu);
+       · a tracejada laranja é o LIMIAR efetivo (C × mediana) — a curva tem de a atravessar
+         uma vez por bombo, e só uma;
+       · os riscos amarelos são os kicks que o detetor decidiu.
+     Se os riscos batem certo com os picos → o detetor está bem e o problema é o mapeamento
+     (ver a pista das saídas, em baixo). Se não batem → é o `kick C0` / `var. mín` que falta afinar.
+
+  4. GRAVAR A CONFIG   botão "Copiar config" → colar num `music-config.json`, ou repetir os
+     mesmos valores no painel `k` da bola (é o mesmo esquema §TUNE, os mesmos limites).
+
+  ============================== NOTAS ==============================
+  · Ferramenta À PARTE: não é carregada pela bola, não toca no index-v2.html, e com esta página
+    fechada o comportamento da bola é exatamente o que era.
+  · Os limites dos sliders são os do CLAUDE.md (beamIntensity ≤ 0.18, etc.) — vêm da §TUNE do
+    music.js, não são redefinidos aqui.
+  · uPlot (MIT) está vendorizado em web/vendor/: a página funciona offline, sem npm install.
+-->
+<meta charset="utf-8">
+<title>MirrorBall — banco de afinação do detetor</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  /* uPlot v1.6.31 (MIT) — CSS INLINE de propósito, não por preguiça: o sidecar serve `web/` de
+     forma achatada e sem MIME para .css, por isso um <link> para vendor/ dava 404 silencioso e a
+     página aparecia com os gráficos desalinhados. São 1.8 KB; inline funciona nos dois servidores
+     e offline. O JS continua vendorizado em ficheiro (ver web/vendor/README.md). */
+  .uplot, .uplot *, .uplot *::before, .uplot *::after {box-sizing: border-box;}
+  .uplot {font-family: ui-monospace, Consolas, monospace;line-height: 1.5;width: min-content;}
+  .u-title {text-align: center;font-size: 18px;font-weight: bold;}
+  .u-wrap {position: relative;user-select: none;}
+  .u-over, .u-under {position: absolute;}
+  .u-under {overflow: hidden;}
+  .uplot canvas {display: block;position: relative;width: 100%;height: 100%;}
+  .u-axis {position: absolute;}
+  .u-legend {font-size: 14px;margin: auto;text-align: center;}
+  .u-inline {display: block;}
+  .u-inline * {display: inline-block;}
+  .u-inline tr {margin-right: 16px;}
+  .u-legend th {font-weight: 600;}
+  .u-legend th > * {vertical-align: middle;display: inline-block;}
+  .u-legend .u-marker {width: 1em;height: 1em;margin-right: 4px;background-clip: padding-box !important;}
+  .u-inline.u-live th::after {content: ":";vertical-align: middle;}
+  .u-inline:not(.u-live) .u-value {display: none;}
+  .u-series > * {padding: 4px;}
+  .u-series th {cursor: pointer;}
+  .u-legend .u-off > * {opacity: 0.3;}
+  .u-select {background: rgba(0,0,0,0.07);position: absolute;pointer-events: none;}
+  .u-cursor-x, .u-cursor-y {position: absolute;left: 0;top: 0;pointer-events: none;will-change: transform;}
+  .u-hz .u-cursor-x, .u-vt .u-cursor-y {height: 100%;border-right: 1px dashed #607D8B;}
+  .u-hz .u-cursor-y, .u-vt .u-cursor-x {width: 100%;border-bottom: 1px dashed #607D8B;}
+  .u-cursor-pt {position: absolute;top: 0;left: 0;border-radius: 50%;border: 0 solid;
+                pointer-events: none;will-change: transform;background-clip: padding-box !important;}
+  .u-axis.u-off, .u-select.u-off, .u-cursor-x.u-off, .u-cursor-y.u-off, .u-cursor-pt.u-off {display: none;}
+  :root { color-scheme: dark; }
+  html, body { margin: 0; background: #0a0a0a; color: #cfcfcf;
+               font: 12px/1.5 ui-monospace, Consolas, Menlo, monospace; letter-spacing: .02em; }
+  a { color: #8ab4e8; }
+  #wrap { display: grid; grid-template-columns: 300px 1fr; min-height: 100vh; }
+
+  /* ---- coluna dos controlos ---- */
+  #side { border-right: 1px solid #1e1e1e; padding: 12px; overflow-y: auto; max-height: 100vh; }
+  #side h1 { font-size: 13px; font-weight: 400; margin: 0 0 2px; color: #e8e8e8; }
+  #side .sub { color: #6a6a6a; margin: 0 0 12px; font-size: 11px; }
+  .bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  button, label.btn { background: #171717; color: #cfcfcf; border: 1px solid #2e2e2e;
+                      padding: 5px 9px; font: inherit; cursor: pointer; }
+  button:hover, label.btn:hover { background: #202020; border-color: #444; }
+  input[type=file] { display: none; }
+  .sec { margin: 12px 0 4px; color: #8a8a8a; border-top: 1px solid #222; padding-top: 8px; }
+  .sec:first-of-type { border-top: 0; }
+  .row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+  .row .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+             white-space: nowrap; cursor: help; }
+  .row.mod .nm { color: #fff; }
+  .row input[type=range] { width: 92px; accent-color: #bdbdbd; flex: 0 0 auto; }
+  .row .vl { flex: 0 0 40px; text-align: right; color: #e8e8e8; }
+  .row .df { flex: 0 0 34px; text-align: right; color: #5a5a5a; font-size: 10px; }
+  label.chk { display: block; color: #8a8a8a; cursor: pointer; margin: -4px 0 4px; font-size: 11px; }
+  label.chk input { accent-color: #bdbdbd; vertical-align: -1px; }
+  #out-json { display: none; width: 100%; height: 130px; margin-top: 8px; background: #111;
+              color: #b8b8b8; border: 1px solid #2a2a2a; font: 10px/1.4 ui-monospace, monospace; }
+
+  /* ---- coluna dos gráficos ---- */
+  #main { padding: 12px 14px; min-width: 0; }
+  #status { color: #7a7a7a; margin-bottom: 6px; }
+  #status.warn { color: #ffab6b; }
+  #stats { color: #9a9a9a; margin-bottom: 10px; padding: 6px 8px; background: #121212;
+           border: 1px solid #1e1e1e; }
+  #stats b { color: #e8e8e8; font-weight: 400; }
+  .track { margin-bottom: 10px; }
+  .track > h3 { font-size: 11px; font-weight: 400; color: #8a8a8a; margin: 0 0 2px; }
+  .track > h3 em { font-style: normal; color: #5a5a5a; }
+  .key { display: inline-block; margin-left: 10px; color: #6a6a6a; }
+  .key i { display: inline-block; width: 16px; height: 2px; vertical-align: middle;
+           margin-right: 3px; font-style: normal; }
+  .uplot { background: #0d0d0d; border: 1px solid #1a1a1a; }
+  .u-select { background: rgba(255,255,255,.06); }
+</style>
+
+<div id="wrap">
+  <div id="side">
+    <h1>Banco de afinação</h1>
+    <p class="sub">Corre o <code>music.js</code> real sobre features gravadas.<br>
+       Nenhuma cópia do algoritmo.</p>
+
+    <div class="bar">
+      <label class="btn" for="file">Carregar feat.json</label>
+      <input id="file" type="file" accept=".json,application/json">
+      <button id="btn-sample">Amostra sintética</button>
+    </div>
+    <div class="bar">
+      <button id="btn-reset">Repor defaults</button>
+      <button id="btn-copy">Copiar config</button>
+    </div>
+    <div class="bar" id="bar-cfg"></div>
+    <label class="chk" title="O flux salta ~10× acima da mediana; em escala linear o limiar fica esmagado contra o zero.">
+      <input id="chk-log" type="checkbox" checked> escala log nas pistas de flux
+    </label>
+    <textarea id="out-json" readonly spellcheck="false"></textarea>
+
+    <div id="knobs"></div>
+  </div>
+
+  <div id="main">
+    <div id="status">a arrancar…</div>
+    <div id="stats">—</div>
+
+    <div class="track">
+      <h3>1 · bombo — <em>subFluxRaw</em>
+        <span class="key"><i style="background:#d8d8d8"></i>flux</span>
+        <span class="key"><i style="background:#5c9ded"></i>mediana</span>
+        <span class="key"><i style="background:#ff8a4c"></i>limiar C·med</span>
+        <span class="key"><i style="background:#ffd24a"></i>kick detetado</span>
+      </h3>
+      <div id="p-flux"></div>
+    </div>
+
+    <div class="track">
+      <h3>2 · agudos — <em>hatFluxRaw</em>
+        <span class="key"><i style="background:#ff8a4c"></i>limiar</span>
+        <span class="key"><i style="background:#7fc4a0"></i>agudo detetado</span>
+      </h3>
+      <div id="p-hat"></div>
+    </div>
+
+    <div class="track">
+      <h3>3 · grelha — <em>apanhou as batidas mas perdeu a grelha?</em>
+        <span class="key"><i style="background:#d8d8d8"></i>kickPresence</span>
+        <span class="key"><i style="background:#c48fd0"></i>gridConf</span>
+        <span class="key"><i style="background:#7fc4a0"></i>BPM (eixo dir.)</span>
+      </h3>
+      <div id="p-grid"></div>
+    </div>
+
+    <div class="track">
+      <h3>4 · o que a bola fez
+        <span class="key"><i style="background:#d8d8d8"></i>rpm (esq.)</span>
+        <span class="key"><i style="background:#7fc4a0"></i>opacidade</span>
+        <span class="key"><i style="background:#c48fd0"></i>haze</span>
+        <span class="key"><i style="background:#ff8a4c"></i>beamInt ×5</span>
+        <span class="key"><i style="background:#6a6a6a"></i>nº feixes</span>
+      </h3>
+      <div id="p-out"></div>
+    </div>
+
+    <div class="track">
+      <h3>5 · máquina de estados</h3>
+      <div id="p-fsm"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Nome ACHATADO (não `vendor/uPlot…`): o sidecar serve `web/` sem subpastas, e um 404 aqui
+     deixava a página em branco sem dizer porquê. A cópia canónica está em web/vendor/. -->
+<script src="vendor-uPlot.iife.min.js"></script>
+<script src="tuner-lab.js?v=1"></script>
