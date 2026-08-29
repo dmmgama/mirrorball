@@ -1597,6 +1597,9 @@ function emitLocalGrid(nowL) {
 function fireStrobe(why, n) {
   const S = MUSIC.strobe, MB = (typeof window !== 'undefined') && window.MIRRORBALL;
   if (!S || !S.on || !MB || typeof MB.strobe !== 'function' || !(MB.strobeEnabled && MB.strobeEnabled())) return;
+  // knob `strobe: frequência ×` do painel d: < 1 = sorteio para deixar passar só essa fração; > 1 encurta o intervalo em GROOVE (abaixo)
+  const rate = Number.isFinite(MB.config.strobeRate) ? MB.config.strobeRate : 1;
+  if (rate <= 0 || (rate < 1 && RNG2() > rate)) return;
   // §RAJADA: um disparo isolado sai às vezes como 3-4 flashadas seguidas (o David: 'como num clube')
   if ((n | 0) <= 1 && S.burstN && RNG2() < (S.burstChance || 0)) n = Math.round(rng2Range(S.burstN));
   const k = Math.max(1, n | 0), lv = () => S.level[0] + RNG2() * (S.level[1] - S.level[0]);
@@ -1713,7 +1716,8 @@ function onBarBoundary(bar) {
     }
     const SB = MUSIC.strobe;
     if (state.fsm === 'GROOVE' && SB && SB.grooveEveryBars && bar >= state.strobeNextBar) {
-      const mul = state.scene === 'none' ? (SB.noneBeamsMul == null ? 0.4 : SB.noneBeamsMul) : 1;   // sem feixes → mais estrobo
+      let mul = state.scene === 'none' ? (SB.noneBeamsMul == null ? 0.4 : SB.noneBeamsMul) : 1;   // sem feixes → mais estrobo
+      { const MBc = (typeof window !== 'undefined') && window.MIRRORBALL && window.MIRRORBALL.config; const rate = MBc && Number.isFinite(MBc.strobeRate) ? MBc.strobeRate : 1; if (rate > 1) mul /= rate; }
       state.strobeNextBar = bar + Math.max(2, Math.round(rng2Range(SB.grooveEveryBars) * mul));
       if ((state.act == null ? 1 : state.act) >= (SB.grooveAct == null ? 0.6 : SB.grooveAct)) fireStrobe('groove', 1);
     }
