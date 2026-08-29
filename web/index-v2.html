@@ -25,7 +25,10 @@
   #dbg{position:fixed;top:12px;left:12px;background:rgba(10,10,10,.86);color:#cfcfcf;
        font:11px/1.6 ui-monospace,Consolas,monospace;padding:10px 12px;border:1px solid #2a2a2a;
        display:none;min-width:230px;letter-spacing:.02em;z-index:9}
-  #dbg.on{display:block;max-height:calc(100vh - 24px);overflow-y:auto}
+  #dbg.on{display:block;max-height:calc(100vh - 24px);overflow:auto;resize:both;font-size:calc(11px * var(--dbgScale,1))}
+  #dbg .knobs{display:grid;grid-template-columns:repeat(var(--dbgCols,1),minmax(230px,1fr));column-gap:18px}
+  #dbg .sz{display:flex;gap:4px;margin:0 0 6px}
+  #dbg .sz button{font:inherit;background:#222;color:#ccc;border:1px solid #444;padding:0 6px;cursor:pointer}
   #dbg label{display:flex;justify-content:space-between;gap:10px;align-items:center}
   #dbg input[type=range]{width:120px;accent-color:#bdbdbd}
   #dbg .sp{display:flex;gap:10px;margin-top:6px}
@@ -805,6 +808,16 @@ const sliders = [
   ['health (motor manda)', 0, 1, 0.01, v => health = v, () => health],
 ];
 const inputs = {};
+// tamanho do painel: colunas (1-3) e escala da fonte, persistidos; o canto inferior-direito também redimensiona (CSS resize)
+let dbgSize = { cols: 1, scale: 1 }; try { Object.assign(dbgSize, JSON.parse(localStorage.getItem('mb.dbgSize') || '{}')); } catch (e) { /* */ }
+function applyDbgSize() { dbg.style.setProperty('--dbgCols', dbgSize.cols); dbg.style.setProperty('--dbgScale', dbgSize.scale); try { localStorage.setItem('mb.dbgSize', JSON.stringify(dbgSize)); } catch (e) { /* */ } }
+{ const sz = document.createElement('div'); sz.className = 'sz';
+  const mk = (t, fn) => { const b = document.createElement('button'); b.textContent = t; b.onclick = fn; sz.appendChild(b); };
+  mk('1 col', () => { dbgSize.cols = 1; applyDbgSize(); }); mk('2 col', () => { dbgSize.cols = 2; applyDbgSize(); }); mk('3 col', () => { dbgSize.cols = 3; applyDbgSize(); });
+  mk('A−', () => { dbgSize.scale = Math.max(0.7, +(dbgSize.scale - 0.1).toFixed(2)); applyDbgSize(); });
+  mk('A+', () => { dbgSize.scale = Math.min(1.5, +(dbgSize.scale + 0.1).toFixed(2)); applyDbgSize(); });
+  dbg.appendChild(sz); applyDbgSize(); }
+const knobsBox = document.createElement('div'); knobsBox.className = 'knobs'; dbg.appendChild(knobsBox);
 let knobStore = {}; try { knobStore = JSON.parse(localStorage.getItem('mb.knobs') || '{}') || {}; } catch (e) { /* sem storage */ }
 const PERSIST = new Set(sliders.slice(0, sliders.findIndex(x => x[0].startsWith('rotationRpm'))).map(x => x[0])); // tudo até ao bloco '---- bola' (antes era slice(0,32) e os 4 últimos não persistiam)
 const KNOB_DEFAULTS = {}; // valores do código, capturados ANTES de aplicar localStorage/ficheiro
@@ -818,7 +831,7 @@ for (const [name, mn, mx, st, set, get] of sliders) {
   val.textContent = (+inp.value).toFixed(st < 0.1 ? 2 : st < 1 ? 1 : 0);
   inp.oninput = () => { set(+inp.value); val.textContent = (+inp.value).toFixed(st < 0.1 ? 2 : st < 1 ? 1 : 0);
     if (PERSIST.has(name)) { knobStore[name] = +inp.value; try { localStorage.setItem('mb.knobs', JSON.stringify(knobStore)); } catch (e) { /* */ } } };
-  lab.appendChild(val); lab.appendChild(inp); dbg.appendChild(lab); inputs[name] = inp;
+  lab.appendChild(val); lab.appendChild(inp); knobsBox.appendChild(lab); inputs[name] = inp;
 }
 // knobs do painel d como objeto {nome: valor} — é o que vai no `ball` do music-config.json (save do k e do d)
 function knobsGet() { const o = {}; for (const [name, , , , , get] of sliders) if (PERSIST.has(name)) o[name] = get(); return o; }
@@ -852,7 +865,7 @@ CONFIG.spots.forEach((s, i) => {
 dbg.appendChild(spRow);
 const fpsEl = document.createElement('div'); fpsEl.style.color = '#777'; dbg.appendChild(fpsEl);
 setInterval(() => { if (dbg.classList.contains('on')) fpsEl.textContent = `frame ${frameEma.toFixed(1)} ms · dots ${dotDensityLive.toFixed(2)} · tiles ${tiles.length}`; }, 500);
-function syncPanel() { inputs.health.value = health; }
+function syncPanel() { const i = inputs['health (motor manda)'] || inputs.health; if (i) i.value = health; } // o nome do slider mudou (v45) e isto rebentava o update() do motor a cada frame
 addEventListener('keydown', e => {
   if (e.key === 'd' || e.key === 'D') dbg.classList.toggle('on');
   if (e.key === 'w' || e.key === 'W') cycleSkin();

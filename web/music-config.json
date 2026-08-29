@@ -1,6 +1,6 @@
 {
   "bandOnset": {
-    "kickC0": 3.0,
+    "kickC0": 3,
     "minStdRatio": 0.6,
     "kickRefractMs": 200,
     "hatC0": 1.4,
@@ -12,6 +12,29 @@
   },
   "bpmAuto": {
     "confBelow": 0.27
+  },
+  "snare": {
+    "on": 1,
+    "C0": 1.9,
+    "fbFloor": 0.32,
+    "fbK": 3,
+    "refractMs": 220,
+    "opacityKick": 0.3,
+    "beamKick": 0.35,
+    "decaySec": 0.35
+  },
+  "profileAuto": {
+    "auto": 1,
+    "cvRegular": 0.35,
+    "minCoverage": 0.6,
+    "gapMaxMs": 1200,
+    "scoreTau": 10,
+    "evidenceSec": 20,
+    "enterElectronica": 0.55,
+    "enterAcustico": 0.3,
+    "hatElectronicaMax": 0.4,
+    "hatAcusticoMin": 0.25,
+    "minHoldSec": 45
   },
   "map": {
     "rpmDrive": [
@@ -53,6 +76,38 @@
     "spotAccentDecay": 0.55,
     "spotSnareGain": 0.45
   },
+  "flash": {
+    "kickChance": 0.06,
+    "kickChanceDrop": 0.85,
+    "snare": 0.15,
+    "phraseBurst": 3,
+    "calmAct": 0.45
+  },
+  "explode": {
+    "minGapSec": 75,
+    "minDarkSec": 3,
+    "chance": 0.85
+  },
+  "dimmer": {
+    "BREAKDOWN": [
+      null,
+      0.12
+    ],
+    "DROP": [
+      1.25
+    ]
+  },
+  "strobe": {
+    "on": 1,
+    "dropEnter": 2,
+    "phraseChance": 0.2,
+    "grooveEveryBars": [
+      24,
+      48
+    ],
+    "grooveAct": 0.6,
+    "kickChanceDrop": 0.1
+  },
   "hat": {
     "beamGain": 1.35,
     "opacityDip": 0.32
@@ -61,5 +116,51 @@
     "low": 0.27,
     "high": 0.93,
     "beamsMin": 0.32
+  },
+  "ball": {
+    "focos: quantos": 2,
+    "focos: raio ×": 2.8,
+    "focos: orla": 0.9,
+    "espelhos: brilho": 0.6,
+    "focos: saltam (0/1)": 1,
+    "focos: fixo min s": 4,
+    "focos: fixo max s": 12,
+    "origem: |az| min°": 35,
+    "origem: |az| max°": 130,
+    "origem: el min°": 5,
+    "origem: el max°": 30,
+    "origem: mira (raios)": 0.14,
+    "spot0: az° (−=esq)": 104.97873644436875,
+    "spot0: el°": 26.650562167600725,
+    "spot1: az°": 68.67619933508321,
+    "spot1: el°": 17.101713894118724,
+    "spot2: az°": -116.10633086589704,
+    "spot2: el°": 16.064902643829658,
+    "spot3: az°": -94.12744396049405,
+    "spot3: el°": 24.84260906814915,
+    "flash: por s (só manual)": 0,
+    "flash: raio ×": 1.6,
+    "flash: dura ms (só manual)": 157.14285714285714,
+    "bola: luz": 0.14,
+    "luz geral (volume)": 0.9,
+    "luz geral: az°": 30,
+    "luz geral: el°": -40,
+    "auréola": 0,
+    "fundo: claridade (dark)": 0,
+    "strobe fundo (0/1)": 1,
+    "strobe: força": 0.8,
+    "strobe: dura ms": 55,
+    "luz indireta": 0.05,
+    "indireta: área°": 19,
+    "cone incidente": 0.1,
+    "cone: alcance": 3.2,
+    "cone: largura máx": 1.3,
+    "cone: teto (raios)": 0.14,
+    "feixes: fração (motor manda)": 0.9944765095046705,
+    "feixes: compr. 3D": 3.6,
+    "feixes: largura°": 4,
+    "feixes: dispersão": 0.48,
+    "junta (seam)": 0.14,
+    "espelhos: filas": 64
   }
 }
