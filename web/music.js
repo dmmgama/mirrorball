@@ -313,7 +313,7 @@ const MUSIC = {
     snare: 1,               // probabilidade de cada tarola disparar flash
     phraseBurst: 3,         // flashes em rajada na fronteira de FRASE (0 = nenhum)
     minGapMs: 340,          // nunca > 3 Hz (regra 6 do CLAUDE.md)
-    intensity: [1.0, 1.5],  // intensidade sorteada
+    intensity: [0.6, 1.0],  // intensidade sorteada
     lenMs: [80, 200],
   },
   dimmer: {                 // ganho por fase, [foco 0 (esq), foco 1 (dir), restantes]

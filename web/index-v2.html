@@ -91,7 +91,7 @@ const CONFIG = {
     azRange: [35, 130], elRange: [5, 30], aimMax: 0.35, // poses plausíveis: |az| lateral/traseiro (sinal sorteado), el 22-48°, mira perto do equador
     flashRate: 0.6,          // flashes/s em média (disparos curtos de posições plausíveis)
     flashLen: [0.09, 0.22],  // s de cada flash
-    flashRadius: [0.10, 0.18], flashIntensity: [0.9, 1.5], flashSlots: 4,
+    flashRadius: [0.10, 0.18], flashIntensity: [0.6, 1.0], flashSlots: 4,
   },
   ambient: {                 // luz INDIRETA da sala (varredores, LEDs, reflexos): fontes largas e fracas que deambulam
     n: 3, intensity: 0.07, k: 220, drift: 0.045, // n fontes; brilho; nitidez do cintilar; velocidade angular (rad/s)
@@ -102,6 +102,7 @@ const CONFIG = {
   glintSharp: 0.75,          // quanto o brilho especular (N·H) marca dentro do foco (0 = foco uniforme)
   incidentAlpha: 0.03,       // cone de luz que CHEGA à bola (a fonte existe); ×haze×intensity
   beamLen3D: 3.6,            // comprimento do feixe refletido em raios da bola (3D, projetado)
+  beamGlowZ: 0.8,            // R·z acima disto = feixe a vir para nós → brilho em vez de linha
   haze: 0.65,                // densidade da névoa (só afeta feixes e a auréola)
   beamMaxCount: 110,         // feixes visíveis no máximo
   beamFraction: 1.0,         // fração dos tiles do foco a produzir feixe (1 = todos os espelhos iluminados)
@@ -469,10 +470,10 @@ function frame(now) {
     const cc = Math.hypot(sp.C[0], sp.C[1], sp.C[2]), tIn = Math.sqrt(Math.max(0, 1 - cc * cc)); // entrada do eixo na esfera
     const hit = [sp.C[0] + sp.S[0] * tIn, sp.C[1] + sp.S[1] * tIn, sp.C[2] + sp.S[2] * tIn];
     const far = 9.0, src = [hit[0] + sp.S[0] * far, hit[1] + sp.S[1] * far, hit[2] + sp.S[2] * far];
-    if (src[2] > camD - 1.0) continue; // fonte atrás/ao lado da câmara: o cone não se vê, só o foco
+    if (src[2] > camD - 2.5) continue; // fonte perto/atrás da câmara: o cone não se vê (só o foco), senão vira um retângulo gigante
     const p0 = proj(src[0], src[1], src[2]), p1 = proj(hit[0], hit[1], hit[2]);
     const dx = p1[0] - p0[0], dy = p1[1] - p0[1], L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L;
-    const h1 = sp.r * Rpx * p1[2], h0 = sp.r * Rpx * p0[2] * 0.8; // pinspot: feixe quase paralelo (4-6°)
+    const h1 = sp.r * Rpx * p1[2], h0 = Math.min(sp.r * Rpx * p0[2] * 0.8, h1 * 1.6); // pinspot: feixe quase paralelo (4-6°)
     const g = ctx.createLinearGradient(p0[0], p0[1], p1[0], p1[1]);
     g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.6, `rgba(255,255,255,${(a0 * 0.5).toFixed(4)})`);
     g.addColorStop(1, `rgba(255,255,255,${a0.toFixed(4)})`);
@@ -494,7 +495,16 @@ function frame(now) {
   const drawBeam = (b, base) => {
     // ponto final no espaço; se vem para a câmara, encurta para ficar à frente do plano da câmara
     let L3 = CONFIG.beamLen3D * CONFIG.beamLength / 0.78;
-    if (b.R[2] > 0) L3 = Math.min(L3, (camD - 1.2 - b.z) / b.R[2]);
+    if (b.R[2] > CONFIG.beamGlowZ) { // vem quase direito a nós: vê-se como um brilho no espelho, não como uma linha
+      const pr = proj(b.x, b.y, b.z), rad = Rpx * (0.02 + 0.10 * (b.R[2] - CONFIG.beamGlowZ) / (1 - CONFIG.beamGlowZ)) * pr[2];
+      const g = ctx.createRadialGradient(pr[0], pr[1], 0, pr[0], pr[1], rad);
+      g.addColorStop(0, `rgba(255,255,255,${(base * 0.9).toFixed(4)})`);
+      g.addColorStop(0.35, `rgba(255,255,255,${(base * 0.35).toFixed(4)})`);
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(pr[0], pr[1], rad, 0, TAU); ctx.fill();
+      return;
+    }
+    if (b.R[2] > 0) L3 = Math.min(L3, (camD - 2.8 - b.z) / b.R[2]); // ponto final nunca amplia > ~2.5×
     if (L3 < 0.2) return;
     const pr = proj(b.x, b.y, b.z), pe = proj(b.x + b.R[0] * L3, b.y + b.R[1] * L3, b.z + b.R[2] * L3);
     const dx = pe[0] - pr[0], dy = pe[1] - pr[1], len = Math.hypot(dx, dy); if (len < 2) return;
@@ -761,7 +771,7 @@ requestAnimationFrame(frame);
 <script src="core.js?v=1"></script>
 <script src="bridge.js?v=2"></script>
 <script src="emotion-v2.js?v=1"></script>
-<script src="music.js?v=35"></script>
+<script src="music.js?v=37"></script>
 <!-- painel de calibração ao vivo (tecla k). Inerte sem window.MUSIC (bola manual/câmara). -->
 <script src="tuner.js?v=1"></script>
 </body>
