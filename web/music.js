@@ -306,7 +306,9 @@ const MUSIC = {
   strobe: {                 // estrobo de FUNDO — só se o knob da bola (CONFIG.strobe.enabled) estiver ON; OCASIONAL
     on: 1,
     dropEnter: 2,           // rajada ao ENTRAR em DROP (nº de disparos, escalonados ≥ 340 ms)
-    phraseChance: 0.20,     // prob. na fronteira de frase em DROP (GROOVE nunca)
+    phraseChance: 0.20,     // prob. na fronteira de frase em DROP
+    grooveEveryBars: [24, 48], // §ESPAÇOS: em GROOVE com atividade alta, um estrobo isolado a cada 24-48 compassos (como num clube)
+    grooveAct: 0.6,           // só com atividade acima disto
     kickChanceDrop: 0.10,   // prob. por bombo nos primeiros `flash.dropBars` de DROP
     level: [0.35, 0.7],
   },   // agudos marcam: feixes sobem, opacidade dá um tique
@@ -314,11 +316,12 @@ const MUSIC = {
    * o DIMMER e dispara flashes curtos. Flashes = MIRRORBALL.flash(); dimmer = ganho por fase × foco. */
   flash: {
     on: true,
-    kickChance: 0.30,       // probabilidade de um bombo disparar um flash em GROOVE
+    kickChance: 0.06,       // probabilidade de um bombo disparar um flash em GROOVE (era 0.30: lia-se como piscar constante)
+    calmAct: 0.45,          // §CALMO: com atividade abaixo disto em GROOVE, focos STILL — nenhum flash/rajada/tarola
     kickChanceDrop: 0.85,   // …nos primeiros compassos de DROP
     dropBars: 4,            // compassos de DROP em que o bombo dispara quase sempre
-    snare: 1,               // probabilidade de cada tarola disparar flash
-    phraseBurst: 3,         // flashes em rajada na fronteira de FRASE (0 = nenhum)
+    snare: 0.15,            // probabilidade de cada tarola disparar flash (era 1 = todas)
+    phraseBurst: 3,         // flashes em rajada na fronteira de FRASE — só em DROP/BUILD/PRE_DROP; em GROOVE é 1 flash
     minGapMs: 340,          // nunca > 3 Hz (regra 6 do CLAUDE.md)
     intensity: [0.6, 1.0],  // intensidade sorteada
     lenMs: [80, 200],
@@ -440,7 +443,7 @@ const MUSIC = {
   // 0.45 s ainda é ~0.35 Hz de conteúdo, uma ordem de grandeza abaixo do teto de 3 Hz.
   rpmStopTau: 0.45,
   outMin: { spot: 0.00, opacity: 0.00, haze: 0.05, rpm: 0.00, beamInt: 0, beams: 0 },
-  outMax: { spot: 1.60, opacity: 1.00, haze: 1.00, rpm: 3.00, beamInt: 0.18, beams: 56, beamCap: 110 },
+  outMax: { spot: 1.60, opacity: 1.00, haze: 1.00, rpm: 3.00, beamInt: 0.18, beams: 56, beamCap: 64 },
   // `beams` (0-56) é a ESCALA da saída; na bola vira `beamFraction` = beams/56 (fração dos espelhos do foco que
   // geram feixe) — a contagem absoluta (`beamCap`) fica só como teto de performance. Antes o motor escrevia
   // `beamMaxCount` e, com todos os espelhos do foco a gerar feixe (~40), o mapeamento ficava esmagado.
@@ -489,11 +492,11 @@ const MUSIC = {
     // Raridade (§0.1: "um drop por música, se tanto"): só o GRANDE drop estoira — o que vem de um
     // build a sério (PRE_DROP/BUILD), depois de ≥ minDarkSec sem bombo, e nunca antes de minGapSec
     // desde o último estoiro. E mesmo assim só `chance` das vezes, para não ser previsível.
-    minGapSec: 180,
-    minDarkSec: 6,
+    minGapSec: 75,          // era 180: com 3 min entre estoiros o David nunca via nenhum
+    minDarkSec: 3,          // era 6
     fromBuildOnly: false,   // true = só PRE_DROP/BUILD → DROP conta; a máquina vai muitas vezes BREAKDOWN → DROP direto
     chance: 0.85,
-    skipRestrained: true,   // o drop "contido" (1 em 4) não estoira — a contenção é o gesto
+    skipRestrained: false,  // (era true) o drop "contido" (1 em 4) não estoira — a contenção é o gesto
     hold: 'drop',           // 'drop' = recompõe-se no fim da abertura do drop (4-8 compassos)
                             // 'breakdown' = fica em estilhaços até ao fim do breakdown (PRE_DROP ou volta a GROOVE);
                             // em qualquer caso a bola impõe CONFIG.explode.maxHold — nunca fica infinita
@@ -606,12 +609,19 @@ const TUNE = {
       { path: 'flash.kickChance',      range: [0.0, 1.0], step: 0.05, label: 'flash: bombo (prob.)' },
       { path: 'flash.kickChanceDrop',  range: [0.0, 1.0], step: 0.05, label: 'flash: bombo no DROP' },
       { path: 'flash.snare',           range: [0.0, 1.0], step: 0.05, label: 'flash: tarola (prob.)' },
+      { path: 'explode.minGapSec',     range: [10, 600],  step: 5,    label: 'explosão: intervalo mín (s)' },
+      { path: 'explode.minDarkSec',    range: [0, 30],    step: 0.5,  label: 'explosão: breakdown mín (s)' },
+      { path: 'explode.chance',        range: [0.0, 1.0], step: 0.05, label: 'explosão: prob. no drop' },
       { path: 'flash.phraseBurst',     range: [0, 5],     step: 1,    label: 'flash: rajada na frase' },
       { path: 'dimmer.BREAKDOWN.1',    range: [0.0, 1.0], step: 0.05, label: 'dimmer: foco 2 em BREAKDOWN' },
       { path: 'dimmer.DROP.0',         range: [0.5, 1.6], step: 0.05, label: 'dimmer: DROP' },
       { path: 'strobe.on',             range: [0, 1],     step: 1,    label: 'strobe fundo (se a bola tiver ON)' },
       { path: 'strobe.dropEnter',      range: [0, 4],     step: 1,    label: 'strobe: rajada ao entrar em DROP' },
       { path: 'strobe.phraseChance',   range: [0.0, 1.0], step: 0.05, label: 'strobe: frase em DROP (prob.)' },
+      { path: 'strobe.grooveEveryBars.0', range: [4, 96], step: 1, label: 'strobe: GROOVE a cada (mín bars)' },
+      { path: 'strobe.grooveEveryBars.1', range: [4, 128], step: 1, label: 'strobe: GROOVE a cada (máx bars)' },
+      { path: 'strobe.grooveAct',      range: [0.0, 1.0], step: 0.05, label: 'strobe: GROOVE só com atividade ≥' },
+      { path: 'flash.calmAct',         range: [0.0, 1.0], step: 0.05, label: 'flash: calmo abaixo de atividade' },
       { path: 'strobe.kickChanceDrop', range: [0.0, 0.5], step: 0.01, label: 'strobe: bombo no DROP (prob.)' },
       // §SNARE — a resposta visual do acento seco (o teto 0.18 é preservado por construção)
       { path: 'snare.opacityKick',     range: [0.0, 0.8], step: 0.01, label: 'tarola → opacidade' },
@@ -794,6 +804,7 @@ const state = {
   kickTimes: [], lastKickT: -Infinity, kickRate: 0, kickPresence: 0, kickFlash: 0,
   // --- explosão (raridade): último estoiro e início da família escura (BREAKDOWN/BUILD/PRE_DROP) ---
   lastExplodeT: -Infinity, darkSince: -Infinity, explodeCount: 0,
+  strobeNextBar: 16, strobeCount: 0,   // §ESPAÇOS (regra 7: valor inicial)
   // §BANDONSET. Os detetores são criados abaixo (precisam do MUSIC já definido); `kickDet`/
   // `hatDet`/`hatEnv` nascem a null e são preenchidos por `resetDetectors()` — que corre
   // imediatamente, mas o valor inicial tem de existir aqui na mesma (regra 7 do CLAUDE.md:
@@ -1238,7 +1249,7 @@ function detectSnare(nowL, f) {
     state.snareLastT = nowL;
     state.snareAccent = 1;
     state.snareCount++;
-    if (MUSIC.flash && MUSIC.flash.on && RNG2() < MUSIC.flash.snare) fireFlash('snare', 1);
+    if (MUSIC.flash && MUSIC.flash.on && !isCalm() && RNG2() < MUSIC.flash.snare) fireFlash('snare', 1);
   }
 }
 
@@ -1570,8 +1581,10 @@ function fireFlash(why, n) {
   }
   state.lastFlashT = now + (k - 1) * F.minGapMs * 1.05; state.flashCount++;
 }
+/* §CALMO — parte calma = GROOVE com pouca informação espectral. Um técnico deixa os focos quietos. */
+function isCalm() { const F = MUSIC.flash; return state.fsm === 'GROOVE' && (state.act == null ? 1 : state.act) < (F && F.calmAct != null ? F.calmAct : 0.45); }
 function onKickBeat() {
-  const F = MUSIC.flash; if (!F || !F.on) return;
+  const F = MUSIC.flash; if (!F || !F.on || isCalm()) return;
   const inDrop = state.fsm === 'DROP' && (state.bar - state.fsmBar) < F.dropBars;
   const p = inDrop ? F.kickChanceDrop : (state.fsm === 'GROOVE' || state.fsm === 'DROP') ? F.kickChance : 0;
   if (RNG2() < p) fireFlash('kick', 1);
@@ -1651,8 +1664,15 @@ function onBarBoundary(bar) {
   if (g && ((bar % g.barsPerPhrase) + g.barsPerPhrase) % g.barsPerPhrase === 0) {
     state.phraseAccent = 1;
     state.spotAccent = Math.max(state.spotAccent, M.spotPhraseAccent);
-    if (MUSIC.flash && MUSIC.flash.on && MUSIC.flash.phraseBurst > 0) fireFlash('phrase', MUSIC.flash.phraseBurst);
+    if (MUSIC.flash && MUSIC.flash.on && MUSIC.flash.phraseBurst > 0 && !isCalm())
+      fireFlash('phrase', state.fsm === 'GROOVE' ? 1 : MUSIC.flash.phraseBurst);   // rajada só na família do drop
     if (state.fsm === 'DROP' && MUSIC.strobe && RNG2() < MUSIC.strobe.phraseChance) fireStrobe('phrase', 1);
+    // §ESPAÇOS: estrobo isolado em GROOVE, a espaços largos e só com energia — nunca dois seguidos
+    const SB = MUSIC.strobe;
+    if (state.fsm === 'GROOVE' && SB && SB.grooveEveryBars && bar >= state.strobeNextBar) {
+      state.strobeNextBar = bar + Math.round(rng2Range(SB.grooveEveryBars));
+      if ((state.act == null ? 1 : state.act) >= (SB.grooveAct == null ? 0.6 : SB.grooveAct)) fireStrobe('groove', 1);
+    }
   }
   // gesto leve em GROOVE: a cada 16-32 compassos, 30% das vezes
   if (state.fsm === 'GROOVE' && bar >= state.gestNextGrooveBar) {

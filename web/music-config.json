@@ -1,6 +1,6 @@
 {
   "bandOnset": {
-    "kickC0": 3,
+    "kickC0": 3.0,
     "minStdRatio": 0.6,
     "kickRefractMs": 200,
     "hatC0": 1.4,
@@ -44,7 +44,7 @@
       0.31,
       1
     ],
-    "opacityFloorGroove": 1,
+    "opacityFloorGroove": 0.3,
     "opacityReleaseSec": 0.8,
     "spotSwapBars": 8,
     "spotSwapJitter": 3,
