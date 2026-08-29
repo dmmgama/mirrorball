@@ -25,7 +25,7 @@
   #dbg{position:fixed;top:12px;left:12px;background:rgba(10,10,10,.86);color:#cfcfcf;
        font:11px/1.6 ui-monospace,Consolas,monospace;padding:10px 12px;border:1px solid #2a2a2a;
        display:none;min-width:230px;letter-spacing:.02em;z-index:9}
-  #dbg.on{display:block}
+  #dbg.on{display:block;max-height:calc(100vh - 24px);overflow-y:auto}
   #dbg label{display:flex;justify-content:space-between;gap:10px;align-items:center}
   #dbg input[type=range]{width:120px;accent-color:#bdbdbd}
   #dbg .sp{display:flex;gap:10px;margin-top:6px}
@@ -65,18 +65,48 @@
 const CONFIG = {
   ballSizeVH: 0.52,          // diâmetro da bola em fração da altura do viewport
   ballCenter: [0.5, 0.53],   // posição do centro (fração da largura/altura)
-  facetRows: 32,             // filas de latitude (tiles quadrados → equador tem ~2·facetRows tiles)
+  facetRows: 48,             // filas de latitude (32 original → 48: espelhos a 2/3, ~2.25× tiles) (tiles quadrados → equador tem ~2·facetRows tiles)
   rotationRpm: 1.0,          // rotação real de uma bola (0.5–3 rpm)
-  spots: [                   // fontes FORA do ecrã; az/el em graus a partir da câmara; size = k inverso
-    { az:  -58, el: 34, intensity: 1.00, size: 55, period: 13 },
-    { az:   62, el: 22, intensity: 0.85, size: 40, period: 17 },
-    { az:   12, el: 58, intensity: 0.70, size: 70, period: 11 },
+  spots: [                   // pinspots FORA do ecrã; az/el em graus a partir da câmara; radius = raio do foco na
+                             // superfície (em raios da bola, DIÂMETRO CONSTANTE — não pulsa com a intensidade)
+    // Rig realista (docs/lighting-design-research.md): 2 pinspots OPOSTOS ao nível/ligeiramente acima do
+    // equador (el 30-45°), nunca do lado do público (az≈0 é atrás da câmara) nem de cima; miram o equador.
+    // A sala é 3D e a bola é o centro: az=0 é a direção do público (câmara). Fontes nos LADOS da sala, à frente
+    // do plano da bola (|az| 40-60°), quase ao nível do equador — assim os espelhos da frente refletem para nós.
+    { az:  -52, el: 14, intensity: 1.00, radius: 0.16, period: 13, aim: [0, 0.03] },   // esquerda-frente
+    { az:   52, el: 12, intensity: 0.95, radius: 0.15, period: 17, aim: [0, 0.03] },   // direita-frente (oposto)
+    { az: -125, el: 18, intensity: 0.80, radius: 0.15, period: 11, aim: [0, 0.05] },   // esquerda-trás (3º, opcional)
+    { az:  125, el: 18, intensity: 0.80, radius: 0.15, period: 19, aim: [0, 0.05] },   // direita-trás (4º, opcional)
+    { az:  -30, el: 30, intensity: 0.75, radius: 0.14, period: 23, aim: [0, 0] },      // 5º/6º: mais altos, só se o David quiser
+    { az:   30, el: 30, intensity: 0.75, radius: 0.14, period: 29, aim: [0, 0] },
   ],
+  spotCount: 2,              // quantos pinspots estão montados (1-6) — knob no painel d
+  spotRadiusMul: 1.0,        // multiplicador global do raio dos focos — knob no painel d
+  mirrorGain: 1.0,           // brilho dos espelhos quando a luz incide (não são os feixes) — knob no painel d
+  choreo: {                  // coreografia interna dos focos (um técnico de luz a apontar os pinspots)
+    enabled: true,
+    retarget: false,         // pinspots reais têm aim FIXO: o técnico trabalha o dimmer, não move o foco. Knob liga saltos.
+    dwell: [4.0, 12.0],      // (se retarget) s que um foco fica no mesmo sítio antes de saltar
+    move: 0.08,              // s do apagar e do acender na troca de sítio (o foco NUNCA anda: apaga, salta, acende)
+    azRange: [35, 130], elRange: [5, 30], aimMax: 0.35, // poses plausíveis: |az| lateral/traseiro (sinal sorteado), el 22-48°, mira perto do equador
+    flashRate: 0.6,          // flashes/s em média (disparos curtos de posições plausíveis)
+    flashLen: [0.09, 0.22],  // s de cada flash
+    flashRadius: [0.10, 0.18], flashIntensity: [0.9, 1.5], flashSlots: 4,
+  },
+  ambient: {                 // luz INDIRETA da sala (varredores, LEDs, reflexos): fontes largas e fracas que deambulam
+    n: 3, intensity: 0.07, k: 220, drift: 0.045, // n fontes; brilho; nitidez do cintilar; velocidade angular (rad/s)
+  },
+  shade: { key: 0.55, az: -35, el: 40 }, // luz GERAL da sala (volume da esfera): tiles virados para ela mais claros; 0 = plano
+  halo: 0.3,                 // auréola de névoa à volta da bola (1 = como antes; 0 = nenhuma)
+  spotEdge: 0.35,            // suavidade da orla do foco (fração do raio)
+  glintSharp: 0.75,          // quanto o brilho especular (N·H) marca dentro do foco (0 = foco uniforme)
+  incidentAlpha: 0.03,       // cone de luz que CHEGA à bola (a fonte existe); ×haze×intensity
+  beamLen3D: 3.6,            // comprimento do feixe refletido em raios da bola (3D, projetado)
   haze: 0.65,                // densidade da névoa (só afeta feixes e a auréola)
-  beamMaxCount: 36,          // feixes visíveis no máximo
-  beamFraction: 0.55,        // fração dos tiles elegíveis a produzir feixe (subamostragem estável)
+  beamMaxCount: 110,         // feixes visíveis no máximo
+  beamFraction: 1.0,         // fração dos tiles do foco a produzir feixe (1 = todos os espelhos iluminados)
   beamIntensity: 0.16,       // alpha máximo de um feixe (núcleo)
-  beamWidthDeg: 1.1,         // meia-largura angular do wedge exterior
+  beamWidthDeg: 0.7,         // meia-largura angular do wedge exterior
   beamLength: 0.78,          // comprimento em fração do viewport
   dotDensity: 0.8,           // fração dos tiles elegíveis a projetar ponto na parede (adaptativo)
   dotScale: 0.32,            // tamanho do ponto na parede relativo ao tile projetado
@@ -85,11 +115,11 @@ const CONFIG = {
   bloomBlurPx: 9,            // raio do blur (em px CSS, a meia resolução)
   sphereOpacity: 1.0,        // 1 = sólida; → 0 = raio-X (só malha + tiles ativos persistem)
   seamDarkness: 0.02,        // cinza das juntas (0..1)
-  seamInset: 0.11,           // fração angular do tile reservada à junta (≈1–2 px)
+  seamInset: 0.15,           // fração angular do tile reservada à junta (≈1–2 px)
   rimStrength: 0.22,         // borda clara nas facetas rasantes
   baseTileGrey: [0.045, 0.14], // intervalo do cinza das facetas apagadas (a sala escura refletida)
   litSideGain: 0.55,         // facetas viradas para os spots refletem sala um pouco mais clara
-  glintK: 48,                // expoente base do pow(N·H, k) (modulado por spot.size)
+  glintK: 24,                // expoente do pow(N·H, k) do brilho especular dentro do foco
   camDistance: 7.0,          // distância da câmara em raios da bola (perspetiva ligeira)
   room: { halfW: 5.2, ceil: 4.2, floor: -5.0, back: -7.0 }, // sala implícita em raios
   dotFalloff: 0.028,         // atenuação dos pontos com a distância (1/(1+k·t²))
@@ -125,7 +155,7 @@ const CONFIG = {
   const scale = parseFloat(q.get('scale')) || 1;
   if (q.get('mini') === '1') {
     Object.assign(CONFIG, { ballSizeVH: 0.66, ballCenter: [0.5, 0.56], chainLinkPx: 6, beamLength: 1.0, beamWidthDeg: 1.6,
-      dotScale: 0.5, bloomBlurPx: 5, grain: 0.02, vignette: 0.35, facetRows: 26 });
+      dotScale: 0.5, bloomBlurPx: 5, grain: 0.02, vignette: 0.35, facetRows: 39 });
     document.documentElement.classList.add('mini');
     CONFIG.skin = q.get('light') === '1' ? 'white' : 'dark';   // quadrado segue a skin do OS
   }
@@ -165,8 +195,9 @@ addEventListener('resize', resize); resize();
 /* ---------------- geometria da esfera: filas de latitude, normais por tile ---------------- */
 function hash(n) { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
 const tiles = [];
-(function buildTiles() {
-  const rows = CONFIG.facetRows, dphi = Math.PI / rows;
+function buildTiles() { // reconstrói a malha (knob "espelhos: filas" no painel d)
+  tiles.length = 0;
+  const rows = Math.max(6, Math.round(CONFIG.facetRows)), dphi = Math.PI / rows;
   let id = 0;
   for (let i = 0; i < rows; i++) {
     const phi = -Math.PI / 2 + (i + 0.5) * dphi, cosphi = Math.cos(phi);
@@ -185,13 +216,56 @@ const tiles = [];
       id++;
     }
   }
-})();
+}
+buildTiles();
 
 /* ---------------- estado runtime: health, câmara, spots ---------------- */
 let health = 1.0, dotDensityLive = CONFIG.dotDensity, frameEma = 16, lastT = performance.now();
 let angle = 0, grainOffset = [0, 0], grainTick = 0;
 let skinMix = 0, skinTarget = 0, skinAuto = 0; // 0 = dark, 1 = white
 const spotsOn = CONFIG.spots.map(() => true);
+// coreografia: por spot, origem/alvo da viagem e relógio do dwell; flashes = disparos curtos independentes
+const choreo = CONFIG.spots.map((s, i) => ({ t: 1.5 + i * 1.7, to: null, mt: 1, gain: 1 }));
+const flashes = [];
+let flashAcc = 0;
+function rnd(a, b) { return a + Math.random() * (b - a); }
+function randomPose() {
+  const C = CONFIG.choreo, r = Math.sqrt(Math.random()) * C.aimMax, a = Math.random() * TAU;
+  const az = rnd(C.azRange[0], C.azRange[1]) * (Math.random() < 0.5 ? -1 : 1); // nunca do lado do público (az≈0)
+  return { az, el: rnd(C.elRange[0], C.elRange[1]), aim: [r * Math.cos(a), r * Math.sin(a) * 0.6] };
+}
+function stepChoreo(dt) {
+  const C = CONFIG.choreo; if (!C.enabled || reducedMotion) return;
+  CONFIG.spots.forEach((s, i) => {
+    const c = choreo[i];
+    if (c.to) { // troca de sítio: apaga (mt 0→1), salta de posição a meio, acende (mt 1→2). Nunca varre a superfície.
+      c.mt = Math.min(2, c.mt + dt / Math.max(C.move, 0.01));
+      if (c.mt >= 1 && c.to.pending) { s.az = c.to.az; s.el = c.to.el; s.aim[0] = c.to.aim[0]; s.aim[1] = c.to.aim[1]; c.to.pending = false; }
+      c.gain = c.mt < 1 ? 1 - c.mt : c.mt - 1;
+      if (c.mt >= 2) { c.to = null; c.gain = 1; c.t = rnd(C.dwell[0], C.dwell[1]); }
+    } else if (C.retarget) {
+      c.t -= dt;
+      if (c.t <= 0) { c.to = randomPose(); c.to.pending = true; c.mt = 0; }
+    }
+  });
+  // flashes: processo de Poisson; cada um nasce num sítio novo e morre em ~0.1-0.2 s
+  flashAcc += dt * C.flashRate;
+  while (flashAcc >= 1) { flashAcc -= 1; if (flashes.length < C.flashSlots) {
+    const p = randomPose();
+    flashes.push({ az: p.az, el: p.el, aim: p.aim, radius: rnd(C.flashRadius[0], C.flashRadius[1]),
+      intensity: rnd(C.flashIntensity[0], C.flashIntensity[1]), life: rnd(C.flashLen[0], C.flashLen[1]), age: 0 });
+  } }
+  for (let i = flashes.length - 1; i >= 0; i--) { flashes[i].age += dt; if (flashes[i].age >= flashes[i].life) flashes.splice(i, 1); }
+}
+function cross3(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+// pinspot: eixo S (bola→fonte), base (u,v) ⊥ S para o desvio de mira; C = centro do foco na superfície
+function makeSpot(s, I) {
+  const S = spotDir(s), Hv = norm3([S[0], S[1], S[2] + 1]);
+  const u = norm3(cross3(S, [0, 1, 0])), v = cross3(u, S);
+  const ax = s.aim ? s.aim[0] : 0, ay = s.aim ? s.aim[1] : 0;
+  const Cn = [u[0] * ax + v[0] * ay, u[1] * ax + v[1] * ay, u[2] * ax + v[2] * ay];
+  return { S, H: Hv, I, k: CONFIG.glintK, r: (s.radius || 0.3) * (s.isFlash ? 1 : CONFIG.spotRadiusMul), C: Cn };
+}
 // explosão: s = progresso paramétrico (0 = bola inteira, 1 = estilhaços no ar); angle0 = rotação congelada no estoiro
 const exp = { phase: 'idle', t: 0, s: 0, sFrom: 1, angle0: 0, autoHold: true, age: 0, floatT: 0 };
 // botão "explosões": quando off, o motor (fromMotor:true) não estoira; tecla x e API manual continuam a funcionar
@@ -275,17 +349,25 @@ function frame(now) {
   const camD = CONFIG.camDistance;
   const proj = (x, y, z) => { const k = camD / (camD - z); return [cx + Rpx * x * k, cy - Rpx * y * k, k]; };
 
-  // spots ativos com crossfade sinusoidal lento
+  // spots ativos (pinspots com coreografia) + flashes
+  stepChoreo(dtMs / 1000);
   const spots = [];
   CONFIG.spots.forEach((s, i) => {
-    if (!spotsOn[i]) return;
+    if (!spotsOn[i] || i >= CONFIG.spotCount) return;
     const fade0 = reducedMotion ? 0.8 : 0.5 + 0.5 * Math.sin(TAU * tSec / s.period + i * 2.1);
-    const fade = lerp(1, fade0, CONFIG.spotFadeMix); // spotFadeMix=1 → bit-a-bit igual ao fade interno de sempre
-    const I = s.intensity * E.spotGain * (0.35 + 0.65 * fade);
+    const fade = lerp(1, fade0, CONFIG.spotFadeMix); // spotFadeMix=1 → fade interno de sempre; 0 = fonte externa manda
+    const I = s.intensity * E.spotGain * (0.35 + 0.65 * fade) * choreo[i].gain;
     if (I < 0.02) return;
-    const S = spotDir(s), Hv = norm3([S[0], S[1], S[2] + 1]); // half-vector spot/câmara (V = +z)
-    spots.push({ S, H: Hv, I, k: CONFIG.glintK * (55 / s.size) });
+    spots.push(makeSpot(s, I));
   });
+  { const A = CONFIG.ambient; for (let i = 0; i < (A.n | 0); i++) { // luz indireta: larga, fraca, a deambular
+      const w = A.drift * (0.7 + 0.3 * i), az = 140 * Math.sin(w * tSec + i * 2.4), el = 25 + 35 * Math.sin(w * 0.61 * tSec + i * 1.3);
+      const sp = makeSpot({ az, el, aim: [0, 0], radius: 9 }, A.intensity * E.spotGain); sp.wide = true; sp.k = A.k; spots.push(sp);
+  } }
+  for (const fl of flashes) { // envelope: ataque seco, cauda curta
+    const u = fl.age / fl.life, env = u < 0.25 ? u / 0.25 : 1 - (u - 0.25) / 0.75;
+    const I = fl.intensity * E.spotGain * env; if (I > 0.02) { fl.isFlash = true; spots.push(makeSpot(fl, I)); }
+  }
 
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.globalCompositeOperation = 'source-over';
@@ -293,7 +375,7 @@ function frame(now) {
 
   // auréola de névoa à volta da bola (scatter difuso da luz que ela devolve)
   const hz = ctx.createRadialGradient(cx, cy, Rpx * 0.9, cx, cy, Rpx * 2.6);
-  hz.addColorStop(0, `rgba(255,255,255,${(0.05 * E.haze * E.spotGain * dk * (1 - 0.75 * exS)).toFixed(3)})`);
+  hz.addColorStop(0, `rgba(255,255,255,${(0.05 * CONFIG.halo * E.haze * E.spotGain * dk * (1 - 0.75 * exS)).toFixed(3)})`);
   hz.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = hz; ctx.fillRect(0, 0, W, H);
 
@@ -323,18 +405,28 @@ function frame(now) {
     for (let s = 0; s < spots.length; s++) {
       const sp = spots[s], NdS = N[0] * sp.S[0] + N[1] * sp.S[1] + N[2] * sp.S[2];
       if (NdS <= 0.02) continue;
-      lit = Math.max(lit, NdS * sp.I);
+      lit = Math.max(lit, NdS * sp.I * 0.5);
+      // dentro do cone do pinspot? distância de P ao eixo (C + t·S) — diâmetro fixo, não depende de I
+      const dx0 = P[0] - sp.C[0], dy0 = P[1] - sp.C[1], dz0 = P[2] - sp.C[2];
+      const along = dx0 * sp.S[0] + dy0 * sp.S[1] + dz0 * sp.S[2];
+      const dist = Math.hypot(dx0 - along * sp.S[0], dy0 - along * sp.S[1], dz0 - along * sp.S[2]);
+      const inCone = sp.wide ? 1 : smooth(sp.r, sp.r * (1 - CONFIG.spotEdge), dist);
+      if (inCone <= 0.001) continue;
+      if (sp.wide) { // luz indireta: só o cintilar especular para a câmara, sem feixes nem pontos
+        if (facing > 0) { const NdH = N[0] * sp.H[0] + N[1] * sp.H[1] + N[2] * sp.H[2];
+          if (NdH > 0) glint += Math.pow(NdH, sp.k) * sp.I * (0.5 + T.dotHash); }
+        continue;
+      }
       // L = −S (incidente), R = L − 2(N·L)N = 2(N·S)N − S
       const R = [2 * NdS * N[0] - sp.S[0], 2 * NdS * N[1] - sp.S[1], 2 * NdS * N[2] - sp.S[2]];
-      if (facing > 0) {
+      if (facing > 0) { // foco: base uniforme + brilho especular para a câmara marca por dentro
         const NdH = N[0] * sp.H[0] + N[1] * sp.H[1] + N[2] * sp.H[2];
-        if (NdH > 0) glint += Math.pow(NdH, sp.k) * sp.I;
+        const spec = NdH > 0 ? Math.pow(NdH, sp.k) : 0;
+        glint += CONFIG.mirrorGain * inCone * Math.min(1.6, sp.I) * (1 - CONFIG.glintSharp + CONFIG.glintSharp * spec) * (0.55 + 0.45 * NdS);
       }
-      // feixe na névoa: nasce na superfície do tile, direção R projetada
-      if (facing > 0 && T.beamHash < CONFIG.beamFraction) {
-        const inPlane = Math.hypot(R[0], R[1]);
-        if (inPlane > 0.25) beams.push({ x: P[0], y: P[1], z: P[2], dx: R[0] / inPlane, dy: -R[1] / inPlane,
-          len: inPlane, I: NdS * sp.I * E.haze });
+      // feixe refletido: nasce no tile, segue R em 3D — os que vêm para a câmara abrem em leque
+      if ((facing > 0 || R[2] < -0.05) && T.beamHash < CONFIG.beamFraction && inCone > 0.3) {
+        beams.push({ x: P[0], y: P[1], z: P[2], R, I: inCone * NdS * sp.I * E.haze });
       }
       // ponto na parede: interseção com a sala implícita
       if (T.dotHash < dotDensityLive) {
@@ -368,31 +460,63 @@ function frame(now) {
     ctx.restore();
   }
 
-  // ----- feixes (aditivos, com limite de contagem e de alpha por feixe) -----
-  beams.sort((a, b) => b.I - a.I);
+  // ----- cone incidente: a luz que CHEGA à bola (a fonte existe, mesmo na skin escura) -----
   ctx.globalCompositeOperation = 'lighter';
+  for (const sp of spots) {
+    if (sp.wide) continue;
+    const a0 = CONFIG.incidentAlpha * E.haze * Math.min(1, sp.I) * (1 - 0.8 * exS);
+    if (a0 < 0.004) continue;
+    const cc = Math.hypot(sp.C[0], sp.C[1], sp.C[2]), tIn = Math.sqrt(Math.max(0, 1 - cc * cc)); // entrada do eixo na esfera
+    const hit = [sp.C[0] + sp.S[0] * tIn, sp.C[1] + sp.S[1] * tIn, sp.C[2] + sp.S[2] * tIn];
+    const far = 9.0, src = [hit[0] + sp.S[0] * far, hit[1] + sp.S[1] * far, hit[2] + sp.S[2] * far];
+    if (src[2] > camD - 1.0) continue; // fonte atrás/ao lado da câmara: o cone não se vê, só o foco
+    const p0 = proj(src[0], src[1], src[2]), p1 = proj(hit[0], hit[1], hit[2]);
+    const dx = p1[0] - p0[0], dy = p1[1] - p0[1], L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L;
+    const h1 = sp.r * Rpx * p1[2], h0 = sp.r * Rpx * p0[2] * 0.8; // pinspot: feixe quase paralelo (4-6°)
+    const g = ctx.createLinearGradient(p0[0], p0[1], p1[0], p1[1]);
+    g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.6, `rgba(255,255,255,${(a0 * 0.5).toFixed(4)})`);
+    g.addColorStop(1, `rgba(255,255,255,${a0.toFixed(4)})`);
+    ctx.fillStyle = g; ctx.beginPath();
+    ctx.moveTo(p0[0] + nx * h0, p0[1] + ny * h0); ctx.lineTo(p1[0] + nx * h1, p1[1] + ny * h1);
+    ctx.lineTo(p1[0] - nx * h1, p1[1] - ny * h1); ctx.lineTo(p0[0] - nx * h0, p0[1] - ny * h0);
+    ctx.closePath(); ctx.fill();
+  }
+
+  // ----- feixes refletidos, em 3D (aditivos, com limite de contagem e de alpha por feixe) -----
+  beams.sort((a, b) => b.I - a.I);
   // Guarda defensiva: um NaN vindo de uma fonte externa (music.js/emotion) daria nb = NaN e o
   // ciclo abaixo nunca corria — feixes desaparecidos SEM erro nenhum na consola.
   const bmc = Number.isFinite(CONFIG.beamMaxCount) ? CONFIG.beamMaxCount : 0;
-  const nb = Math.min(beams.length, bmc), Lmax = CONFIG.beamLength * Math.max(W, H);
+  const nb = Math.min(beams.length, bmc);
   const wOuter = CONFIG.beamWidthDeg * D2R, widths = [wOuter, wOuter * 0.55, wOuter * 0.22], aw = [0.22, 0.32, 0.46];
-  for (let i = 0; i < nb; i++) {
-    const b = beams[i], pr = proj(b.x, b.y, b.z), len = Lmax * (0.45 + 0.55 * b.len);
-    const base = clamp(b.I, 0, 1) * CONFIG.beamIntensity * smooth(0, 6, nb - i); // os últimos esbatem
-    const ex = pr[0] + b.dx * len, ey = pr[1] + b.dy * len;
-    const g = ctx.createLinearGradient(pr[0], pr[1], ex, ey);
+  const tileRad = Math.PI / CONFIG.facetRows; // largura de um tile em radianos (base do feixe)
+  const beamsFront = [];
+  const drawBeam = (b, base) => {
+    // ponto final no espaço; se vem para a câmara, encurta para ficar à frente do plano da câmara
+    let L3 = CONFIG.beamLen3D * CONFIG.beamLength / 0.78;
+    if (b.R[2] > 0) L3 = Math.min(L3, (camD - 1.2 - b.z) / b.R[2]);
+    if (L3 < 0.2) return;
+    const pr = proj(b.x, b.y, b.z), pe = proj(b.x + b.R[0] * L3, b.y + b.R[1] * L3, b.z + b.R[2] * L3);
+    const dx = pe[0] - pr[0], dy = pe[1] - pr[1], len = Math.hypot(dx, dy); if (len < 2) return;
+    const ux = dx / len, uy = dy / len, px = -uy, py = ux;
+    const wEnd = L3 * Rpx * pe[2] * 0.5, wStart = 0.45 * Rpx * tileRad * pr[2]; // abre com a perspetiva do ponto final
     for (let w = 0; w < 3; w++) {
-      const a = base * aw[w];
-      const gg = ctx.createLinearGradient(pr[0], pr[1], ex, ey);
+      const a = base * aw[w] * (b.R[2] > 0 ? 0.75 : 1);
+      const gg = ctx.createLinearGradient(pr[0], pr[1], pe[0], pe[1]);
       gg.addColorStop(0, `rgba(255,255,255,${a.toFixed(4)})`);
       gg.addColorStop(0.35, `rgba(255,255,255,${(a * 0.55).toFixed(4)})`);
       gg.addColorStop(1, 'rgba(255,255,255,0)');
-      const px = -b.dy, py = b.dx, half = Math.tan(widths[w]) * len;
+      const hE = Math.tan(widths[w]) * wEnd + wStart, hS = wStart * (w === 0 ? 1 : w === 1 ? 0.6 : 0.3);
       ctx.fillStyle = gg; ctx.beginPath();
-      ctx.moveTo(pr[0], pr[1]); ctx.lineTo(ex + px * half, ey + py * half); ctx.lineTo(ex - px * half, ey - py * half);
+      ctx.moveTo(pr[0] + px * hS, pr[1] + py * hS); ctx.lineTo(pe[0] + px * hE, pe[1] + py * hE);
+      ctx.lineTo(pe[0] - px * hE, pe[1] - py * hE); ctx.lineTo(pr[0] - px * hS, pr[1] - py * hS);
       ctx.closePath(); ctx.fill();
     }
-    void g;
+  };
+  if (window.__dbgBeams) window.__beamsLast = { spots: spots.map(sp => ({ S: sp.S, C: sp.C, r: sp.r, wide: !!sp.wide, I: sp.I })), beams: beams.slice(0, nb) };
+  for (let i = 0; i < nb; i++) {
+    const b = beams[i], base = clamp(b.I, 0, 1) * CONFIG.beamIntensity * smooth(0, 6, nb - i); // os últimos esbatem
+    if (b.R[2] > 0.05) beamsFront.push([b, base]); else drawBeam(b, base);
   }
 
   // ----- corrente -----
@@ -409,6 +533,7 @@ function frame(now) {
   }
 
   const inset = CONFIG.seamInset, meshAlpha = (1 - op) * 0.45;
+  const shadeDir = spotDir({ az: CONFIG.shade.az, el: CONFIG.shade.el });
   bctx.setTransform(DPR / 2, 0, 0, DPR / 2, 0, 0);
   bctx.globalCompositeOperation = 'source-over';
   bctx.clearRect(0, 0, W, H);
@@ -436,6 +561,8 @@ function frame(now) {
     g += CONFIG.rimStrength * smooth(0.28, 0.0, nz);            // borda clara rasante
     g -= 0.035 * smooth(0.05, 0.22, nz) * smooth(0.5, 0.25, nz); // banda mais escura logo dentro
     g *= 0.75 + 0.25 * nz;                                       // volume suave
+    { const K = CONFIG.shade, kd = Math.max(0, N[0] * shadeDir[0] + N[1] * shadeDir[1] + N[2] * shadeDir[2]);
+      g *= (1 - K.key) + K.key * (0.25 + 0.75 * kd); }              // luz geral direcional: dá volume à esfera
     const gl = clamp(v.glint, 0, 1);
     const val = clamp(g + gl * (1.0 - g) * 1.15, 0, 1);
     const vv = Math.round(val * 255);
@@ -462,6 +589,13 @@ function frame(now) {
     ctx.filter = `blur(${CONFIG.bloomBlurPx}px)`;
     ctx.drawImage(bloomCv, 0, 0, W, H);
     ctx.filter = 'none'; ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ----- feixes que vêm para a câmara: por cima da bola (miniaturas, nunca magoam) -----
+  if (beamsFront.length) {
+    ctx.globalCompositeOperation = 'lighter';
+    for (const [b, base] of beamsFront) drawBeam(b, base);
     ctx.globalCompositeOperation = 'source-over';
   }
 
@@ -506,6 +640,18 @@ window.MIRRORBALL = {
   getHealth() { return health; },
   config: CONFIG,
   setSpot(i, partial) { if (CONFIG.spots[i]) Object.assign(CONFIG.spots[i], partial || {}); },
+  // flash curto num sítio novo (motor: bombo/tarola). opts: {intensity, radius, len, az, el, aim}
+  flash(opts) {
+    const o = opts || {}, C = CONFIG.choreo, p = randomPose();
+    if (flashes.length >= C.flashSlots + 2) flashes.shift();
+    flashes.push({ az: o.az != null ? o.az : p.az, el: o.el != null ? o.el : p.el, aim: o.aim || p.aim,
+      radius: o.radius || rnd(C.flashRadius[0], C.flashRadius[1]), intensity: o.intensity || rnd(C.flashIntensity[0], C.flashIntensity[1]),
+      life: o.len || rnd(C.flashLen[0], C.flashLen[1]), age: 0 });
+  },
+  // re-aponta um spot já (o técnico muda o pinspot de sítio); sem pose → aleatória
+  retarget(i, pose) { const c = choreo[i]; if (!c || !CONFIG.spots[i]) return;
+    c.to = Object.assign(randomPose(), pose || {}, { pending: true }); c.mt = 0; },
+  setChoreo(on) { CONFIG.choreo.enabled = !!on; },
   setSkin(mode) { CONFIG.skin = mode; syncSkinBtn(); },      // 'dark' | 'white' | 'auto'
   setSkinAuto(v) { skinAuto = clamp(+v || 0, 0, 1); },       // alvo contínuo usado em modo auto
   getSkin() { return { mode: CONFIG.skin, mix: skinMix, target: skinTarget }; },
@@ -529,20 +675,63 @@ window.MIRRORBALL = {
 
 /* ---------------- painel de debug (tecla d) ---------------- */
 const dbg = document.getElementById('dbg');
+const CH = CONFIG.choreo, AMB = CONFIG.ambient;
 const sliders = [
+  // ---- focos (knobs do David; persistem em localStorage mb.knobs) ----
+  ['focos: quantos', 1, 6, 1, v => CONFIG.spotCount = v, () => CONFIG.spotCount],
+  ['focos: raio ×', 0.2, 3, 0.05, v => CONFIG.spotRadiusMul = v, () => CONFIG.spotRadiusMul],
+  ['focos: orla', 0, 0.9, 0.05, v => CONFIG.spotEdge = v, () => CONFIG.spotEdge],
+  ['espelhos: brilho', 0, 2.5, 0.05, v => CONFIG.mirrorGain = v, () => CONFIG.mirrorGain],
+  ['focos: saltam (0/1)', 0, 1, 1, v => CH.retarget = v >= 1, () => CH.retarget ? 1 : 0],
+  ['focos: fixo min s', 0.3, 20, 0.1, v => CH.dwell[0] = Math.min(v, CH.dwell[1]), () => CH.dwell[0]],
+  ['focos: fixo max s', 0.3, 30, 0.1, v => CH.dwell[1] = Math.max(v, CH.dwell[0]), () => CH.dwell[1]],
+  ['origem: |az| min°', 0, 170, 1, v => CH.azRange[0] = Math.min(v, CH.azRange[1]), () => CH.azRange[0]],
+  ['origem: |az| max°', 0, 175, 1, v => CH.azRange[1] = Math.max(v, CH.azRange[0]), () => CH.azRange[1]],
+  ['origem: el min°', -40, 80, 1, v => CH.elRange[0] = Math.min(v, CH.elRange[1]), () => CH.elRange[0]],
+  ['origem: el max°', -40, 85, 1, v => CH.elRange[1] = Math.max(v, CH.elRange[0]), () => CH.elRange[1]],
+  ['origem: mira (raios)', 0, 0.9, 0.02, v => CH.aimMax = v, () => CH.aimMax],
+  ['spot0: az° (−=esq)', -175, 175, 1, v => CONFIG.spots[0].az = v, () => CONFIG.spots[0].az],
+  ['spot0: el°', -30, 80, 1, v => CONFIG.spots[0].el = v, () => CONFIG.spots[0].el],
+  ['spot1: az°', -175, 175, 1, v => CONFIG.spots[1].az = v, () => CONFIG.spots[1].az],
+  ['spot1: el°', -30, 80, 1, v => CONFIG.spots[1].el = v, () => CONFIG.spots[1].el],
+  ['spot2: az°', -175, 175, 1, v => CONFIG.spots[2].az = v, () => CONFIG.spots[2].az],
+  ['spot2: el°', -30, 80, 1, v => CONFIG.spots[2].el = v, () => CONFIG.spots[2].el],
+  ['flash: por s', 0, 6, 0.1, v => CH.flashRate = v, () => CH.flashRate],
+  ['flash: raio ×', 0.2, 3, 0.05, v => { const b = 0.14; CH.flashRadius[0] = b * 0.7 * v; CH.flashRadius[1] = b * 1.3 * v; }, () => CH.flashRadius[1] / (0.14 * 1.3)],
+  ['flash: dura ms', 40, 600, 10, v => { CH.flashLen[0] = v * 0.6 / 1000; CH.flashLen[1] = v * 1.4 / 1000; }, () => CH.flashLen[1] * 1000 / 1.4],
+  ['luz geral (volume)', 0, 1, 0.05, v => CONFIG.shade.key = v, () => CONFIG.shade.key],
+  ['luz geral: az°', -180, 180, 5, v => CONFIG.shade.az = v, () => CONFIG.shade.az],
+  ['luz geral: el°', -60, 90, 5, v => CONFIG.shade.el = v, () => CONFIG.shade.el],
+  ['auréola', 0, 1, 0.05, v => CONFIG.halo = v, () => CONFIG.halo],
+  ['luz indireta', 0, 0.4, 0.01, v => AMB.intensity = v, () => AMB.intensity],
+  ['indireta: fineza', 20, 400, 5, v => AMB.k = v, () => AMB.k],
+  ['cone incidente', 0, 0.3, 0.005, v => CONFIG.incidentAlpha = v, () => CONFIG.incidentAlpha],
+  ['feixes: fração', 0, 1, 0.05, v => CONFIG.beamFraction = v, () => CONFIG.beamFraction],
+  ['feixes: compr. 3D', 0.5, 8, 0.1, v => CONFIG.beamLen3D = v, () => CONFIG.beamLen3D],
+  ['junta (seam)', 0, 0.4, 0.01, v => CONFIG.seamInset = v, () => CONFIG.seamInset],
+  ['espelhos: filas', 16, 96, 2, v => { if (v !== CONFIG.facetRows) { CONFIG.facetRows = v; buildTiles(); } }, () => CONFIG.facetRows],
+  // ---- bola ----
   ['rotationRpm', 0, 3, 0.05, v => CONFIG.rotationRpm = v, () => CONFIG.rotationRpm],
   ['haze', 0, 1, 0.01, v => CONFIG.haze = v, () => CONFIG.haze],
   ['sphereOpacity', 0, 1, 0.01, v => CONFIG.sphereOpacity = v, () => CONFIG.sphereOpacity],
   ['health', 0, 1, 0.01, v => health = v, () => health],
 ];
 const inputs = {};
+let knobStore = {}; try { knobStore = JSON.parse(localStorage.getItem('mb.knobs') || '{}') || {}; } catch (e) { /* sem storage */ }
+const PERSIST = new Set(sliders.slice(0, 32).map(x => x[0]));
 for (const [name, mn, mx, st, set, get] of sliders) {
+  if (PERSIST.has(name) && Number.isFinite(knobStore[name])) set(knobStore[name]);
   const lab = document.createElement('label');
   lab.innerHTML = `<span>${name}</span>`;
+  const val = document.createElement('b'); val.style.cssText = 'min-width:44px;text-align:right;font-weight:normal;color:#9a9a9a';
   const inp = document.createElement('input'); inp.type = 'range'; inp.min = mn; inp.max = mx; inp.step = st; inp.value = get();
-  inp.oninput = () => set(+inp.value);
-  lab.appendChild(inp); dbg.appendChild(lab); inputs[name] = inp;
+  val.textContent = (+inp.value).toFixed(st < 0.1 ? 2 : st < 1 ? 1 : 0);
+  inp.oninput = () => { set(+inp.value); val.textContent = (+inp.value).toFixed(st < 0.1 ? 2 : st < 1 ? 1 : 0);
+    if (PERSIST.has(name)) { knobStore[name] = +inp.value; try { localStorage.setItem('mb.knobs', JSON.stringify(knobStore)); } catch (e) { /* */ } } };
+  lab.appendChild(val); lab.appendChild(inp); dbg.appendChild(lab); inputs[name] = inp;
 }
+{ const rb = document.createElement('button'); rb.textContent = 'repor knobs (defaults)'; rb.style.cssText = 'margin-top:6px;font:inherit;background:#222;color:#ccc;border:1px solid #444;padding:2px 8px;cursor:pointer';
+  rb.onclick = () => { try { localStorage.removeItem('mb.knobs'); } catch (e) { /* */ } location.reload(); }; dbg.appendChild(rb); }
 const spRow = document.createElement('div'); spRow.className = 'sp';
 CONFIG.spots.forEach((s, i) => {
   const l = document.createElement('label'); const c = document.createElement('input'); c.type = 'checkbox'; c.checked = true;
@@ -572,7 +761,7 @@ requestAnimationFrame(frame);
 <script src="core.js?v=1"></script>
 <script src="bridge.js?v=2"></script>
 <script src="emotion-v2.js?v=1"></script>
-<script src="music.js?v=21"></script>
+<script src="music.js?v=35"></script>
 <!-- painel de calibração ao vivo (tecla k). Inerte sem window.MUSIC (bola manual/câmara). -->
 <script src="tuner.js?v=1"></script>
 </body>

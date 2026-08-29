@@ -109,8 +109,61 @@ window.MB_CLOCK = MB_CLOCK;
 // §5: nada de números soltos no código. Tudo aqui, sobreponível em runtime por
 // music.config.json (deep-merge) sem rebuild.
 const MUSIC = {
-  /* ---- Perfil ativo (manual; deteção automática NÃO nesta fase, §0.1 ponto 6) ---- */
+  /* ---- Perfil ativo ---- */
   profile: 'electronica',          // 'electronica' | 'acustico' | 'voz'
+
+  /* ---- §PROFAUTO — deteção automática de perfil ----
+   * O problema medido: com `electronica` a correr sobre jazz, a bola gira a 2.95 rpm durante
+   * 159 s. Nenhum valor de `kickC0` corrige isto (varrido de 2.79 a 16) — o detetor lê
+   * contrabaixo e bombo de bateria como bombo de clube. Não é um limiar mal posto, é o perfil
+   * errado. Daí um classificador, e não mais afinação.
+   *
+   * SINAL PRIMÁRIO = REGULARIDADE, não timbre. Medido em duas gravações reais:
+   *   · medianas globais separam (density techno 0.34 vs jazz 0.58; hat 0.00 vs 0.58) MAS em
+   *     janelas de 10 s as distribuições SOBREPÕEM-SE (o techno aos 50 s dá density 0.58,
+   *     hat 0.57 — indistinguível do jazz). Um classificador sobre valores instantâneos
+   *     trocaria de perfil a meio da faixa, que é pior do que estar sempre errado.
+   *   · o que separa de forma estável é o coeficiente de variação dos INTERVALOS ENTRE KICKS:
+   *     CV p50 techno 0.15 / jazz 0.50; fração de janelas com CV<0.35: 0.55 vs 0.16.
+   *
+   * Três defesas, cada uma nascida de uma falha medida durante a construção:
+   *  1) `gapMaxMs` — um intervalo maior que isto não é irregularidade, é AUSÊNCIA de bombo
+   *     (breakdown). Sem isto, o gap de 14 s do breakdown do techno entrava como um intervalo
+   *     gigante e fazia o CV explodir: o techno passava a ler-se como jazz a partir dos 40 s.
+   *  2) `minCoverage` — fração da janela efetivamente coberta por intervalos válidos. Abaixo
+   *     disto o score CONGELA (não decai). Foi o achado decisivo: onde o techno parecia
+   *     irregular (breakdown + dropouts do loopback, ~5% de frames com rms=0 nas duas
+   *     gravações) a cobertura caía para 0.35, enquanto o jazz é irregular COM a janela cheia
+   *     (0.75-0.99). Ausência de bombo não é prova de nada e não pode contar como evidência.
+   *  3) VETO por `hat` médio longo — não se entra em `electronica` com hat alto nem em
+   *     `acustico` com hat baixo. É o que impede que a secção mais regular de uma faixa de
+   *     jazz (medida: CV 0.22, score a subir para 0.56 no fim da gravação) a faça saltar para
+   *     `electronica`. Aqui o `hat` é SECUNDÁRIO e desempata; sozinho não decidiria nada, pelo
+   *     motivo do parágrafo acima.
+   *
+   * O MANUAL MANDA SEMPRE: `p` (ou {type:'profile'} da tab do OS) põe `auto:false` para a
+   * sessão. Nunca se sobrepõe uma escolha humana; só `MUSIC.profileAuto.auto = true` (ou um
+   * reload) volta a ligar a deteção. */
+  profileAuto: {
+    // Interruptor mestre. NUMÉRICO (1/0) e não booleano de propósito: é um knob da §TUNE, e o
+    // painel/JSON só sabem escrever números — `coerceKnob` devolveria 1/0 e o tipo mudava a meio
+    // da sessão. Todos os testes são de veracidade (`!P.auto`), por isso 1/0 e true/false são
+    // ambos aceites; o default fica num só tipo para não haver surpresas.
+    auto: 1,                 // 1 = deteção automática ligada · 0 = desligada (comportamento antigo)
+    windowMs: 30000,         // janela deslizante do histórico dedicado de kicks
+    minIntervals: 16,        // intervalos válidos necessários para haver opinião
+    gapMaxMs: 1200,          // acima disto o intervalo é ausência de bombo — descarta-se
+    minCoverage: 0.60,       // cobertura mínima da janela para a leitura contar (ver defesa 2)
+    cvRegular: 0.35,         // CV abaixo disto = janela "regular" (techno p50 0.15, jazz 0.50)
+    scoreTau: 10,            // τ (s) do integrador da fração de janelas regulares
+    evidenceSec: 20,         // segundos de evidência VÁLIDA antes da primeira decisão
+    enterElectronica: 0.55,  // score acima disto → electronica
+    enterAcustico: 0.30,     // score abaixo disto → acustico  (banda morta = histerese)
+    hatElectronicaMax: 0.40, // veto: com hat médio acima disto não se entra em electronica
+    hatAcusticoMin: 0.25,    // veto: com hat médio abaixo disto não se entra em acustico
+    hatTau: 20,              // τ (s) da média longa de `hat` (o sinal secundário)
+    minHoldSec: 45,          // tempo mínimo no perfil atual antes de considerar outra troca
+  },
 
   /* ---- Camada 1: normalização de loudness ---- */
   // Média integrada com gate (§1.1). NÃO é o `adapt` do emotion-v2.js (seguidor de picos com
@@ -174,6 +227,51 @@ const MUSIC = {
     keepTimesMs: 8000,    // histórico de tempos de kick guardado (autocorrelação do §GRID)
   },
 
+  /* ---- §SNARE — o terceiro detetor de banda: a TAROLA (David, 3ª audição) ----
+   * Queixa verbatim: "a bola nao reaje a coisas obvias na musica tipo tarolas secas repentinas —
+   * ou seja marcações de tempos ou contratempos que mereciam resposta da bola."
+   *
+   * PORQUÊ FALTAVA: só existiam dois detetores, `sub` (40-120 Hz) e `hat` (≥6 kHz). O corpo da
+   * tarola vive em 200-800 Hz — cai exatamente no buraco entre os dois, dentro do `mid`
+   * (150-2000 Hz), que nenhum detetor de eventos lia.
+   *
+   * DOIS CAMINHOS, como o §KICK:
+   *
+   * (1) PREFERIDO — `midFluxRaw` do sidecar (flux linear cru de 200-800 Hz, adicionado
+   *     2026-08-29 em `agent-os/audio-sidecar/server.js` à imagem do `hatFlux`). Aí usa-se o
+   *     §BANDONSET normal (mediana + variância + C adaptativo), como o bombo. ⚠ EXIGE RESTART
+   *     DO SIDECAR — enquanto ele não reiniciar, corre o caminho (2).
+   *
+   * (2) FALLBACK — derivada rectificada de `mid`, para o sidecar antigo, o gerador sintético e
+   *     as gravações já feitas (`tools/feat`, `tools/feat-jazz`, que não têm `midFluxRaw`).
+   *     ⚠ MEDIDO: a mediana desta derivada é ~0 (p50=0.00000, p90=0.14, p99=0.78), por isso o
+   *       teste por RÁCIO do §BANDONSET (`v > C·mediana`) colapsa — com mediana zero qualquer
+   *       valor passa, e C0 de 1.4 a 3.5 dava sempre os mesmos ~150 disparos, 61 deles em
+   *       silêncio. O fallback usa por isso limiar ADITIVO robusto (mediana + k·MAD) com PISO
+   *       ABSOLUTO, que é o que funciona quando a mediana é zero.
+   *     Varrimento em `tools/feat` (60 s techno) e `tools/feat-jazz` (159 s): refratário 220 ms
+   *     + piso 0.32 dá 1.50/s no techno e 1.30/s no jazz — a ordem de grandeza de um contratempo,
+   *     não de um 1/16. Com piso 0.18 subia a 1.77/s com 10 disparos em trechos quase mudos.
+   *
+   * Em AMBOS os caminhos vale o `rmsMin`: o §KICK aprendeu isso à sua custa, e o vazio de
+   * `tools/feat` tem rms mediano 0.002 sem que o sidecar levante a flag `silence` uma única vez
+   * (medido: 0 frames com `silence` em 2667). Sem este gate, a tarola disparava no vazio. */
+  snare: {
+    on: 1,                // interruptor mestre, NUMÉRICO (é um knob da §TUNE, como `profileAuto.auto`)
+    C0: 1.9,              // caminho `midFluxRaw`: C base (entre o kick 1.6 e o hat 1.4… é mais esparsa)
+    refractMs: 220,       // ~1 contratempo a 136 BPM; corta o rufo de 1/16 sem cortar o backbeat
+    rmsMin: 0.006,        // piso de energia — o vazio de `tools/feat` tem rms mediano 0.002
+    fbK: 3.0,             // fallback: limiar = mediana + fbK · MAD·1.4826
+    fbFloor: 0.32,        // fallback: piso ABSOLUTO do limiar (o que faz o trabalho todo)
+    // A resposta VISUAL. §0.1: "subtil" lê-se como "fraco" — e o oposto do `hat`, que é textura
+    // contínua. Isto é um ACENTO SECO: sobe de golpe e cai em ~0.35 s. Nada oscila: um acento
+    // pontual a ≤ ~1.5/s não é um pisca (o teto de 3 Hz é sobre OSCILAÇÃO, não sobre eventos).
+    decaySec: 0.35,       // tempo de queda do acento (release do envelope de evento)
+    opacityKick: 0.30,    // salto de opacidade no acento (para os EXTREMOS — ver §OPACEXTREMOS)
+    spotKick: 0.35,       // salto de intensidade nos spots (fração do range que sobra até 1.6)
+    beamKick: 0.35,       // salto nos feixes (fração do que falta até ao teto 0.18 — nunca o excede)
+  },
+
   /* ---- Autocorrelação de BPM (§8 da pesquisa) — DESEMPATE, não substituição ----
    * A mediana de intervalos + fold de oitava do §GRID mantém-se: é a receita certa no caso comum
    * e é mais barata. Falha só quando o detetor perde batidas alternadas (mede o dobro do período
@@ -205,6 +303,27 @@ const MUSIC = {
    * para se NOTAR. A "amplitude visível" é o requisito, não a subtileza. */
   activity: { low: 0.10, high: 0.45, beamsMin: 0.55, hatMin: 0.35, slowMax: 1.8 },  // densidade → atividade
   hat: { gain: 6, releaseSec: 0.12, beamGain: 1.0, opacityDip: 0.35 },   // agudos marcam: feixes sobem, opacidade dá um tique
+  /* §FLASHDIM — o técnico de luz nos pinspots (docs/lighting-design-research.md): aim FIXO, trabalha
+   * o DIMMER e dispara flashes curtos. Flashes = MIRRORBALL.flash(); dimmer = ganho por fase × foco. */
+  flash: {
+    on: true,
+    kickChance: 0.30,       // probabilidade de um bombo disparar um flash em GROOVE
+    kickChanceDrop: 0.85,   // …nos primeiros compassos de DROP
+    dropBars: 4,            // compassos de DROP em que o bombo dispara quase sempre
+    snare: 1,               // probabilidade de cada tarola disparar flash
+    phraseBurst: 3,         // flashes em rajada na fronteira de FRASE (0 = nenhum)
+    minGapMs: 340,          // nunca > 3 Hz (regra 6 do CLAUDE.md)
+    intensity: [1.0, 1.5],  // intensidade sorteada
+    lenMs: [80, 200],
+  },
+  dimmer: {                 // ganho por fase, [foco 0 (esq), foco 1 (dir), restantes]
+    GROOVE:    [1.00, 0.90, 0.80],
+    BREAKDOWN: [0.85, 0.12, 0.10], // corta um dos dois: a sala respira com um foco só
+    BUILD:     [0.70, 0.30, 0.30], // …e o outro volta a subir ao longo do build (rampa por compassos)
+    PRE_DROP:  [0.55, 0.55, 0.40],
+    DROP:      [1.25, 1.25, 1.10], // dimmer a 100 % (o teto 1.6 da bola é respeitado no clamp)
+    ease: 0.35,             // s de rampa entre ganhos de fase
+  },
   map: {
     // rpm ← kickPresence × energia. Sem bombo: 0.0-0.15. Bombo forte: 2.4-3.0.
     rpmIdle: [0.00, 0.15],        // [mínimo, máximo] do repouso — escolhido por energia residual
@@ -212,13 +331,59 @@ const MUSIC = {
     rpmKnee: 0.08,                // presença abaixo disto = repouso puro (evita meio-termo morno)
     spotBase: [0.35, 1.45],       // intensidade dos spots ← loudness (curva sobre a base do CONFIG)
     spotDomGain: 1.30, spotSubGain: 0.62,   // foco dominante vs os outros dois
-    spotSwapBars: 8,              // foco dominante roda na fronteira de 8 compassos
+    spotSwapBars: 8,              // foco dominante roda na fronteira de 8 compassos (base do sorteio)
+
+    /* ---- §SPOTMOV — dar MOVIMENTO aos focos (David: "os focos mudam muito pouco, cansativo") ----
+     * ⚠ O diagnóstico contradiz a intuição. MEDIDO em `tools/feat`:
+     *       spots  amplitude(p95-p05) = 1.59 / 1.42 / 1.40  num range de 0-1.6  ← já é quase tudo
+     *       spots  delta/frame p50    = 0.0000-0.0003       ← praticamente imóveis entre acentos
+     *       spots  movimento total    = 5-7× o range em 60 s
+     *       opacity movimento total   = 66× o range
+     * Ou seja: o range já está no máximo; o que falta é MOVIMENTO. Aumentar `spotBase` não
+     * resolveria nada — só saturaria. Por isso mexe-se em três sítios, nenhum deles a amplitude:
+     *
+     *  1) `spotSwapJitter` — a rotação do dominante deixa de ser exatamente 8 compassos. §0.1 pede
+     *     "variacoes que nao tao ligadas à musica"; 8 fixos é o contrário disso, é métrica.
+     *     A cada troca sorteia-se o próximo intervalo em `spotSwapBars ± jitter`.
+     *  2) `spotBarAccent` / `spotPhraseAccent` — acentos NAS FRONTEIRAS musicais, que a grelha já
+     *     dá de graça. É o que um técnico faz: marca o compasso, marca a frase com mais força.
+     *  3) `spotSnareGain` — a tarola nova (§SNARE) como fonte de acento. É a queixa 2 a pagar a
+     *     queixa 4: o acento seco que faltava é exatamente o que tira os focos da imobilidade.
+     *
+     * Os acentos são MULTIPLICATIVOS sobre o dominante e decaem; não é uma oscilação periódica,
+     * logo não há frequência a violar o teto de 3 Hz — a fronteira de compasso a 128 BPM é 0.53 Hz
+     * e a de frase é 0.03 Hz. */
+    spotSwapJitter: 3,            // troca do dominante em `spotSwapBars ± isto` compassos (0 = fixo)
+    spotBarAccent: 0.16,          // acento no dominante na fronteira de COMPASSO
+    spotPhraseAccent: 0.34,       // …e o maior, na fronteira de FRASE (já existia a 0.15, sobe)
+    spotAccentDecay: 0.55,        // tempo de queda dos acentos de fronteira (s)
+    spotSnareGain: 0.45,          // quanto o acento de tarola levanta o dominante
     beamIntFrom: [0.06, 0.18],    // ← high + onset (hi-hats/voz). TETO 0.18, inviolável
     beamsFrom: [12, 56],
     beamHighMix: 0.65,            // peso de `high` vs `onset` no sinal dos feixes
     hazeFrom: [0.60, 0.95],       // ← INVERSO de bass (breakdown sem graves = fumo)
     opacityFrom: [0.12, 1.00],    // ← loudness curto
     opacityFloorGroove: 0.20,     // §0.1: a bola não pode ficar fantasma sem razão em GROOVE
+
+    /* ---- §OPACEXTREMOS — a opacidade a chegar aos EXTREMOS (David: "pouco jogo") ----
+     * ⚠ Este é o diagnóstico mais contra-intuitivo dos quatro, e a primeira tentativa ESTAVA
+     * ERRADA — fica registada aqui para não se repetir. A opacidade é, de longe, a variável que
+     * MAIS se move: movimento total 66× o range, delta/frame p50 = 0.0185 (as outras estão em
+     * 0.0001-0.0003). Não falta oscilação — sobra.
+     *
+     * A 1.ª hipótese foi "falta alcance, estica-se a curva com um gamma". Medido: NÃO MUDA NADA
+     * (amp 0.487 → 0.487 com γ de 0.72 a 1.6). Porquê: o ALVO já satura — p50 e p95 do
+     * `target.opacity` são 1.000, e 1732 dos 2667 frames estão exatamente no piso de GROOVE
+     * (0.20). O alvo é praticamente uma onda quadrada 0.20↔1.00; não há meio-termo para esticar.
+     *
+     * A faixa morta 0.38-0.86 que o David vê é da SAÍDA, e nasce de duas coisas EM SÉRIE:
+     *   1) o `ease` com `tau.opacity` = [0.40, 2.00] — 2 s de release contra um alvo que muda
+     *      muito mais depressa: a saída nunca chega ao fundo antes de o alvo voltar a subir;
+     *   2) o `hat.opacityDip`, que morde o que sobra por cima (56% dos frames no decil 0.7-0.8,
+     *      só 3% acima de 0.9).
+     * Por isso os knobs certos são o RELEASE e um acento que entre DEPOIS da mordidela — não uma
+     * curva no alvo. Ver §OPACSECO no `applyToBall`. */
+    opacityReleaseSec: 0.80,      // release do rpm→opacidade (era 2.00 em `tau.opacity`)
     // INVARIANTE (David, 2ª audição): "enquanto houver bombo a bola DEVE girar — só sem bombo
     // é que pára". Piso DURO no rpm, aplicado DEPOIS dos gestos: nem `freeze`, nem `fog`, nem
     // `ghost` podem travar a rotação enquanto há bombo. Esses gestos continuam a valer — mas
@@ -226,6 +391,35 @@ const MUSIC = {
     // reservado para quando o bombo já parou (e aí o piso está desligado por definição).
     spinLockPresence: 0.12,       // acima desta presença de bombo, o piso está ativo
     spinLockRpm: 2.6,            // rpm mínimo enquanto há bombo
+
+    /* ---- §SPINCEIL — o SIMÉTRICO do `spinLock` (David, 3ª audição) ----
+     * Queixa verbatim: "devia ser possivel a bola parar completamente sempre que bombo para e as
+     * vezes para e a bola n faz isso (…) tem de ser decisao, nao casualidade."
+     *
+     * MEDIDO em `tools/feat`, no vazio de 12.5 s sem bombo (t=21.4→33.9 s):
+     *     t=24.6  rpm=0.76  tgt=0.40  pres=0.0002  gest=fog         ← travava, correto
+     *     t=25.1  rpm=0.84  tgt=2.49  pres=0.0001  gest=blind-spin  ← ACELERA
+     *     t=30.4  rpm=2.50  tgt=2.50  pres=0.0000  gest=blind-spin  ← 2.5 rpm com bombo a ZERO
+     * O `spinLock` garante o PISO com bombo. Não havia nada a garantir o TETO sem bombo, e
+     * `blind-spin` (`rpm:{set:2.5}`) / `all-on` (3.0) sobrepunham-se ao alvo de repouso. Resultado
+     * na gravação inteira: rpm mínimo 0.42, ZERO frames abaixo de 0.2 — a bola nunca parava.
+     *
+     * A correção é o espelho exato do piso, aplicada no MESMO sítio (depois dos gestos): sem
+     * bombo confirmado, nenhum gesto pode manter a bola acima de `ceilRpm`.
+     *
+     * ⚠ Isto NÃO enfraquece o `spinLock`: as duas condições são mutuamente exclusivas por
+     *   construção (`kickPresence > spinLockPresence` vs `< spinCeilPresence`, com
+     *   spinCeilPresence ≤ spinLockPresence). Com bombo, a bola gira — a invariante mantém-se.
+     *
+     * A VARIAÇÃO que o David autorizou ("até posso ter um parametro para nao ser sempre sempre
+     * igual") é `spinCeilChance`, e o default é 1 = PARA SEMPRE. Quando < 1, a decisão é tomada
+     * UMA vez por vazio (no instante em que o vazio é confirmado), fica registada no log/HUD
+     * ("bola NÃO pára · sorteio") e vale para esse vazio inteiro. Nunca é um efeito colateral de
+     * um gesto: é uma escolha do motor, visível, exatamente como ele pediu. */
+    spinCeilPresence: 0.06,       // presença abaixo disto = "sem bombo" para efeitos do teto
+    spinCeilGapSec: 2.2,          // …e sem kick há pelo menos isto (> gapDeadSec: é decisão, não dúvida)
+    spinCeilRpm: 0.10,            // teto de rpm no vazio — dentro de `rpmIdle`, a bola lê-se PARADA
+    spinCeilChance: 1.00,         // 1 = pára sempre (default). < 1 = sorteia por vazio, e regista o sorteio
   },
 
   // τ (s) [attack, release]. Do brief da Fase 5, ponto 3. Nada oscila acima de 3 Hz.
@@ -275,13 +469,20 @@ const MUSIC = {
     grooveEveryBars: [16, 32],    // em GROOVE, tenta a cada 16-32 compassos
     grooveChance: 0.30,           // …e aceita 30% das vezes
     grooveLight: ['breath', 'strobe-slow'],
-    dark: ['freeze', 'ghost', 'blind-spin', 'single-beam', 'fog', 'strobe-slow', 'breath'],
+    dark: ['freeze', 'ghost', 'blind-spin', 'single-beam', 'fog', 'strobe-slow', 'breath', 'flash-clear'],
     seed: 0,                      // 0 = seed por sessão (Date.now); qualquer outro = determinístico
   },
 
   /* ---- Explosão (efeito em index-v2.html: MIRRORBALL.explode/rewind) ---- */
   explode: {
-    on: true,
+    on: true,               // o botão "explosões" da bola e MIRRORBALL.explodeEnabled também mandam
+    // Raridade (§0.1: "um drop por música, se tanto"): só o GRANDE drop estoira — o que vem de um
+    // build a sério (PRE_DROP/BUILD), depois de ≥ minDarkSec sem bombo, e nunca antes de minGapSec
+    // desde o último estoiro. E mesmo assim só `chance` das vezes, para não ser previsível.
+    minGapSec: 180,
+    minDarkSec: 6,
+    fromBuildOnly: false,   // true = só PRE_DROP/BUILD → DROP conta; a máquina vai muitas vezes BREAKDOWN → DROP direto
+    chance: 0.85,
     skipRestrained: true,   // o drop "contido" (1 em 4) não estoira — a contenção é o gesto
     hold: 'drop',           // 'drop' = recompõe-se no fim da abertura do drop (4-8 compassos)
                             // 'breakdown' = fica em estilhaços até ao fim do breakdown (PRE_DROP ou volta a GROOVE);
@@ -330,6 +531,30 @@ const TUNE = {
       { path: 'bandOnset.hatEnvTau.1',  range: [0.01, 0.60], step: 0.01, label: 'hat env release' },
       { path: 'bandOnset.presenceWindowMs', range: [500, 5000], step: 50, label: 'janela presença ms' },
       { path: 'bpmAuto.confBelow',      range: [0.0, 1.0],   step: 0.01, label: 'autocorr. abaixo de conf' },
+      // §SNARE — o terceiro detetor. `on` é 0/1, como `profileAuto.auto`.
+      { path: 'snare.on',               range: [0, 1],       step: 1,    label: 'tarola ON/OFF' },
+      { path: 'snare.C0',               range: [1.15, 4.0],  step: 0.01, label: 'tarola C0 (c/ midFluxRaw)' },
+      { path: 'snare.fbFloor',          range: [0.05, 0.80], step: 0.01, label: 'tarola piso (fallback)' },
+      { path: 'snare.fbK',              range: [0.5, 8.0],   step: 0.1,  label: 'tarola k·MAD (fallback)' },
+      { path: 'snare.refractMs',        range: [80, 600],    step: 10,   label: 'tarola refratário ms' },
+    ],
+  },
+  profile: {
+    label: 'Perfil (deteção automática)',
+    knobs: [
+      // 0/1: o interruptor mestre. Com `auto` a 0 o motor comporta-se EXATAMENTE como antes
+      // desta funcionalidade existir — o perfil só muda por `p` ou por mensagem.
+      { path: 'profileAuto.auto',              range: [0, 1],       step: 1,    label: 'auto ON/OFF' },
+      { path: 'profileAuto.cvRegular',         range: [0.10, 0.80], step: 0.01, label: 'CV "regular" (limiar)' },
+      { path: 'profileAuto.minCoverage',       range: [0.0, 1.0],   step: 0.01, label: 'cobertura mín. da janela' },
+      { path: 'profileAuto.gapMaxMs',          range: [400, 3000],  step: 50,   label: 'gap máx. (ausência)' },
+      { path: 'profileAuto.scoreTau',          range: [2, 40],      step: 0.5,  label: 'τ do score (s)' },
+      { path: 'profileAuto.evidenceSec',       range: [5, 90],      step: 1,    label: 'evidência mín. (s)' },
+      { path: 'profileAuto.enterElectronica',  range: [0.0, 1.0],   step: 0.01, label: 'entra electronica >' },
+      { path: 'profileAuto.enterAcustico',     range: [0.0, 1.0],   step: 0.01, label: 'entra acustico <' },
+      { path: 'profileAuto.hatElectronicaMax', range: [0.0, 1.0],   step: 0.01, label: 'veto hat p/ electronica' },
+      { path: 'profileAuto.hatAcusticoMin',    range: [0.0, 1.0],   step: 0.01, label: 'veto hat p/ acustico' },
+      { path: 'profileAuto.minHoldSec',        range: [10, 180],    step: 5,    label: 'tempo mín. no perfil (s)' },
     ],
   },
   mapping: {
@@ -341,6 +566,12 @@ const TUNE = {
       { path: 'map.rpmIdle.1',    range: [0.0, 1.5],  step: 0.01, label: 'rpm em repouso (máx)' },
       { path: 'map.rpmKnee',      range: [0.0, 0.5],  step: 0.01, label: 'joelho da presença' },
       { path: 'map.spinLockRpm',  range: [0.0, 3.0],  step: 0.05, label: 'piso rpm com bombo' },
+      // §SPINCEIL — o teto SEM bombo. `spinCeilChance` a 1 = pára sempre (o que o David quer por
+      // omissão); baixar é opt-in e o sorteio fica no log ("bola NÃO pára · sorteio").
+      { path: 'map.spinCeilRpm',       range: [0.0, 1.5],  step: 0.01, label: 'teto rpm sem bombo' },
+      { path: 'map.spinCeilChance',    range: [0.0, 1.0],  step: 0.05, label: 'prob. de PARAR (1=sempre)' },
+      { path: 'map.spinCeilGapSec',    range: [0.5, 8.0],  step: 0.1,  label: 'silêncio p/ decidir (s)' },
+      { path: 'map.spinCeilPresence',  range: [0.0, 0.30], step: 0.01, label: 'presença "sem bombo"' },
       // feixes — TETO 0.18 (regra 6), imposto pelo max do range
       { path: 'map.beamIntFrom.0', range: [0.0, 0.18], step: 0.005, label: 'feixes intens. (mín)' },
       { path: 'map.beamIntFrom.1', range: [0.0, 0.18], step: 0.005, label: 'feixes intens. (máx)' },
@@ -352,6 +583,26 @@ const TUNE = {
       { path: 'map.opacityFrom.0', range: [0.0, 1.0], step: 0.01, label: 'opacidade (mín)' },
       { path: 'map.opacityFrom.1', range: [0.0, 1.0], step: 0.01, label: 'opacidade (máx)' },
       { path: 'map.opacityFloorGroove', range: [0.0, 1.0], step: 0.01, label: 'piso opac. GROOVE' },
+      // §OPACEXTREMOS — < 1 empurra a opacidade para os extremos (medida: vivia em 0.38-0.86)
+      { path: 'map.opacityReleaseSec', range: [0.2, 3.0], step: 0.05, label: 'opac. release (s)' },
+      // §SPOTMOV — movimento dos focos. NÃO é amplitude (já usa 1.59 de 1.6): é acento e ritmo.
+      { path: 'map.spotSwapBars',      range: [2, 32],    step: 1,    label: 'troca dominante (compassos)' },
+      { path: 'map.spotSwapJitter',    range: [0, 8],     step: 1,    label: '…± jitter (0 = fixo)' },
+      { path: 'map.spotBarAccent',     range: [0.0, 0.8], step: 0.01, label: 'acento de COMPASSO' },
+      { path: 'map.spotPhraseAccent',  range: [0.0, 1.2], step: 0.01, label: 'acento de FRASE' },
+      { path: 'map.spotAccentDecay',   range: [0.1, 3.0], step: 0.05, label: 'queda dos acentos (s)' },
+      { path: 'map.spotSnareGain',     range: [0.0, 1.2], step: 0.01, label: 'tarola → focos' },
+      // §FLASHDIM — flashes (MIRRORBALL.flash) e dimmer por fase
+      { path: 'flash.kickChance',      range: [0.0, 1.0], step: 0.05, label: 'flash: bombo (prob.)' },
+      { path: 'flash.kickChanceDrop',  range: [0.0, 1.0], step: 0.05, label: 'flash: bombo no DROP' },
+      { path: 'flash.snare',           range: [0.0, 1.0], step: 0.05, label: 'flash: tarola (prob.)' },
+      { path: 'flash.phraseBurst',     range: [0, 5],     step: 1,    label: 'flash: rajada na frase' },
+      { path: 'dimmer.BREAKDOWN.1',    range: [0.0, 1.0], step: 0.05, label: 'dimmer: foco 2 em BREAKDOWN' },
+      { path: 'dimmer.DROP.0',         range: [0.5, 1.6], step: 0.05, label: 'dimmer: DROP' },
+      // §SNARE — a resposta visual do acento seco (o teto 0.18 é preservado por construção)
+      { path: 'snare.opacityKick',     range: [0.0, 0.8], step: 0.01, label: 'tarola → opacidade' },
+      { path: 'snare.beamKick',        range: [0.0, 0.8], step: 0.01, label: 'tarola → feixes' },
+      { path: 'snare.decaySec',        range: [0.1, 1.5], step: 0.05, label: 'queda do acento (s)' },
       // agudos → o quanto se nota
       { path: 'hat.beamGain',     range: [0.0, 2.0],  step: 0.05, label: 'ganho agudos→feixes' },
       { path: 'hat.opacityDip',   range: [0.0, 1.0],  step: 0.01, label: 'tique de opacidade' },
@@ -502,6 +753,16 @@ let RNG = makeRng(MUSIC.gesture.seed || (Date.now() & 0x7fffffff));
 const rngPick = arr => arr[Math.floor(RNG() * arr.length) % arr.length];
 const rngRange = r => lerp(r[0], r[1], RNG());
 
+/* RNG SEPARADO para a coreografia dos spots (§SPOTMOV) e para o sorteio do §SPINCEIL.
+ * ⚠ Não é preciosismo — foi medido. O jitter da troca de dominante consome números do `RNG`
+ * dos gestos, o que MUDA A SEQUÊNCIA DE GESTOS de toda a sessão. Efeito real em `tools/feat`:
+ * ligar só o `spotSwapJitter` fazia a opacidade passar de amp 0.684 (p05 0.179) para amp 0.306
+ * (p05 0.558) — não por causa do mapeamento, mas porque saíram gestos diferentes, e são os
+ * gestos (`ghost`, `flash-clear`) que levam a opacidade aos extremos. Duas fontes independentes
+ * evitam este acoplamento invisível e mantêm os testes com seed comparáveis. */
+let RNG2 = makeRng(((MUSIC.gesture.seed || (Date.now() & 0x7fffffff)) ^ 0x5bf03635) >>> 0);
+const rng2Range = r => lerp(r[0], r[1], RNG2());
+
 /* ================================== estado do motor ================================== */
 const state = {
   // features
@@ -515,6 +776,8 @@ const state = {
   act: 1, densAvg: null, subAvg: null, hatAvg: null, hatPulse: 0,
   // --- kick / bombo ---
   kickTimes: [], lastKickT: -Infinity, kickRate: 0, kickPresence: 0, kickFlash: 0,
+  // --- explosão (raridade): último estoiro e início da família escura (BREAKDOWN/BUILD/PRE_DROP) ---
+  lastExplodeT: -Infinity, darkSince: -Infinity, explodeCount: 0,
   // §BANDONSET. Os detetores são criados abaixo (precisam do MUSIC já definido); `kickDet`/
   // `hatDet`/`hatEnv` nascem a null e são preenchidos por `resetDetectors()` — que corre
   // imediatamente, mas o valor inicial tem de existir aqui na mesma (regra 7 do CLAUDE.md:
@@ -524,6 +787,26 @@ const state = {
   kickExpected: 0,       // batidas esperadas na janela de presença (HUD)
   hatLevel: 0,           // envelope dos agudos por banda (0..1) — alimenta feixes/opacidade
   hatFlash: 0,           // evento discreto de agudo (decai como o kickFlash)
+  /* --- §SNARE — o detetor de tarola e o seu acento ---
+   * Regra 7 do CLAUDE.md, a sério: `state.act` indefinido já matou os feixes uma vez
+   * (`beamMaxCount = NaN`). `snareAccent` entra em `lerp` no `computeTargets` e em multiplicações
+   * no `applyToBall` — um undefined aqui apagava os feixes E os spots ao mesmo tempo. */
+  snareDet: null,        // BandOnset do caminho `midFluxRaw` (criado em resetDetectors)
+  snareHist: [],         // histórico do fallback (derivada de `mid`) — mediana + MAD
+  snareLastT: -Infinity, // último acento (refratário)
+  snarePrevMid: null,    // `mid` do frame anterior, para a derivada do fallback (null = ainda não há)
+  snareAccent: 0,        // 0..1, o acento SECO que decai — é isto que se vê
+  snareCount: 0,         // total de acentos na sessão (HUD/verificação)
+  snarePath: 'fallback', // 'raw' = midFluxRaw do sidecar · 'fallback' = derivada de `mid`
+  snareThr: 0,           // limiar efetivo deste frame (HUD/tuner-lab)
+  snareFlux: 0,          // sinal do detetor neste frame (HUD/tuner-lab)
+  /* --- §SPINCEIL — a decisão de parar (ou não) neste vazio --- */
+  spinCeilArmed: false,  // já foi decidido para o vazio corrente?
+  spinCeilStop: true,    // …e a decisão foi PARAR? (default: sim, como o `spinCeilChance` de 1)
+  spinCeilCount: 0,      // vazios vistos (HUD)
+  /* --- §SPOTMOV — acentos de fronteira e rotação do dominante --- */
+  spotAccent: 0,         // acento corrente do dominante (decai) — soma compasso/frase/tarola
+  nextSwapBar: -1,       // compasso da próxima troca de dominante (-1 = ainda não sorteado)
   /* --- §DETSTATS — a estatística interna do §BANDONSET publicada POR FRAME ---
    * O `BandOnset` já calcula tudo isto; o que faltava era um sítio onde o resto do mundo o
    * pudesse LER a cada frame. Serve o HUD `m` e, sobretudo, o `tuner-lab.html`: sem a mediana e
@@ -540,6 +823,22 @@ const state = {
   },
   bpmAuto: 0,            // BPM da autocorrelação (0 = sem opinião) — só desempate + HUD
   bpmSource: 'mediana',  // 'mediana' | 'autocorr' — o que decidiu o BPM atual (HUD)
+  /* --- §PROFAUTO — classificador de perfil ---
+   * Regra 7 do CLAUDE.md a sério: um classificador com acumuladores é a fonte óbvia de NaN
+   * (já matou os feixes uma vez por `state.act` indefinido). TODOS nascem com valor, e os que
+   * são "ainda não sei" nascem a `null` EXPLÍCITO — nunca undefined — e são testados com
+   * `== null` antes de entrarem em qualquer conta. */
+  profHist: [],          // tempos de kick da janela dedicada (30 s; o `kickHistory` só guarda 8)
+  profCv: null,          // CV corrente dos intervalos (null = sem leitura válida agora)
+  profCov: 0,            // cobertura da janela por intervalos válidos (0..1)
+  profScore: null,       // fração suavizada de janelas regulares (null = ainda sem evidência)
+  profHat: null,         // média longa de `hat` — o sinal secundário de veto
+  profEvidenceSec: 0,    // segundos de evidência VÁLIDA acumulados (só conta com cobertura)
+  profT0: 0,             // instante da 1.ª feature vista pelo classificador (divisor da cobertura)
+  profDecided: false,    // já houve uma primeira decisão?
+  profSince: 0,          // instante da última troca automática (para o `minHoldSec`)
+  profSwitches: 0,       // quantas vezes o automático trocou (HUD/diagnóstico)
+  profManual: false,     // o humano escolheu → o automático cala-se para o resto da sessão
   // --- BPM / grelha local ---
   intervals: [], bpmEst: 0, gridConf: 0, gridT0: 0, gridBar: 0, lastGridEmit: 0,
   // grelha recebida (a nossa, ou a de um emissor externo que a mande)
@@ -551,6 +850,7 @@ const state = {
   secEnergy: [], lastSecT: 0, secAcc: 0, secN: 0,   // fallback sem grelha
   // FSM
   fsm: 'GROOVE', fsmSince: 0, fsmBar: 0, fsmStartT: 0,
+  lastFlashT: -1e9, flashCount: 0, dimGain: [1, 1, 1], // §FLASHDIM
   preDropAmount: 0, dropOpen: 0, dropHold: 0, dropCount: 0, restrainThis: false,
   lastKickSeenT: -Infinity,
   log: [],
@@ -586,6 +886,9 @@ function setState(next, why) {
   state.fsm = next;
   state.fsmSince = MB_CLOCK.now();
   state.fsmBar = state.bar;
+  const DARK = next === 'BREAKDOWN' || next === 'BUILD' || next === 'PRE_DROP';
+  const wasDark = prev === 'BREAKDOWN' || prev === 'BUILD' || prev === 'PRE_DROP';
+  if (DARK && !wasDark) state.darkSince = state.fsmSince;
   explodeOnTransition(prev, next);
 }
 
@@ -599,9 +902,17 @@ function explodeOnTransition(prev, next) {
   const ex = MB.getExplode ? MB.getExplode() : { phase: 'idle' };
   const shattered = ex.phase !== 'idle' && ex.phase !== 'back';
   if (next === 'DROP') {
-    if (X.skipRestrained && state.restrainThis) { logNote('explosão: drop contido, fica inteira'); return; }
-    MB.explode({ autoHold: false });
-    logNote(`explosão: drop #${state.dropCount}`);
+    const now = MB_CLOCK.now(), gap = (now - state.lastExplodeT) / 1000, dark = (now - state.darkSince) / 1000;
+    let skip = null;
+    if (X.skipRestrained && state.restrainThis) skip = 'drop contido';
+    else if (X.fromBuildOnly && prev !== 'PRE_DROP' && prev !== 'BUILD') skip = `sem build (veio de ${prev})`;
+    else if (dark < X.minDarkSec) skip = `breakdown curto (${dark.toFixed(0)}s < ${X.minDarkSec})`;
+    else if (gap < X.minGapSec) skip = `último há ${gap.toFixed(0)}s (< ${X.minGapSec})`;
+    else if (RNG() > X.chance) skip = 'sorteio';
+    if (skip) { logNote(`explosão: não (${skip})`); return; }
+    MB.explode({ autoHold: false, fromMotor: true });
+    state.lastExplodeT = now; state.explodeCount++;
+    logNote(`explosão #${state.explodeCount}: drop #${state.dropCount} após ${dark.toFixed(0)}s escuro`);
     return;
   }
   if (!shattered) return;
@@ -655,9 +966,20 @@ if (typeof addEventListener === 'function') addEventListener('message', e => onM
 })();
 
 const PROFILES = ['electronica', 'acustico', 'voz'];
-function setProfile(p) {
-  if (PROFILES.indexOf(p) === -1 || p === MUSIC.profile) return;
-  logNote(`perfil → ${p}`);
+/* `auto` só é true quando quem chama é o classificador (§PROFAUTO). Qualquer outra origem —
+ * tecla `p`, {type:'profile'} da tab do OS, consola — conta como ESCOLHA HUMANA e desliga a
+ * deteção automática para a sessão. Nunca se sobrepõe uma decisão do David: a única forma de
+ * voltar a ligar é `MUSIC.profileAuto.auto = true` (painel `k`) ou recarregar a página. */
+function setProfile(p, auto) {
+  if (PROFILES.indexOf(p) === -1) return;
+  if (!auto) {
+    // Marca-se o manual mesmo que o perfil pedido já seja o atual: o gesto do David é uma
+    // instrução ("é este"), não só uma mudança de valor — e tem de calar o automático na mesma.
+    if (!state.profManual) logNote('perfil manual — deteção automática desligada');
+    state.profManual = true;
+  }
+  if (p === MUSIC.profile) return;
+  logNote(`perfil → ${p}${auto ? ' (auto)' : ''}`);
   MUSIC.profile = p;
   // trocar de perfil não pode dar corte: os gestos são de `electronica`, saem por rampa
   if (p !== 'electronica') { state.gest = null; state.gestQueue.length = 0; }
@@ -742,6 +1064,10 @@ function ingestFeatures(f) {
   }
 
   detectKick(nowL, f);
+  // §SNARE: a queda do acento vive AQUI (taxa de features, ~50 Hz) e não no rAF, porque é o
+  // detetor que o levanta — assim o par subir/cair anda no mesmo relógio.
+  state.snareAccent *= Math.exp(-dt / MUSIC.snare.decaySec);
+  detectSnare(nowL, f);
 
   // energia acumulada por compasso / por segundo (inclinações da FSM)
   state.barEnergyAcc += state.loudShort; state.barHighAcc += state.highAvg; state.barEnergyN++;
@@ -777,7 +1103,7 @@ class BandOnset {
    * mudá-lo a meio invalidaria o histórico já acumulado. */
   constructor(opts) {
     const B = MUSIC.bandOnset, o = opts || {};
-    this.kind = o.kind === 'hat' ? 'hat' : 'kick';
+    this.kind = (o.kind === 'hat' || o.kind === 'snare') ? o.kind : 'kick';
     this.N = o.N || B.N;
     this.hist = [];
     this.lastBeat = -Infinity;
@@ -785,8 +1111,11 @@ class BandOnset {
     this.med = 0; this.std = 0; this.vRel = 0; this.C = this.C0; this.last = 0;
   }
   /* Limiar base e refratário VIVOS: lidos do CONFIG a cada uso. */
-  get C0() { const B = MUSIC.bandOnset; return this.kind === 'hat' ? B.hatC0 : B.kickC0; }
-  get refractMs() { const B = MUSIC.bandOnset; return this.kind === 'hat' ? B.hatRefractMs : B.kickRefractMs; }
+  // A tarola lê os SEUS knobs de `MUSIC.snare` e não de `bandOnset`: são grandezas diferentes
+  // (uma banda mais esparsa, um refratário de contratempo) e misturá-las no mesmo literal fazia
+  // com que afinar o bombo mexesse na tarola sem se perceber porquê.
+  get C0() { const B = MUSIC.bandOnset; return this.kind === 'snare' ? MUSIC.snare.C0 : this.kind === 'hat' ? B.hatC0 : B.kickC0; }
+  get refractMs() { const B = MUSIC.bandOnset; return this.kind === 'snare' ? MUSIC.snare.refractMs : this.kind === 'hat' ? B.hatRefractMs : B.kickRefractMs; }
   push(x, tMs) {
     const v = +x || 0;
     this.last = v;
@@ -829,8 +1158,72 @@ function resetDetectors() {
   state.kickDet = new BandOnset({ N: B.N, kind: 'kick' });
   state.hatDet = new BandOnset({ N: B.N, kind: 'hat' });
   state.hatEnv = new Env(B.hatEnvTau[0], B.hatEnvTau[1]);
+  state.snareDet = new BandOnset({ N: B.N, kind: 'snare' });
+  state.snareHist.length = 0;
+  state.snarePrevMid = null;
 }
 resetDetectors();
+
+/* ================== §SNARE — deteção de TAROLA (200-800 Hz) ==================
+ * O raciocínio, as medições e os dois caminhos estão no literal `MUSIC.snare`, no topo. Aqui só
+ * a mecânica. Corre a cada feature, ao lado do §KICK.
+ *
+ * A diferença estrutural para o `hat`: o `hat` produz um ENVELOPE contínuo (`hatLevel`), porque
+ * é textura; a tarola produz um EVENTO que decai (`snareAccent`), porque é um acento. É por isso
+ * que aqui não há `Env` de dois pólos — há um salto para 1 e uma queda exponencial. */
+function detectSnare(nowL, f) {
+  const S = MUSIC.snare;
+  // Interruptor mestre a 0: o motor comporta-se exatamente como antes desta funcionalidade.
+  if (!S.on) { state.snareAccent = 0; return; }
+
+  const rms = +f.rms || 0;
+  const hasRawMid = f.midFluxRaw != null && isFinite(+f.midFluxRaw);
+  let hit = false;
+
+  if (hasRawMid) {
+    // Caminho preferido: flux linear cru da banda da tarola → o §BANDONSET de sempre.
+    state.snarePath = 'raw';
+    const v = +f.midFluxRaw;
+    const beat = state.snareDet.push(v, nowL);
+    state.snareFlux = v;
+    state.snareThr = state.snareDet.C * state.snareDet.med;
+    hit = beat;
+  } else {
+    /* Fallback: derivada rectificada de `mid`. ⚠ Limiar ADITIVO (mediana + k·MAD) e não por
+     * rácio — com mediana ≈ 0 (medido: p50 = 0.00000) o teste `v > C·mediana` do §BANDONSET
+     * passa sempre e o detetor perde o controlo (varrimento de C0 1.4→3.5: sempre ~150 hits,
+     * 61 em silêncio). O PISO ABSOLUTO `fbFloor` é o que realmente separa a tarola do resto. */
+    state.snarePath = 'fallback';
+    const mid = +f.mid || 0;
+    const v = state.snarePrevMid == null ? 0 : Math.max(0, mid - state.snarePrevMid);
+    state.snarePrevMid = mid;
+    state.snareFlux = v;
+
+    const H = state.snareHist;
+    H.push(v);
+    if (H.length > MUSIC.bandOnset.N) H.shift();
+    if (H.length >= MUSIC.bandOnset.N) {
+      const s = H.slice().sort((a, b) => a - b);
+      const med = s[s.length >> 1];
+      const dev = H.map(x => Math.abs(x - med)).sort((a, b) => a - b);
+      const mad = dev[dev.length >> 1] * 1.4826;
+      const thr = Math.max(S.fbFloor, med + S.fbK * mad);
+      state.snareThr = thr;
+      hit = v > thr;
+    }
+  }
+
+  // Guardas comuns aos dois caminhos, iguais às do §KICK. O `rmsMin` não é opcional: o vazio de
+  // `tools/feat` tem rms mediano 0.002 e o sidecar NUNCA levanta `silence` (0 em 2667 frames).
+  if (hit && (f.silence || rms < S.rmsMin || (nowL - state.snareLastT) < S.refractMs)) hit = false;
+
+  if (hit) {
+    state.snareLastT = nowL;
+    state.snareAccent = 1;
+    state.snareCount++;
+    if (MUSIC.flash && MUSIC.flash.on && RNG2() < MUSIC.flash.snare) fireFlash('snare', 1);
+  }
+}
 
 /* ================== §KICK — deteção de bombo a partir das features 50 Hz ==================
  * DOIS caminhos, escolhidos pelo que o emissor manda:
@@ -931,6 +1324,100 @@ function detectKick(nowL, f) {
   const dt = Math.min(0.1, 0.02);
   const tau = dead ? [K.presenceTau[0], K.deadTau] : K.presenceTau;
   state.kickPresence = ease(state.kickPresence, tgt, tau, dt);
+
+  updateProfileAuto(nowL);
+}
+
+/* ============ §PROFAUTO — classificador de perfil (electronica | acustico) ============
+ * O RACIOCÍNIO e os números medidos estão no literal `MUSIC.profileAuto`, no topo. Aqui só a
+ * mecânica. Corre a cada feature (50 Hz), a seguir ao detetor de bombo, porque o seu sinal
+ * primário são os tempos de kick que o detetor acabou de produzir.
+ *
+ * Porquê um histórico próprio e não `state.kickHistory`: aquele guarda 8 s (`keepTimesMs`),
+ * dimensionado para a autocorrelação do §GRID. Oito segundos dão ~16 intervalos a 128 BPM —
+ * exatamente o mínimo — e uma única frase musical. Uma decisão que quer ser LENTA e estrutural
+ * precisa de ver mais do que uma frase, daí a janela dedicada de 30 s.
+ *
+ * NÃO decide `voz`: nenhuma das duas gravações reais tem material vocal isolado para calibrar
+ * um terceiro limiar, e inventar um à sensação era repetir a lição cara do handoff S2
+ * ("medir antes de afinar"). `voz` continua a existir e a ser escolhível à mão. */
+function updateProfileAuto(nowL) {
+  const P = MUSIC.profileAuto;
+  // Desligado, ou o humano já mandou → o automático não existe. É aqui que se garante que com
+  // `auto` a 0 o comportamento é EXATAMENTE o de antes desta funcionalidade.
+  if (!P || !P.auto || state.profManual) return;
+  if (state.profT0 === 0) state.profT0 = nowL;
+
+  // --- sinal secundário: média longa de `hat` (τ 20 s). Sobrevive a `hat` ausente (feature
+  // antiga / gerador sintético), caso em que fica a 0 e o veto de `acustico` nunca deixa sair
+  // de `electronica` — falhar para o default é o comportamento seguro.
+  const f = state.feat;
+  const hatNow = (f && f.hat != null && isFinite(+f.hat)) ? +f.hat : 0;
+  const dtH = 0.02;
+  state.profHat = (state.profHat == null)
+    ? hatNow
+    : state.profHat + (hatNow - state.profHat) * (1 - Math.exp(-dtH / Math.max(0.1, P.hatTau)));
+
+  // --- janela deslizante dedicada de tempos de kick
+  const H = state.profHist;
+  if (state.lastKickT === nowL) H.push(nowL);
+  const cut = nowL - P.windowMs;
+  while (H.length && H[0] < cut) H.shift();
+
+  // --- intervalos VÁLIDOS: os gaps grandes são ausência de bombo, não irregularidade (defesa 1)
+  const d = [];
+  for (let i = 1; i < H.length; i++) {
+    const x = H[i] - H[i - 1];
+    if (x > 0 && x <= P.gapMaxMs) d.push(x);
+  }
+  // cobertura: que fração da janela os intervalos válidos explicam (defesa 2). No arranque a
+  // janela ainda não está cheia, por isso o divisor é o menor entre a janela e o tempo decorrido.
+  let sum = 0;
+  for (let i = 0; i < d.length; i++) sum += d[i];
+  const span = Math.max(1, Math.min(P.windowMs, nowL - state.profT0));
+  state.profCov = clamp(sum / span, 0, 1);
+
+  // --- sinal primário: CV dos últimos `minIntervals` intervalos válidos
+  state.profCv = null;
+  if (d.length >= P.minIntervals && state.profCov >= P.minCoverage) {
+    const w = d.slice(-P.minIntervals);
+    let m = 0;
+    for (let i = 0; i < w.length; i++) m += w[i];
+    m /= w.length;
+    if (m > 0) {
+      let v = 0;
+      for (let i = 0; i < w.length; i++) v += (w[i] - m) * (w[i] - m);
+      const cv = Math.sqrt(v / w.length) / m;
+      if (isFinite(cv)) state.profCv = cv;
+    }
+  }
+
+  // --- integrador lento. Só corre com leitura válida: sem cobertura o score CONGELA, não
+  // decai (defesa 2 — a ausência de bombo não é prova de que a música é acústica).
+  if (state.profCv != null) {
+    state.profEvidenceSec += dtH;
+    const inst = state.profCv < P.cvRegular ? 1 : 0;
+    state.profScore = (state.profScore == null)
+      ? inst
+      : state.profScore + (inst - state.profScore) * (1 - Math.exp(-dtH / Math.max(0.1, P.scoreTau)));
+  }
+  if (state.profScore == null || state.profEvidenceSec < P.evidenceSec) return;
+
+  // --- histerese: banda morta entre os dois limiares + tempo mínimo no perfil atual
+  const held = nowL - state.profSince;
+  if (state.profDecided && held < P.minHoldSec * 1000) return;
+
+  const hat = state.profHat == null ? 0 : state.profHat;
+  let want = null;
+  if (state.profScore > P.enterElectronica && hat < P.hatElectronicaMax) want = 'electronica';
+  else if (state.profScore < P.enterAcustico && hat > P.hatAcusticoMin) want = 'acustico';
+
+  if (want && want !== MUSIC.profile) {
+    setProfile(want, true);
+    state.profSwitches++;
+    state.profSince = nowL;
+  }
+  if (!state.profDecided) { state.profDecided = true; if (!state.profSince) state.profSince = nowL; }
 }
 
 /* ================== §GRID — BPM por intervalos + grelha local ==================
@@ -1042,7 +1529,27 @@ function emitLocalGrid(nowL) {
     confidence: state.gridConf, local: true,
   });
 }
-function onKickBeat() { /* gancho para futuros acentos por batida; a fase vem da grelha */ }
+/* §FLASHDIM — flash curto num pinspot "extra" (posição plausível sorteada pela bola). Cap a 3 Hz.
+ * RNG2 (o dos spots), para não mexer na sequência determinística dos gestos. */
+function fireFlash(why, n) {
+  const F = MUSIC.flash, MB = (typeof window !== 'undefined') && window.MIRRORBALL;
+  if (!F || !F.on || !MB || typeof MB.flash !== 'function') return;
+  const now = MB_CLOCK.now();
+  if (now - state.lastFlashT < F.minGapMs) return;
+  const k = Math.max(1, n | 0);
+  for (let i = 0; i < k; i++) { // rajada: o 1º agora, os outros escalonados ≥ minGapMs (nunca > 3 Hz)
+    const fire = () => MB.flash({ intensity: F.intensity[0] + RNG2() * (F.intensity[1] - F.intensity[0]),
+                                   len: (F.lenMs[0] + RNG2() * (F.lenMs[1] - F.lenMs[0])) / 1000 });
+    if (i === 0) fire(); else setTimeout(fire, i * F.minGapMs * 1.05);
+  }
+  state.lastFlashT = now + (k - 1) * F.minGapMs * 1.05; state.flashCount++;
+}
+function onKickBeat() {
+  const F = MUSIC.flash; if (!F || !F.on) return;
+  const inDrop = state.fsm === 'DROP' && (state.bar - state.fsmBar) < F.dropBars;
+  const p = inDrop ? F.kickChanceDrop : (state.fsm === 'GROOVE' || state.fsm === 'DROP') ? F.kickChance : 0;
+  if (RNG2() < p) fireFlash('kick', 1);
+}
 
 function ingestGrid(g) {
   if (!g || g.v !== 1) return;
@@ -1093,14 +1600,32 @@ function onBarBoundary(bar) {
   // coreografia de spots amarrada à música (§3.6): a bola tem fades próprios com períodos
   // 11/17/13 s que NÃO são períodos musicais. Em music, spotFadeMix→0 e o foco dominante roda
   // na fronteira de 8 compassos.
-  const sw = MUSIC.map.spotSwapBars;
-  if (sw > 0 && bar % sw === 0 && bar !== state.lastSwapBar) {
-    state.lastSwapBar = bar;
-    const n = (window.MIRRORBALL && window.MIRRORBALL.config.spots.length) || 3;
-    state.domSpot = (state.domSpot + 1) % n;
+  /* §SPOTMOV(1): a rotação do dominante deixa de ser métrica. Medido: com 8 compassos fixos os
+   * spots faziam 5-7× o range em 60 s contra os 66× da opacidade — "ta sempre igual" é uma
+   * leitura correta de uma coreografia perfeitamente periódica. O jitter é o §0.1 aplicado
+   * ("variacoes que nao tao ligadas à musica"): o intervalo seguinte é sorteado a cada troca. */
+  const M = MUSIC.map;
+  const sw = M.spotSwapBars;
+  if (sw > 0) {
+    if (state.nextSwapBar < 0) state.nextSwapBar = bar + sw;   // 1.ª troca: sem jitter, ancorada
+    if (bar >= state.nextSwapBar && bar !== state.lastSwapBar) {
+      state.lastSwapBar = bar;
+      const n = (window.MIRRORBALL && window.MIRRORBALL.config.spots.length) || 3;
+      state.domSpot = (state.domSpot + 1) % n;
+      const j = M.spotSwapJitter | 0;
+      const next = j > 0 ? sw + Math.round(rng2Range([-j, j])) : sw;   // RNG2: não mexe na sequência de gestos
+      state.nextSwapBar = bar + Math.max(2, next);   // nunca abaixo de 2 compassos: seria pisca
+    }
   }
+  // §SPOTMOV(2): acento em CADA compasso, e o maior na fronteira de frase. É o que um técnico
+  // faz — marca o tempo forte. 0.53 Hz a 128 BPM, muito abaixo do teto de 3 Hz.
+  state.spotAccent = Math.max(state.spotAccent, M.spotBarAccent);
   const g = state.grid;
-  if (g && ((bar % g.barsPerPhrase) + g.barsPerPhrase) % g.barsPerPhrase === 0) state.phraseAccent = 1;
+  if (g && ((bar % g.barsPerPhrase) + g.barsPerPhrase) % g.barsPerPhrase === 0) {
+    state.phraseAccent = 1;
+    state.spotAccent = Math.max(state.spotAccent, M.spotPhraseAccent);
+    if (MUSIC.flash && MUSIC.flash.on && MUSIC.flash.phraseBurst > 0) fireFlash('phrase', MUSIC.flash.phraseBurst);
+  }
   // gesto leve em GROOVE: a cada 16-32 compassos, 30% das vezes
   if (state.fsm === 'GROOVE' && bar >= state.gestNextGrooveBar) {
     state.gestNextGrooveBar = bar + Math.round(rngRange(MUSIC.gesture.grooveEveryBars));
@@ -1138,6 +1663,15 @@ const GESTURES = {
   }),
   // DROP: tudo ao máximo permitido
   'all-on': () => ({ rpm: { set: 3.0 }, opacity: { set: 1.0 }, spot: { set: 1.55 }, beamInt: { set: 0.18 }, beams: { set: 54 }, haze: { set: 0.70 } }),
+  /* §OPACEXTREMOS: "transparencia maxima repentina e desligar focos" — §0.1, verbatim, e até
+   * agora o único exemplo do David que não tinha gesto nenhum. O `ghost` é parecido mas leva a
+   * opacidade a 0.05 COM os spots a zero e mantém o rpm; este leva-a ao extremo BAIXO mantendo
+   * um resto de foco e o haze alto, que é a sala a abrir-se em vez de a bola a desaparecer.
+   * Sobe o haze de propósito: sem opacidade, o que resta para ver é o fumo. */
+  'flash-clear': () => ({
+    opacity: { set: 0.02, tau: [0.12, 1.6] },   // ataque súbito, saída LENTA — é o contraste que se vê
+    spot: { set: 0.25 }, haze: { set: 0.95 }, beamInt: { set: 0.14 }, beams: { set: 26 },
+  }),
 };
 const GESTURE_NAMES = Object.keys(GESTURES);
 
@@ -1366,9 +1900,13 @@ function computeTargets() {
     // haze ← INVERSO de bass: breakdown (graves fora) = fumo. Lento (tau 1.5/4).
     T.haze = lerp(M.hazeFrom[0], M.hazeFrom[1], clamp(1 - state.bassShort, 0, 1));
 
-    // opacity ← loudness curto, com piso em GROOVE
+    // opacity ← loudness curto, com piso em GROOVE.
     T.opacity = lerp(M.opacityFrom[0], M.opacityFrom[1], clamp(loudN * 1.4 - 0.15, 0, 1));
     if (state.fsm === 'GROOVE') T.opacity = Math.max(T.opacity, M.opacityFloorGroove);
+    /* §SNARE → feixes: fração do que falta até ao teto 0.18, que fica assim preservado por
+     * construção. O acento na OPACIDADE não está aqui — está no `applyToBall`, ver §OPACSECO. */
+    const sa = state.snareAccent || 0;
+    if (sa > 0) T.beamInt += (MUSIC.outMax.beamInt - T.beamInt) * MUSIC.snare.beamKick * sa;
 
     // ---- comportamentos por estado (a camada 1 só prepara o terreno; os gestos fazem o resto)
     switch (state.fsm) {
@@ -1399,7 +1937,6 @@ function computeTargets() {
         const t = MB_CLOCK.now() / 1000;
         T.haze = clamp(T.haze * (1 + 0.06 * Math.sin(TAU * t / 47)), 0.05, 1);
         T.spot = clamp(T.spot * (1 + 0.05 * Math.sin(TAU * t / 61 + 1.7)), 0, 1.6);
-        T.spot = clamp(T.spot * (1 + 0.15 * state.phraseAccent), 0, 1.6);
         break;
       }
     }
@@ -1438,7 +1975,20 @@ function applyToBall(o, gestInfo) {
   C.haze = clamp(o.haze, MUSIC.outMin.haze, MUSIC.outMax.haze);
   C.beamMaxCount = Math.round(clamp(o.beams, 0, MUSIC.outMax.beams));
   C.beamIntensity = clamp(o.beamInt, 0, MUSIC.outMax.beamInt);       // teto inviolável 0.18
-  C.sphereOpacity = clamp(o.opacity * (1 - MUSIC.hat.opacityDip * (state.hatLevel || 0)), MUSIC.outMin.opacity, 1);
+  /* §OPACSECO — a opacidade escrita na bola, e o porquê desta ordem.
+   * MEDIDO em `tools/feat`: o ALVO de opacidade já satura (p50 e p95 = 1.000) e 1732 dos 2667
+   * frames estão exatamente no piso de GROOVE (0.20). Ou seja o alvo é quase uma onda quadrada
+   * entre 0.20 e 1.00 — não falta amplitude NENHUMA ao alvo. O que o David vê a viver entre 0.38
+   * e 0.86 é a SAÍDA, achatada por duas coisas em série: o `ease` (tau 0.40/2.00, que nunca
+   * chega ao alvo antes de ele mudar) e o `hat.opacityDip`, que MORDE o que sobra — 56% dos
+   * frames caíam no decil 0.7-0.8 e só 3% passavam de 0.9.
+   * Daí o acento da tarola entrar AQUI e não no alvo: depois do `ease` e DEPOIS da mordidela dos
+   * agudos. É o mesmo argumento do acento dos spots — um acento tem de chegar seco, e passá-lo
+   * por um release de 2 s é a definição de o tornar inaudível. Fração do que FALTA até 1, por
+   * isso o teto nunca é excedido e o acento é maior justamente quando há espaço para ele. */
+  const opDip = o.opacity * (1 - MUSIC.hat.opacityDip * (state.hatLevel || 0));
+  const opAcc = opDip + (1 - opDip) * MUSIC.snare.opacityKick * (state.snareAccent || 0);
+  C.sphereOpacity = clamp(opAcc, MUSIC.outMin.opacity, 1);
   C.spotFadeMix = 0;   // §3.6: os fades internos (11/17/13 s) não são períodos musicais
   // ⚠ NADA de setSkinAuto aqui (§0.1 ponto 1): a skin é do utilizador, ponto final.
   if (MB.setHealth && MB.getHealth() !== state.health) MB.setHealth(state.health);
@@ -1447,13 +1997,36 @@ function applyToBall(o, gestInfo) {
   const M = MUSIC.map;
   const solo = gestInfo && gestInfo.solo, w = gestInfo ? gestInfo.w : 0;
   const swapBar = gestInfo && gestInfo.swapEveryBar;
-  const dom = swapBar ? (state.bar % (C.spots.length || 3)) : state.domSpot;
+  const nMounted = Math.max(1, Math.min(C.spots.length, C.spotCount || C.spots.length));
+  const dom = swapBar ? (state.bar % nMounted) : (state.domSpot % nMounted);
+  // §FLASHDIM — dimmer por fase (rampa de `dimmer.ease` s); em BUILD o 2º foco sobe com os compassos
+  const DM = MUSIC.dimmer, target = (DM && DM[state.fsm]) || [1, 1, 1];
+  const buildU = state.fsm === 'BUILD' ? clamp((state.bar - state.fsmBar) / 8, 0, 1) : 0;
+  const nowDim = MB_CLOCK.now(), dtDim = clamp((nowDim - (state._dimT || nowDim)) / 1000, 0, 0.1); state._dimT = nowDim;
+  const kDim = 1 - Math.exp(-dtDim / Math.max(0.05, (DM && DM.ease) || 0.35));
+  for (let i = 0; i < 3; i++) {
+    let tg = target[i]; if (state.fsm === 'BUILD' && i >= 1) tg = lerp(tg, 1.0, buildU);
+    state.dimGain[i] += (tg - state.dimGain[i]) * kDim;
+  }
+  /* §SPOTMOV(3): o ACENTO no dominante. Aplicado aqui, e não no `computeTargets`, por duas razões:
+   *  · é aqui que se sabe qual é o dominante — o acento é dele, não dos três (marcar os três ao
+   *    mesmo tempo lê-se como um flash de brilho geral, não como um técnico a marcar o tempo);
+   *  · é DEPOIS do `ease` da rampa de saída, de propósito. O acento tem de chegar SECO. Passá-lo
+   *    pelo `ease` do `spot` (tau 0.12/0.60) achatava-o justamente até ao "delta/frame ~0.0000"
+   *    que o David sentiu como imobilidade — foi o que a medição mostrou.
+   * O decaimento é feito aqui pela mesma razão: este é o único ponto que corre a cada frame com
+   * `dt` conhecido e com o acento já consumido. */
+  const acc = clamp((state.spotAccent || 0) + MUSIC.map.spotSnareGain * (state.snareAccent || 0), 0, 1.5);
   C.spots.forEach((s, i) => {
     if (s._base == null) s._base = s.intensity;
     let g = i === dom ? M.spotDomGain : M.spotSubGain;
     // `single-beam`: um foco a 1.4 e os outros a 0 — mas por rampa, como tudo o resto
     if (solo) g = lerp(g, i === dom ? 1.0 : 0.0, w);
-    MB.setSpot(i, { intensity: clamp(s._base * o.spot * g, 0, 1.6) });
+    // só o dominante leva o acento inteiro; os outros dois levam um terço, para a sala respirar
+    // junta sem se perder quem está a marcar.
+    const a = 1 + acc * (i === dom ? 1 : 0.33);
+    const dim = state.dimGain[Math.min(i, 2)];
+    MB.setSpot(i, { intensity: clamp(s._base * o.spot * g * a * dim, 0, 1.6) });
   });
 }
 
@@ -1483,6 +2056,35 @@ function update(nowL) {
                      state.kickPresence > MUSIC.map.spinLockPresence && !state.silent;
   if (spinLocked) state.target.rpm = Math.max(state.target.rpm, MUSIC.map.spinLockRpm);
 
+  /* ---- §SPINCEIL — o TETO sem bombo, o simétrico exato do piso acima ----
+   * Aplicado no MESMO ponto (depois dos gestos) e pela mesma razão: é o único sítio onde um
+   * gesto não tem a última palavra. Sem isto, `blind-spin` (`rpm:{set:2.5}`) e `all-on` (3.0)
+   * sobrepunham-se ao alvo de repouso e a bola girava a 2.5 rpm com o bombo a ZERO — medido no
+   * vazio de `tools/feat` (t=25.1→33.9 s). O rpm mínimo em toda a gravação era 0.42.
+   *
+   * `!spinLocked` no teste é redundante (as duas presenças não se sobrepõem) mas fica explícito:
+   * a invariante do David — "enquanto houver bombo a bola gira" — nunca pode depender de eu ter
+   * escolhido bem dois números. */
+  const M = MUSIC.map;
+  const gapSec = (nowL - state.lastKickT) / 1000;
+  const noKick = MUSIC.profile === 'electronica' && !spinLocked &&
+                 state.kickPresence < M.spinCeilPresence && gapSec > M.spinCeilGapSec;
+  if (noKick) {
+    // Decide UMA vez por vazio, e regista. O David: "tem de ser decisao, nao casualidade" — o
+    // default `spinCeilChance: 1` pára sempre; com < 1 o sorteio fica no log e no HUD, para se
+    // poder ver POR QUE É QUE daquela vez não parou.
+    if (!state.spinCeilArmed) {
+      state.spinCeilArmed = true;
+      state.spinCeilCount++;
+      state.spinCeilStop = M.spinCeilChance >= 1 ? true : RNG2() < M.spinCeilChance;
+      logNote(state.spinCeilStop ? 'bola PÁRA (sem bombo)' : 'bola NÃO pára · sorteio');
+    }
+    if (state.spinCeilStop) state.target.rpm = Math.min(state.target.rpm, M.spinCeilRpm);
+  } else if (state.spinCeilArmed && state.kickPresence > M.spinLockPresence) {
+    // rearma só quando o bombo VOLTA a sério (histerese: não re-sortear a meio do mesmo vazio)
+    state.spinCeilArmed = false;
+  }
+
   // rampa de posse: logo após ganhar o CONFIG, suaviza mais ainda (nunca corte)
   const hand = clamp((nowL - state.handoverT) / (MUSIC.handover.rampSec * 1000), 0, 1);
   const slow = lerp(2.5, 1, hand);
@@ -1499,6 +2101,11 @@ function update(nowL) {
     const gt = gestInfo && gestInfo.taus[k];
     let tau = gt || MUSIC.tau[k];
     if (k === 'rpm' && stopping && !gt) tau = [tau[0], MUSIC.rpmStopTau];
+    // §OPACEXTREMOS: release da opacidade encurtado. Os 2.00 s de `tau.opacity` eram o que
+    // impedia a saída de chegar ao fundo do alvo (medido: alvo no piso 0.20 em 1732 de 2667
+    // frames, saída a viver em 0.38-0.86). Um gesto com tau próprio (`ghost`, `flash-clear`)
+    // continua a mandar — por isso o `!gt`.
+    if (k === 'opacity' && !gt) tau = [tau[0], MUSIC.map.opacityReleaseSec];
     // com o bombo a bater, um gesto com tau curto no rpm (nenhum tem hoje, mas é barato
     // garantir) não pode ser usado para o travar — o piso já está no alvo, aqui é o easing
     if (k === 'rpm' && spinLocked && gt) tau = MUSIC.tau.rpm;
@@ -1512,6 +2119,14 @@ function update(nowL) {
   if (spinLocked && o.rpm < MUSIC.map.spinLockRpm) {
     o.rpm = Math.min(MUSIC.map.spinLockRpm, o.rpm + (MUSIC.map.spinLockRpm / 0.8) * dt);
   }
+  // …e a garantia SIMÉTRICA na saída: no vazio decidido, a bola desce ao repouso e PARA. Sem
+  // isto, um gesto com tau próprio no rpm ainda podia segurar a saída acima do teto durante
+  // segundos, mesmo com o alvo já em `spinCeilRpm`. Desce em ~0.8 s, como o piso sobe.
+  if (noKick && state.spinCeilStop && o.rpm > M.spinCeilRpm) {
+    o.rpm = Math.max(M.spinCeilRpm, o.rpm - (MUSIC.map.spinLockRpm / 0.8) * dt);
+  }
+  // §SPOTMOV: queda do acento de fronteira (o de tarola decai no seu próprio detetor).
+  state.spotAccent *= Math.exp(-dt / MUSIC.map.spotAccentDecay);
 
   const owner = window.MB_SOURCE ? window.MB_SOURCE.owner : 'manual';
   if (owner === 'music') {
@@ -1534,6 +2149,10 @@ function emitState(nowL, o) {
     confidence: state.gridConf, beatPhase: state.beatPhase,
     kickPresence: state.kickPresence, kickRate: state.kickRate, loudness: state.loudAvg,
     profile: MUSIC.profile, gesture: state.gest ? state.gest.name : null, gestureWeight: state.gestWeight,
+    // §PROFAUTO: a tab do OS mostra o seletor de perfil — precisa de saber se o valor que
+    // apresenta foi escolhido pelo utilizador ou pelo motor, para não parecer que "mudou sozinho".
+    profileAuto: !!(MUSIC.profileAuto.auto && !state.profManual),
+    profileDecided: state.profDecided, profileConfidence: profConfidence(),
     gen: GEN.on, out: Object.assign({}, o),
   };
   try { if (typeof parent !== 'undefined' && parent !== window) parent.postMessage(msg, '*'); } catch (e) { /* cross-origin */ }
@@ -1650,6 +2269,30 @@ const GEN = (() => {
 /* ==================================== HUD (tecla m) ==================================== */
 const hud = (typeof document !== 'undefined' && document.getElementById) ? document.getElementById('mus') : null;
 function bar12(v, n = 12) { return '█'.repeat(Math.round(clamp(v, 0, 1) * n)).padEnd(n, '·'); }
+
+/* --- §PROFAUTO no HUD: o modo, a confiança e o tempo de bloqueio --- */
+function profMode() {
+  if (state.profManual) return '(manual — auto desligado por escolha do utilizador)';
+  if (!MUSIC.profileAuto.auto) return '(manual — auto OFF no painel)';
+  if (!state.profDecided) return '(auto: a reunir evidência…)';
+  return '(auto)';
+}
+/* Confiança = quão longe o score está do limiar que o faria mudar de ideias, normalizado pela
+ * banda morta. 0 = em cima do limiar (a decisão podia virar); 1 = do outro lado da banda, com
+ * folga. Não é uma probabilidade — é a margem, que é o que interessa para julgar histerese. */
+function profConfidence() {
+  const P = MUSIC.profileAuto, s = state.profScore;
+  if (s == null) return 0;
+  const band = Math.max(1e-6, P.enterElectronica - P.enterAcustico);
+  const dist = MUSIC.profile === 'electronica' ? s - P.enterAcustico : P.enterElectronica - s;
+  return clamp(dist / band, 0, 1);
+}
+function profHoldLeft(nowL) {
+  const P = MUSIC.profileAuto;
+  if (state.profManual || !P.auto || !state.profDecided) return '';
+  const left = P.minHoldSec * 1000 - (nowL - state.profSince);
+  return left > 0 ? `  espera ${(left / 1000).toFixed(0)}s` : '';
+}
 function updateHud(o) {
   if (!hud || !hud.classList.contains('on')) return;
   const g = state.grid, nowL = MB_CLOCK.now();
@@ -1679,10 +2322,28 @@ function updateHud(o) {
       `bpm ${bpm ? bpm.toFixed(1) : '—'} (${state.bpmSource}${state.bpmAuto ? ', auto ' + state.bpmAuto.toFixed(1) : ''})`,
     `agudos  ${bar12(state.hatLevel, 16)} ${state.hatLevel.toFixed(2)}  ${hatDet ? 'raw' : 'fallback'}` +
       (hatDet ? `  med ${hatDet.med.toFixed(1)}  std/med ${hatDet.vRel.toFixed(2)}  C ${hatDet.C.toFixed(2)}` : ''),
+    // §SNARE: o acento de tarola. `n` é o total da sessão — se ficar a zero com bateria a tocar,
+    // o piso (`snare.fbFloor` no fallback, `snare.C0` com `midFluxRaw`) está alto demais.
+    `tarola  ${bar12(state.snareAccent, 16)} ${state.snareAccent.toFixed(2)}  ${state.snarePath}  ` +
+      `flux ${state.snareFlux.toFixed(2)}  lim ${state.snareThr.toFixed(2)}  n ${state.snareCount}` +
+      (MUSIC.snare.on ? '' : '  (OFF)'),
+    // §SPINCEIL: a decisão de parar. `armado` = estamos num vazio já decidido; a decisão em si
+    // fica no log de eventos (linha de baixo) — é isto que torna a paragem legível como DECISÃO.
+    `paragem ${state.spinCeilArmed ? (state.spinCeilStop ? 'PÁRA' : 'não pára (sorteio)') : '—'}` +
+      `  vazios ${state.spinCeilCount}  prob ${MUSIC.map.spinCeilChance.toFixed(2)}  teto ${MUSIC.map.spinCeilRpm.toFixed(2)} rpm`,
     `grelha  bar ${state.bar} (${posBar + 1}/${g ? g.barsPerPhrase : '—'})  frase ${state.phrase}  ${bpm ? bpm.toFixed(1) : '—'} bpm  conf ${state.gridConf.toFixed(2)}`,
     `batida  ${bar12(state.beatPhase, 16)}  bar ${bar12(state.barPhase, 16)}`,
     `gesto   ${(state.gest ? state.gest.name : '—').padEnd(12)} peso ${state.gestWeight.toFixed(2)}  fila [${state.gestQueue.join(' ')}]  total ${state.gestCount}`,
-    `perfil  ${MUSIC.profile}  (tecla p)   skin ${MB && MB.getSkin ? MB.getSkin().mode : '—'} (tecla w — do utilizador, o motor não lhe toca)`,
+    `perfil  ${MUSIC.profile}  ${profMode()}  (tecla p)   skin ${MB && MB.getSkin ? MB.getSkin().mode : '—'} (tecla w — do utilizador, o motor não lhe toca)`,
+    // §PROFAUTO: é esta linha que explica a decisão. `cv` é o sinal primário (regularidade dos
+    // intervalos de bombo; baixo = regular = clube); `cob` é a cobertura da janela — com `cv —`
+    // o classificador está a RECUSAR ler (breakdown/dropout) e o score congela de propósito;
+    // `hat` é o veto secundário; `conf` é a distância ao limiar mais próximo, 1.00 = decidido
+    // com folga. `espera Ns` = falta cumprir o tempo mínimo no perfil antes de poder trocar.
+    `  auto  cv ${state.profCv == null ? ' —  ' : state.profCv.toFixed(2)}  cob ${state.profCov.toFixed(2)}  ` +
+      `score ${state.profScore == null ? ' — ' : state.profScore.toFixed(2)}  hat ${state.profHat == null ? ' — ' : state.profHat.toFixed(2)}  ` +
+      `conf ${profConfidence().toFixed(2)}  evid ${state.profEvidenceSec.toFixed(0)}/${MUSIC.profileAuto.evidenceSec}s  ` +
+      `trocas ${state.profSwitches}${profHoldLeft(nowL)}`,
     `saída   opac ${o.opacity.toFixed(2)} rpm ${o.rpm.toFixed(2)} beams ${Math.round(o.beams)} bInt ${o.beamInt.toFixed(3)} haze ${o.haze.toFixed(2)} spot ${o.spot.toFixed(2)}`,
     `dono ${window.MB_SOURCE ? window.MB_SOURCE.owner : '—'}  health ${state.health.toFixed(2)}  spot dom ${state.domSpot}  gerador ${GEN.on ? 'ON (' + GEN.phase + ' c' + GEN.cycle + ')' : 'off'}  clock ±${MB_CLOCK.offset.toFixed(1)}ms`,
     '',
@@ -1720,7 +2381,7 @@ if (typeof fetch === 'function') {
     .then(j => {
       if (j && typeof j === 'object') {
         deepMerge(MUSIC, j);
-        if (MUSIC.gesture.seed) RNG = makeRng(MUSIC.gesture.seed);
+        if (MUSIC.gesture.seed) { RNG = makeRng(MUSIC.gesture.seed); RNG2 = makeRng((MUSIC.gesture.seed ^ 0x5bf03635) >>> 0); }
         console.log('[music] music.config.json aplicado');
       }
     })
@@ -1735,7 +2396,7 @@ function TUNER_SYNC() { if (window.MUSIC && typeof window.MUSIC.tunerSync === 'f
 window.MUSIC = {
   config: MUSIC, state, gen: GEN, clock: MB_CLOCK, update, onMessage,
   gestures: GESTURE_NAMES, setProfile,
-  setSeed(s) { RNG = makeRng(s); },
+  setSeed(s) { RNG = makeRng(s); RNG2 = makeRng((s ^ 0x5bf03635) >>> 0); },
 
   /* API do painel de calibração (§TUNE). Tudo o que o `tuner.js` precisa, e nada mais — o
    * painel não mexe no CONFIG a não ser por aqui, para a validação ser sempre a mesma. */
