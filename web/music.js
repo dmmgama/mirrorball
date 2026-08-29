@@ -283,8 +283,9 @@ const MUSIC = {
   explode: {
     on: true,
     skipRestrained: true,   // o drop "contido" (1 em 4) não estoira — a contenção é o gesto
-    hold: 'breakdown',      // 'breakdown' = fica em estilhaços até ao fim do breakdown (PRE_DROP ou volta a GROOVE)
-                            // 'drop' = recompõe-se no fim da abertura do drop
+    hold: 'drop',           // 'drop' = recompõe-se no fim da abertura do drop (4-8 compassos)
+                            // 'breakdown' = fica em estilhaços até ao fim do breakdown (PRE_DROP ou volta a GROOVE);
+                            // em qualquer caso a bola impõe CONFIG.explode.maxHold — nunca fica infinita
   },
 
   /* ---- Silêncio (§3.5) ---- */
