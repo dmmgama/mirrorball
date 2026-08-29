@@ -831,6 +831,7 @@ const state = {
   lastExplodeT: -Infinity, darkSince: -Infinity, explodeCount: 0,
   strobeNextBar: 16, strobeCount: 0,   // §ESPAÇOS (regra 7: valor inicial)
   scene: 'full', sceneNextBar: 0,       // §CENAS (regra 7)
+  strobeLastBar: 0, strobeIntervalBars: null,   // intervalo vivo do estrobo em GROOVE
   // §BANDONSET. Os detetores são criados abaixo (precisam do MUSIC já definido); `kickDet`/
   // `hatDet`/`hatEnv` nascem a null e são preenchidos por `resetDetectors()` — que corre
   // imediatamente, mas o valor inicial tem de existir aqui na mesma (regra 7 do CLAUDE.md:
@@ -1594,12 +1595,15 @@ function emitLocalGrid(nowL) {
  * RNG2 (o dos spots), para não mexer na sequência determinística dos gestos. */
 /* §STROBE — estrobo de fundo via MIRRORBALL.strobe(); a bola decide se está ligado (knob do David) e impõe
  * o minGapMs. Aqui só se decide QUANDO faz sentido musical: raro, em DROP. */
+function strobeRate() { const MB = (typeof window !== 'undefined') && window.MIRRORBALL; const r = MB && MB.config && Number.isFinite(MB.config.strobeRate) ? MB.config.strobeRate : 1; return Math.max(0, r); }
 function fireStrobe(why, n) {
   const S = MUSIC.strobe, MB = (typeof window !== 'undefined') && window.MIRRORBALL;
   if (!S || !S.on || !MB || typeof MB.strobe !== 'function' || !(MB.strobeEnabled && MB.strobeEnabled())) return;
   // knob `strobe: frequência ×` do painel d: < 1 = sorteio para deixar passar só essa fração; > 1 encurta o intervalo em GROOVE (abaixo)
-  const rate = Number.isFinite(MB.config.strobeRate) ? MB.config.strobeRate : 1;
+  const rate = strobeRate();
   if (rate <= 0 || (rate < 1 && RNG2() > rate)) return;
+  // > 1: rajadas mais prováveis (o slider tem de se SENTIR)
+  if ((n | 0) <= 1 && S.burstN && rate > 1 && RNG2() < Math.min(0.9, (S.burstChance || 0) * rate)) n = Math.round(rng2Range(S.burstN));
   // §RAJADA: um disparo isolado sai às vezes como 3-4 flashadas seguidas (o David: 'como num clube')
   if ((n | 0) <= 1 && S.burstN && RNG2() < (S.burstChance || 0)) n = Math.round(rng2Range(S.burstN));
   const k = Math.max(1, n | 0), lv = () => S.level[0] + RNG2() * (S.level[1] - S.level[0]);
@@ -1626,7 +1630,7 @@ function onKickBeat() {
   const inDrop = state.fsm === 'DROP' && (state.bar - state.fsmBar) < F.dropBars;
   const p = inDrop ? F.kickChanceDrop : (state.fsm === 'GROOVE' || state.fsm === 'DROP') ? F.kickChance : 0;
   if (RNG2() < p) fireFlash('kick', 1);
-  if (inDrop && MUSIC.strobe && RNG2() < MUSIC.strobe.kickChanceDrop) fireStrobe('kick', 1);
+  if (inDrop && MUSIC.strobe && RNG2() < MUSIC.strobe.kickChanceDrop * Math.max(1, strobeRate())) fireStrobe('kick', 1);
 }
 
 function ingestGrid(g) {
@@ -1704,7 +1708,7 @@ function onBarBoundary(bar) {
     state.spotAccent = Math.max(state.spotAccent, M.spotPhraseAccent);
     if (MUSIC.flash && MUSIC.flash.on && MUSIC.flash.phraseBurst > 0 && !isCalm())
       fireFlash('phrase', state.fsm === 'GROOVE' ? 1 : MUSIC.flash.phraseBurst);   // rajada só na família do drop
-    if (state.fsm === 'DROP' && MUSIC.strobe && RNG2() < MUSIC.strobe.phraseChance) fireStrobe('phrase', 1);
+    if (state.fsm === 'DROP' && MUSIC.strobe && RNG2() < MUSIC.strobe.phraseChance * Math.max(1, strobeRate())) fireStrobe('phrase', 1);
     // §ESPAÇOS: estrobo isolado em GROOVE, a espaços largos e só com energia — nunca dois seguidos
     // §CENAS: sorteio da cena de feixes (só em GROOVE; DROP/BUILD são sempre 'full')
     const SC = MUSIC.scene;
@@ -1715,11 +1719,19 @@ function onBarBoundary(bar) {
       if (state.scene !== prev) logNote(`cena de feixes: ${state.scene}`);
     }
     const SB = MUSIC.strobe;
-    if (state.fsm === 'GROOVE' && SB && SB.grooveEveryBars && bar >= state.strobeNextBar) {
+    if (state.fsm === 'GROOVE' && SB && SB.grooveEveryBars) {
+      // intervalo AO VIVO: o slider `strobe: frequência ×` (painel d) divide o intervalo por rate² e baixa o limiar
+      // de atividade — a 2× fica 4× mais frequente e já não exige a música "cheia"; a 3× é quase um estrobo por frase
+      const rate = strobeRate();
       let mul = state.scene === 'none' ? (SB.noneBeamsMul == null ? 0.4 : SB.noneBeamsMul) : 1;   // sem feixes → mais estrobo
-      { const MBc = (typeof window !== 'undefined') && window.MIRRORBALL && window.MIRRORBALL.config; const rate = MBc && Number.isFinite(MBc.strobeRate) ? MBc.strobeRate : 1; if (rate > 1) mul /= rate; }
-      state.strobeNextBar = bar + Math.max(2, Math.round(rng2Range(SB.grooveEveryBars) * mul));
-      if ((state.act == null ? 1 : state.act) >= (SB.grooveAct == null ? 0.6 : SB.grooveAct)) fireStrobe('groove', 1);
+      if (rate > 1) mul /= rate * rate;
+      if (state.strobeIntervalBars == null) state.strobeIntervalBars = Math.round(rng2Range(SB.grooveEveryBars));
+      const due = bar - state.strobeLastBar >= Math.max(1, Math.round(state.strobeIntervalBars * mul));
+      if (due) {
+        state.strobeLastBar = bar; state.strobeIntervalBars = Math.round(rng2Range(SB.grooveEveryBars));
+        const actMin = (SB.grooveAct == null ? 0.6 : SB.grooveAct) / Math.max(1, rate);
+        if ((state.act == null ? 1 : state.act) >= actMin) fireStrobe('groove', 1);
+      }
     }
   }
   // gesto leve em GROOVE: a cada 16-32 compassos, 30% das vezes
