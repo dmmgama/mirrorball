@@ -55,7 +55,7 @@
   </feComponentTransfer></filter></svg>
 
 <video id="cam" muted playsinline></video>
-<div id="ui"><button id="start">ligar câmara</button><button id="usb">ligar USB</button><button id="skin">skin: auto</button></div>
+<div id="ui"><button id="start">ligar câmara</button><button id="usb">ligar USB</button><button id="skin">skin: auto</button><button id="xpl">explosões: on</button></div>
 <div id="emo"></div>
 <div id="mus"></div>
 <div id="dbg"><h4>mirrorball-A · debug (d)</h4></div>
@@ -108,9 +108,12 @@ const CONFIG = {
     driftSec: 6.0,           // 2º tempo: câmara lenta — os estilhaços continuam a sair do centro (easeOut)
     hold: 0.5,               // s suspenso no fim da deriva antes do rewind automático
     maxHold: 14,             // teto absoluto (s desde o estoiro) — com autoHold:false, força o rewind
-    rewind: 0.5,             // 3º tempo: sucção de volta rápida (easeInOutCubic)
-    radial: 2.4,             // alcance radial em raios da bola
-    jitter: 0.55,            // dispersão lateral da trajetória
+    rewind: 0.9,             // 3º tempo: sucção de volta (easeInOutCubic)
+    radial: 1.9,             // alcance radial em raios da bola
+    depth: 0.45,             // escala do deslocamento em z (1 = esférico; <1 mantém os estilhaços mais no plano)
+    jitter: 0.45,            // dispersão lateral da trajetória
+    floatSpin: 0.35,         // em pausa (hold/held) os estilhaços continuam a tombar (rad/s) …
+    floatBob: 0.05,          // …e a flutuar (amplitude em raios); dissolve-se nos primeiros 30% do rewind
     gravity: 1.1,            // queda (em s², continua função pura de s)
     spinMax: 3.2,            // tombo máximo de cada estilhaço (rad) — a normal roda, o reflexo varre a sala
   },
@@ -190,7 +193,10 @@ let angle = 0, grainOffset = [0, 0], grainTick = 0;
 let skinMix = 0, skinTarget = 0, skinAuto = 0; // 0 = dark, 1 = white
 const spotsOn = CONFIG.spots.map(() => true);
 // explosão: s = progresso paramétrico (0 = bola inteira, 1 = estilhaços no ar); angle0 = rotação congelada no estoiro
-const exp = { phase: 'idle', t: 0, s: 0, sFrom: 1, angle0: 0, autoHold: true, age: 0 };
+const exp = { phase: 'idle', t: 0, s: 0, sFrom: 1, angle0: 0, autoHold: true, age: 0, floatT: 0 };
+// botão "explosões": quando off, o motor (fromMotor:true) não estoira; tecla x e API manual continuam a funcionar
+let explodeEnabled = true;
+try { explodeEnabled = localStorage.getItem('mb.explode') !== 'off'; } catch (e) { /* sem storage */ }
 
 function lerp(a, b, t) { return a + (b - a) * t; }
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
@@ -244,10 +250,10 @@ function frame(now) {
       exp.s = EX.burstS + (1 - EX.burstS) * (1 - Math.pow(1 - u, 3));
       if (u >= 1) { exp.phase = exp.autoHold ? 'hold' : 'held'; exp.t = 0; }
     } else if (exp.phase === 'hold') {
-      exp.s = 1;
+      exp.s = 1; exp.floatT += dtMs / 1000;
       if (exp.t >= EX.hold) { exp.phase = 'back'; exp.t = 0; exp.sFrom = 1; }
     } else if (exp.phase === 'held') {
-      exp.s = 1;
+      exp.s = 1; exp.floatT += dtMs / 1000;
     }
     // teto absoluto: nenhuma fonte externa pode deixar a bola em estilhaços para sempre
     if (exp.phase !== 'back' && exp.age >= EX.maxHold) { exp.phase = 'back'; exp.t = 0; exp.sFrom = Math.max(exp.s, 0.05); }
@@ -259,6 +265,9 @@ function frame(now) {
     }
   }
   const exS = Number.isFinite(exp.s) ? clamp(exp.s, 0, 1) : 0, exOn = exS > 0.0005;
+  if (!exOn) exp.floatT = 0;
+  // flutuação em pausa: só pesa perto de s=1, por isso o rewind continua a ser função pura de s
+  const exFloat = Number.isFinite(exp.floatT) ? exp.floatT * clamp((exS - 0.7) / 0.3, 0, 1) : 0;
   // rotação congelada no instante do estoiro; ao voltar, os estilhaços recuperam a rotação viva
   const angleUsed = exOn ? angle + (exp.angle0 - angle) * exS : angle;
 
@@ -299,9 +308,12 @@ function frame(now) {
     let N = N0, P = N0, exRot = null;
     if (exOn) { // estilhaço: centro desloca-se (radial + jitter + queda), normal tomba — o reflexo varre a sala
       const rad = 1 + EX.radial * T.exSpeed * exS, jit = EX.jitter * exS;
-      P = [N0[0] * rad + T.exJit[0] * jit, N0[1] * rad + T.exJit[1] * jit - EX.gravity * exS * exS, N0[2] * rad + T.exJit[2] * jit];
+      const bob = exFloat > 0 ? EX.floatBob * Math.sin(exFloat * 0.7 + T.driftPhase) : 0;
+      P = [N0[0] * rad + T.exJit[0] * (jit + bob),
+           N0[1] * rad + T.exJit[1] * jit - EX.gravity * exS * exS + bob,
+           N0[2] + (N0[2] * (rad - 1) + T.exJit[2] * jit) * EX.depth];
       if (P[2] > camD - 1.5) continue; // demasiado perto da câmara: a projeção explodiria
-      const A = T.exSpin * EX.spinMax * exS;
+      const A = T.exSpin * (EX.spinMax * exS + EX.floatSpin * exFloat);
       exRot = { k: T.exAxis, sA: Math.sin(A), cA: Math.cos(A) };
       N = rodrigues(N0, exRot.k, exRot.sA, exRot.cA);
     }
@@ -501,7 +513,8 @@ window.MIRRORBALL = {
   // Mid-voo, reentra na curva no ponto equivalente ao s atual (sem salto).
   explode(opts) {
     if (reducedMotion) return;
-    const o = opts || {}, { autoHold, ...cfg } = o;
+    const o = opts || {}, { autoHold, fromMotor, ...cfg } = o;
+    if (fromMotor && !explodeEnabled) return;
     Object.assign(CONFIG.explode, cfg);
     const EX = CONFIG.explode, s = clamp(exp.s, 0, 0.999);
     if (exp.phase === 'idle') { exp.angle0 = angle; exp.age = 0; }
@@ -510,7 +523,8 @@ window.MIRRORBALL = {
     else { exp.phase = 'drift'; exp.t = EX.driftSec * (1 - Math.cbrt(1 - (s - EX.burstS) / (1 - EX.burstS))); }
   },
   rewind() { if (exp.phase !== 'idle' && exp.phase !== 'back') { exp.phase = 'back'; exp.t = 0; exp.sFrom = Math.max(exp.s, 0.05); } },
-  getExplode() { return { phase: exp.phase, s: exp.s }; },
+  getExplode() { return { phase: exp.phase, s: exp.s, enabled: explodeEnabled }; },
+  setExplodeEnabled(v) { explodeEnabled = !!v; try { localStorage.setItem('mb.explode', explodeEnabled ? 'on' : 'off'); } catch (e) { /* sem storage */ } syncXplBtn(); },
 };
 
 /* ---------------- painel de debug (tecla d) ---------------- */
@@ -549,13 +563,16 @@ const skinBtn = document.getElementById('skin'), SKINS = ['dark', 'white', 'auto
 function syncSkinBtn() { skinBtn.textContent = 'skin: ' + CONFIG.skin; }
 function cycleSkin() { CONFIG.skin = SKINS[(SKINS.indexOf(CONFIG.skin) + 1) % SKINS.length]; syncSkinBtn(); }
 skinBtn.onclick = cycleSkin; syncSkinBtn();
+const xplBtn = document.getElementById('xpl');
+function syncXplBtn() { xplBtn.textContent = 'explosões: ' + (explodeEnabled ? 'on' : 'off'); }
+xplBtn.onclick = () => window.MIRRORBALL.setExplodeEnabled(!explodeEnabled); syncXplBtn();
 
 requestAnimationFrame(frame);
 </script>
 <script src="core.js?v=1"></script>
 <script src="bridge.js?v=2"></script>
 <script src="emotion-v2.js?v=1"></script>
-<script src="music.js?v=19"></script>
+<script src="music.js?v=21"></script>
 <!-- painel de calibração ao vivo (tecla k). Inerte sem window.MUSIC (bola manual/câmara). -->
 <script src="tuner.js?v=1"></script>
 </body>
