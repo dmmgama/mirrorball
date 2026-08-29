@@ -218,6 +218,7 @@ const MUSIC = {
     cFloor: 1.15,         // C nunca desce abaixo disto
     cVarGain: 0.35,       // quanto o C desce por unidade de std/mediana
     kickC0: 1.6,          // C base do bombo (sub 40-120 Hz)
+    absFloor: 0.35,       // §PISOABS (medido: 0.35 = 57 kicks/25 s ≈ esperados; 0.2 = 102, duplos): kick só se flux ≥ isto × pico lento do flux (mata falsos kicks no vazio)
     kickRefractMs: 120,   // 120 ms protege até 500 BPM; os 200 ms antigos cortavam kicks duplos
     hatC0: 1.4,           // hi-hats são mais densos e regulares → C mais baixo
     hatRefractMs: 60,     // 1/16 a 140 BPM ≈ 107 ms; 60 ms dá margem
@@ -309,11 +310,21 @@ const MUSIC = {
     phraseChance: 0.20,     // prob. na fronteira de frase em DROP
     grooveEveryBars: [24, 48], // §ESPAÇOS: em GROOVE com atividade alta, um estrobo isolado a cada 24-48 compassos (como num clube)
     grooveAct: 0.6,           // só com atividade acima disto
+    noneBeamsMul: 0.4,        // §CENAS: sem feixes, o intervalo dos estrobos em GROOVE encurta para isto × (mais estrobo)
     burstChance: 0.35,        // §RAJADA: prob. de um estrobo sair em rajada de burstN[0..1] flashadas seguidas (≥ 360 ms cada, < 3 Hz)
     burstN: [3, 4],
     kickChanceDrop: 0.10,   // prob. por bombo nos primeiros `flash.dropBars` de DROP
     level: [0.35, 0.7],
   },   // agudos marcam: feixes sobem, opacidade dá um tique
+  /* §CENAS — cenas de feixes em GROOVE (o David: 'momentos sem feixes, outros com só um ou dois feixes
+   * contínuos durante um tempo'). Sorteadas na fronteira de frase, duram `everyBars`; DROP força 'full'. */
+  scene: {
+    on: 1,
+    everyBars: [16, 48],          // duração de cada cena (compassos)
+    pFull: 0.5, pFew: 0.3,        // prob. de 'full' / 'few' (o resto é 'none')
+    fewFrac: 0.035,               // 'few': fração FIXA de espelhos com feixe → 1-2 feixes contínuos que rodam com a bola
+    fewInt: 0.14,                 // intensidade dos feixes em 'few' (contínuos, sem tique de agudos)
+  },
   /* §FLASHDIM — o técnico de luz nos pinspots (docs/lighting-design-research.md): aim FIXO, trabalha
    * o DIMMER e dispara flashes curtos. Flashes = MIRRORBALL.flash(); dimmer = ganho por fase × foco. */
   flash: {
@@ -540,6 +551,7 @@ const TUNE = {
     knobs: [
       { path: 'bandOnset.kickC0',       range: [1.15, 3.0],  step: 0.01, label: 'kick C0 (limiar)' },
       { path: 'bandOnset.minStdRatio',  range: [0.0, 0.60],  step: 0.01, label: 'kick var. mín (V0)' },
+      { path: 'bandOnset.absFloor',     range: [0.0, 0.60], step: 0.01, label: 'kick piso abs. (× pico lento)' },
       { path: 'bandOnset.kickRefractMs', range: [60, 400],   step: 5,    label: 'kick refratário ms' },
       { path: 'bandOnset.hatC0',        range: [1.05, 3.0],  step: 0.01, label: 'hat C0 (limiar)' },
       { path: 'bandOnset.hatEnvTau.0',  range: [0.05, 1.0],  step: 0.01, label: 'hat env attack' },
@@ -626,6 +638,13 @@ const TUNE = {
       { path: 'strobe.grooveEveryBars.1', range: [4, 128], step: 1, label: 'strobe: GROOVE a cada (máx bars)' },
       { path: 'strobe.grooveAct',      range: [0.0, 1.0], step: 0.05, label: 'strobe: GROOVE só com atividade ≥' },
       { path: 'strobe.burstChance',    range: [0.0, 1.0], step: 0.05, label: 'strobe: rajada 3-4 (prob.)' },
+      { path: 'scene.on',              range: [0, 1],     step: 1,    label: 'cenas de feixes (0/1)' },
+      { path: 'scene.everyBars.0',     range: [4, 64],    step: 1,    label: 'cena: dura mín (bars)' },
+      { path: 'scene.everyBars.1',     range: [8, 128],   step: 1,    label: 'cena: dura máx (bars)' },
+      { path: 'scene.pFull',           range: [0.0, 1.0], step: 0.05, label: 'cena: prob. todos os feixes' },
+      { path: 'scene.pFew',            range: [0.0, 1.0], step: 0.05, label: 'cena: prob. 1-2 feixes' },
+      { path: 'scene.fewFrac',         range: [0.005, 0.2], step: 0.005, label: 'cena: fração em 1-2 feixes' },
+      { path: 'strobe.noneBeamsMul',   range: [0.1, 1.0], step: 0.05, label: 'strobe: sem feixes, intervalo ×' },
       { path: 'strobe.burstN.1',       range: [2, 6],     step: 1,    label: 'strobe: rajada máx' },
       { path: 'flash.calmAct',         range: [0.0, 1.0], step: 0.05, label: 'flash: calmo abaixo de atividade' },
       { path: 'strobe.kickChanceDrop', range: [0.0, 0.5], step: 0.01, label: 'strobe: bombo no DROP (prob.)' },
@@ -811,6 +830,7 @@ const state = {
   // --- explosão (raridade): último estoiro e início da família escura (BREAKDOWN/BUILD/PRE_DROP) ---
   lastExplodeT: -Infinity, darkSince: -Infinity, explodeCount: 0,
   strobeNextBar: 16, strobeCount: 0,   // §ESPAÇOS (regra 7: valor inicial)
+  scene: 'full', sceneNextBar: 0,       // §CENAS (regra 7)
   // §BANDONSET. Os detetores são criados abaixo (precisam do MUSIC já definido); `kickDet`/
   // `hatDet`/`hatEnv` nascem a null e são preenchidos por `resetDetectors()` — que corre
   // imediatamente, mas o valor inicial tem de existir aqui na mesma (regra 7 do CLAUDE.md:
@@ -1142,7 +1162,7 @@ class BandOnset {
     this.hist = [];
     this.lastBeat = -Infinity;
     // Instrumentação para o HUD — inicializada, nunca undefined (regra 7 / lição 2 do handoff).
-    this.med = 0; this.std = 0; this.vRel = 0; this.C = this.C0; this.last = 0;
+    this.med = 0; this.std = 0; this.vRel = 0; this.C = this.C0; this.last = 0; this.peak = 0;
   }
   /* Limiar base e refratário VIVOS: lidos do CONFIG a cada uso. */
   // A tarola lê os SEUS knobs de `MUSIC.snare` e não de `bandOnset`: são grandezas diferentes
@@ -1153,6 +1173,11 @@ class BandOnset {
   push(x, tMs) {
     const v = +x || 0;
     this.last = v;
+    // §PISOABS — pico lento do flux (decai ~40 s, como a referência do sidecar). MEDIDO (feat-2026-08-29,
+    // vazio de bombo 31-35 s): a mediana cai para 0.3 e o resíduo (flux 0.3-2 vs ~10 com bombo) passava
+    // o C×mediana a cada 0.2 s — a presença nunca caía e a bola não parava. Um kick tem de ser também
+    // uma fração (`absFloor`) do pico recente: relativo À MÚSICA, não ao ruído do momento.
+    this.peak = Math.max(v, this.peak * 0.9995);
     this.hist.push(v);
     if (this.hist.length > this.N) this.hist.shift();
     if (this.hist.length < this.N) return false;   // ainda a encher: nunca dispara
@@ -1176,8 +1201,10 @@ class BandOnset {
 
     this.med = med; this.std = std; this.vRel = vRel; this.C = C;
 
+    const absFloor = this.kind === 'kick' ? (B.absFloor == null ? 0.2 : B.absFloor) : 0;   // só o bombo (hat/tarola: sem medição)
     const isBeat = med > 0 &&
       v > C * med &&
+      v >= absFloor * this.peak &&
       std > B.minStdRatio * med &&
       (tMs - this.lastBeat) > this.refractMs;
     if (isBeat) this.lastBeat = tMs;
@@ -1676,9 +1703,18 @@ function onBarBoundary(bar) {
       fireFlash('phrase', state.fsm === 'GROOVE' ? 1 : MUSIC.flash.phraseBurst);   // rajada só na família do drop
     if (state.fsm === 'DROP' && MUSIC.strobe && RNG2() < MUSIC.strobe.phraseChance) fireStrobe('phrase', 1);
     // §ESPAÇOS: estrobo isolado em GROOVE, a espaços largos e só com energia — nunca dois seguidos
+    // §CENAS: sorteio da cena de feixes (só em GROOVE; DROP/BUILD são sempre 'full')
+    const SC = MUSIC.scene;
+    if (SC && SC.on && state.fsm === 'GROOVE' && bar >= state.sceneNextBar) {
+      const r = RNG2(), prev = state.scene;
+      state.scene = r < SC.pFull ? 'full' : r < SC.pFull + SC.pFew ? 'few' : 'none';
+      state.sceneNextBar = bar + Math.round(rng2Range(SC.everyBars));
+      if (state.scene !== prev) logNote(`cena de feixes: ${state.scene}`);
+    }
     const SB = MUSIC.strobe;
     if (state.fsm === 'GROOVE' && SB && SB.grooveEveryBars && bar >= state.strobeNextBar) {
-      state.strobeNextBar = bar + Math.round(rng2Range(SB.grooveEveryBars));
+      const mul = state.scene === 'none' ? (SB.noneBeamsMul == null ? 0.4 : SB.noneBeamsMul) : 1;   // sem feixes → mais estrobo
+      state.strobeNextBar = bar + Math.max(2, Math.round(rng2Range(SB.grooveEveryBars) * mul));
       if ((state.act == null ? 1 : state.act) >= (SB.grooveAct == null ? 0.6 : SB.grooveAct)) fireStrobe('groove', 1);
     }
   }
@@ -2032,9 +2068,12 @@ function applyToBall(o, gestInfo) {
   const hazeMax = Number.isFinite(C.hazeMax) ? C.hazeMax : 1, fracMax = Number.isFinite(C.beamFractionMax) ? C.beamFractionMax : 1;
   if (C.beamsMotor !== false) {   // override do painel d ('feixes+haze: motor manda' = 0)
     C.haze = clamp(o.haze, MUSIC.outMin.haze, MUSIC.outMax.haze) * hazeMax;
-    C.beamFraction = clamp(o.beams / MUSIC.outMax.beams, 0, 1) * fracMax;       // densidade/agudos → fração de espelhos com feixe
+    // §CENAS: 'few' = fração fixa (1-2 feixes contínuos, sem tique de agudos); 'none' = zero. Fora de GROOVE é sempre 'full'.
+    const sc = state.fsm === 'GROOVE' && MUSIC.scene && MUSIC.scene.on ? state.scene : 'full';
+    if (sc === 'few') { C.beamFraction = Math.min(fracMax, MUSIC.scene.fewFrac); C.beamIntensity = Math.min(MUSIC.outMax.beamInt, MUSIC.scene.fewInt); }
+    else if (sc === 'none') { C.beamFraction = 0; C.beamIntensity = 0; }
+    else { C.beamFraction = clamp(o.beams / MUSIC.outMax.beams, 0, 1) * fracMax; C.beamIntensity = clamp(o.beamInt, 0, MUSIC.outMax.beamInt); }   // teto inviolável 0.18
     C.beamMaxCount = MUSIC.outMax.beamCap;                              // teto absoluto = performance, não expressão
-    C.beamIntensity = clamp(o.beamInt, 0, MUSIC.outMax.beamInt);       // teto inviolável 0.18
   }
   /* §OPACSECO — a opacidade escrita na bola, e o porquê desta ordem.
    * MEDIDO em `tools/feat`: o ALVO de opacidade já satura (p50 e p95 = 1.000) e 1732 dos 2667
