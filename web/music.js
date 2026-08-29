@@ -302,7 +302,14 @@ const MUSIC = {
    * Já não é (V,A)→âncoras. É DIRETO: cada knob tem a sua fonte e a sua amplitude, escolhida
    * para se NOTAR. A "amplitude visível" é o requisito, não a subtileza. */
   activity: { low: 0.10, high: 0.45, beamsMin: 0.55, hatMin: 0.35, slowMax: 1.8 },  // densidade → atividade
-  hat: { gain: 6, releaseSec: 0.12, beamGain: 1.0, opacityDip: 0.35 },   // agudos marcam: feixes sobem, opacidade dá um tique
+  hat: { gain: 6, releaseSec: 0.12, beamGain: 1.0, opacityDip: 0.35 },
+  strobe: {                 // estrobo de FUNDO — só se o knob da bola (CONFIG.strobe.enabled) estiver ON; OCASIONAL
+    on: 1,
+    dropEnter: 2,           // rajada ao ENTRAR em DROP (nº de disparos, escalonados ≥ 340 ms)
+    phraseChance: 0.20,     // prob. na fronteira de frase em DROP (GROOVE nunca)
+    kickChanceDrop: 0.10,   // prob. por bombo nos primeiros `flash.dropBars` de DROP
+    level: [0.35, 0.7],
+  },   // agudos marcam: feixes sobem, opacidade dá um tique
   /* §FLASHDIM — o técnico de luz nos pinspots (docs/lighting-design-research.md): aim FIXO, trabalha
    * o DIMMER e dispara flashes curtos. Flashes = MIRRORBALL.flash(); dimmer = ganho por fase × foco. */
   flash: {
@@ -433,7 +440,10 @@ const MUSIC = {
   // 0.45 s ainda é ~0.35 Hz de conteúdo, uma ordem de grandeza abaixo do teto de 3 Hz.
   rpmStopTau: 0.45,
   outMin: { spot: 0.00, opacity: 0.00, haze: 0.05, rpm: 0.00, beamInt: 0, beams: 0 },
-  outMax: { spot: 1.60, opacity: 1.00, haze: 1.00, rpm: 3.00, beamInt: 0.18, beams: 56 },
+  outMax: { spot: 1.60, opacity: 1.00, haze: 1.00, rpm: 3.00, beamInt: 0.18, beams: 56, beamCap: 110 },
+  // `beams` (0-56) é a ESCALA da saída; na bola vira `beamFraction` = beams/56 (fração dos espelhos do foco que
+  // geram feixe) — a contagem absoluta (`beamCap`) fica só como teto de performance. Antes o motor escrevia
+  // `beamMaxCount` e, com todos os espelhos do foco a gerar feixe (~40), o mapeamento ficava esmagado.
 
   /* ---- Camada 2: grelha ---- */
   grid: {
@@ -599,6 +609,10 @@ const TUNE = {
       { path: 'flash.phraseBurst',     range: [0, 5],     step: 1,    label: 'flash: rajada na frase' },
       { path: 'dimmer.BREAKDOWN.1',    range: [0.0, 1.0], step: 0.05, label: 'dimmer: foco 2 em BREAKDOWN' },
       { path: 'dimmer.DROP.0',         range: [0.5, 1.6], step: 0.05, label: 'dimmer: DROP' },
+      { path: 'strobe.on',             range: [0, 1],     step: 1,    label: 'strobe fundo (se a bola tiver ON)' },
+      { path: 'strobe.dropEnter',      range: [0, 4],     step: 1,    label: 'strobe: rajada ao entrar em DROP' },
+      { path: 'strobe.phraseChance',   range: [0.0, 1.0], step: 0.05, label: 'strobe: frase em DROP (prob.)' },
+      { path: 'strobe.kickChanceDrop', range: [0.0, 0.5], step: 0.01, label: 'strobe: bombo no DROP (prob.)' },
       // §SNARE — a resposta visual do acento seco (o teto 0.18 é preservado por construção)
       { path: 'snare.opacityKick',     range: [0.0, 0.8], step: 0.01, label: 'tarola → opacidade' },
       { path: 'snare.beamKick',        range: [0.0, 0.8], step: 0.01, label: 'tarola → feixes' },
@@ -730,6 +744,8 @@ async function loadTuningFile() {
     if (!j) continue;
     const flat = flattenKnown(j, '', {});
     const n = applyTuning(flat);
+    // secção `ball`: knobs do painel d da bola (focos, cone, luz geral…) — o ficheiro manda sobre o localStorage
+    if (j.ball && window.MIRRORBALL && window.MIRRORBALL.knobs) window.MIRRORBALL.knobs.set(j.ball);
     TUNE_STATE.loaded = true; TUNE_STATE.from = c.id; TUNE_STATE.path = c.path;
     TUNE_STATE.msg = `${n} valores carregados`;
     if (typeof TUNER_SYNC === 'function') TUNER_SYNC();
@@ -886,6 +902,7 @@ function setState(next, why) {
   state.fsm = next;
   state.fsmSince = MB_CLOCK.now();
   state.fsmBar = state.bar;
+  if (next === 'DROP' && MUSIC.strobe && MUSIC.strobe.dropEnter > 0) fireStrobe('drop', MUSIC.strobe.dropEnter);
   const DARK = next === 'BREAKDOWN' || next === 'BUILD' || next === 'PRE_DROP';
   const wasDark = prev === 'BREAKDOWN' || prev === 'BUILD' || prev === 'PRE_DROP';
   if (DARK && !wasDark) state.darkSince = state.fsmSince;
@@ -1531,6 +1548,15 @@ function emitLocalGrid(nowL) {
 }
 /* §FLASHDIM — flash curto num pinspot "extra" (posição plausível sorteada pela bola). Cap a 3 Hz.
  * RNG2 (o dos spots), para não mexer na sequência determinística dos gestos. */
+/* §STROBE — estrobo de fundo via MIRRORBALL.strobe(); a bola decide se está ligado (knob do David) e impõe
+ * o minGapMs. Aqui só se decide QUANDO faz sentido musical: raro, em DROP. */
+function fireStrobe(why, n) {
+  const S = MUSIC.strobe, MB = (typeof window !== 'undefined') && window.MIRRORBALL;
+  if (!S || !S.on || !MB || typeof MB.strobe !== 'function' || !(MB.strobeEnabled && MB.strobeEnabled())) return;
+  const k = Math.max(1, n | 0), lv = () => S.level[0] + RNG2() * (S.level[1] - S.level[0]);
+  for (let i = 0; i < k; i++) { if (i === 0) MB.strobe({ level: lv() }); else setTimeout(() => MB.strobe({ level: lv() }), i * 360); }
+  state.strobeCount = (state.strobeCount || 0) + 1;
+}
 function fireFlash(why, n) {
   const F = MUSIC.flash, MB = (typeof window !== 'undefined') && window.MIRRORBALL;
   if (!F || !F.on || !MB || typeof MB.flash !== 'function') return;
@@ -1549,6 +1575,7 @@ function onKickBeat() {
   const inDrop = state.fsm === 'DROP' && (state.bar - state.fsmBar) < F.dropBars;
   const p = inDrop ? F.kickChanceDrop : (state.fsm === 'GROOVE' || state.fsm === 'DROP') ? F.kickChance : 0;
   if (RNG2() < p) fireFlash('kick', 1);
+  if (inDrop && MUSIC.strobe && RNG2() < MUSIC.strobe.kickChanceDrop) fireStrobe('kick', 1);
 }
 
 function ingestGrid(g) {
@@ -1625,6 +1652,7 @@ function onBarBoundary(bar) {
     state.phraseAccent = 1;
     state.spotAccent = Math.max(state.spotAccent, M.spotPhraseAccent);
     if (MUSIC.flash && MUSIC.flash.on && MUSIC.flash.phraseBurst > 0) fireFlash('phrase', MUSIC.flash.phraseBurst);
+    if (state.fsm === 'DROP' && MUSIC.strobe && RNG2() < MUSIC.strobe.phraseChance) fireStrobe('phrase', 1);
   }
   // gesto leve em GROOVE: a cada 16-32 compassos, 30% das vezes
   if (state.fsm === 'GROOVE' && bar >= state.gestNextGrooveBar) {
@@ -1953,7 +1981,7 @@ function onOwnerChange(owner) {
       const C = MB.config;
       state.out.rpm = C.rotationRpm; state.out.haze = C.haze;
       state.out.opacity = C.sphereOpacity; state.out.beamInt = C.beamIntensity;
-      state.out.beams = C.beamMaxCount;
+      state.out.beams = (Number.isFinite(C.beamFraction) ? C.beamFraction : 1) * MUSIC.outMax.beams;
       const s0 = C.spots[0];
       state.out.spot = s0 && s0._base ? clamp(s0.intensity / s0._base, 0, 1.6) : state.out.spot;
       // §0.1 ponto 1: o motor NÃO atua sobre a cor. Mas 'auto' sem fonte de tom deixaria a
@@ -1973,7 +2001,8 @@ function applyToBall(o, gestInfo) {
   const C = MB.config;
   C.rotationRpm = clamp(o.rpm, MUSIC.outMin.rpm, MUSIC.outMax.rpm);
   C.haze = clamp(o.haze, MUSIC.outMin.haze, MUSIC.outMax.haze);
-  C.beamMaxCount = Math.round(clamp(o.beams, 0, MUSIC.outMax.beams));
+  C.beamFraction = clamp(o.beams / MUSIC.outMax.beams, 0, 1);       // densidade/agudos → fração de espelhos com feixe
+  C.beamMaxCount = MUSIC.outMax.beamCap;                              // teto absoluto = performance, não expressão
   C.beamIntensity = clamp(o.beamInt, 0, MUSIC.outMax.beamInt);       // teto inviolável 0.18
   /* §OPACSECO — a opacidade escrita na bola, e o porquê desta ordem.
    * MEDIDO em `tools/feat`: o ALVO de opacidade já satura (p50 e p95 = 1.000) e 1732 dos 2667
@@ -1990,6 +2019,7 @@ function applyToBall(o, gestInfo) {
   const opAcc = opDip + (1 - opDip) * MUSIC.snare.opacityKick * (state.snareAccent || 0);
   C.sphereOpacity = clamp(opAcc, MUSIC.outMin.opacity, 1);
   C.spotFadeMix = 0;   // §3.6: os fades internos (11/17/13 s) não são períodos musicais
+  if (C.choreo) C.choreo.flashRate = 0; // os flashes Poisson internos da bola (0.6/s, aleatórios) não são música: em music só o motor dispara
   // ⚠ NADA de setSkinAuto aqui (§0.1 ponto 1): a skin é do utilizador, ponto final.
   if (MB.setHealth && MB.getHealth() !== state.health) MB.setHealth(state.health);
 
@@ -1997,8 +2027,8 @@ function applyToBall(o, gestInfo) {
   const M = MUSIC.map;
   const solo = gestInfo && gestInfo.solo, w = gestInfo ? gestInfo.w : 0;
   const swapBar = gestInfo && gestInfo.swapEveryBar;
-  const nMounted = Math.max(1, Math.min(C.spots.length, C.spotCount || C.spots.length));
-  const dom = swapBar ? (state.bar % nMounted) : (state.domSpot % nMounted);
+  const nMounted = Math.max(0, Math.min(C.spots.length, C.spotCount == null ? C.spots.length : C.spotCount)); // 0 = sem focos permanentes
+  const dom = nMounted === 0 ? -1 : swapBar ? (state.bar % nMounted) : (state.domSpot % nMounted);
   // §FLASHDIM — dimmer por fase (rampa de `dimmer.ease` s); em BUILD o 2º foco sobe com os compassos
   const DM = MUSIC.dimmer, target = (DM && DM[state.fsm]) || [1, 1, 1];
   const buildU = state.fsm === 'BUILD' ? clamp((state.bar - state.fsmBar) / 8, 0, 1) : 0;
@@ -2454,6 +2484,8 @@ window.MUSIC = {
           }
           cur[parts[parts.length - 1]] = v;
         }
+        // + knobs do painel d da bola (secção `ball`), para os dois painéis viverem no mesmo ficheiro
+        if (window.MIRRORBALL && window.MIRRORBALL.knobs) cfg.ball = window.MIRRORBALL.knobs.get();
         const body = JSON.stringify({ location: locationId || TUNE_STATE.active || undefined, config: cfg });
         const r = await fetch('/app-config', {
           method: 'POST',

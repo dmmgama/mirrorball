@@ -1,6 +1,6 @@
 {
   "bandOnset": {
-    "kickC0": 5.0,
+    "kickC0": 3,
     "minStdRatio": 0.6,
     "kickRefractMs": 200,
     "hatC0": 1.4,
@@ -24,6 +24,10 @@
     ],
     "rpmKnee": 0,
     "spinLockRpm": 3,
+    "spinCeilRpm": 0.1,
+    "spinCeilChance": 1,
+    "spinCeilGapSec": 2.2,
+    "spinCeilPresence": 0.06,
     "beamIntFrom": [
       0,
       0.085
@@ -40,7 +44,14 @@
       0.31,
       1
     ],
-    "opacityFloorGroove": 1
+    "opacityFloorGroove": 1,
+    "opacityReleaseSec": 0.8,
+    "spotSwapBars": 8,
+    "spotSwapJitter": 3,
+    "spotBarAccent": 0.16,
+    "spotPhraseAccent": 0.34,
+    "spotAccentDecay": 0.55,
+    "spotSnareGain": 0.45
   },
   "hat": {
     "beamGain": 1.35,
