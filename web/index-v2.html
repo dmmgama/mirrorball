@@ -103,6 +103,7 @@ const CONFIG = {
   },
   shade: { key: 0.55, az: -35, el: 40 }, // luz GERAL da sala (volume da esfera): tiles virados para ela mais claros; 0 = plano
   halo: 0.3,                 // auréola de névoa à volta da bola (1 = como antes; 0 = nenhuma)
+  ballContrast: 1.0,         // contraste das facetas (0.5-2.5): estica os cinzas à volta do nível médio — ver melhor a bola sem a lavar
   ballLight: 0.0,            // luz da BOLA (0-1): sobe uniformemente o cinza das facetas, ANTES do volume/luz geral (mantém o 3D) — knob
   bgGrey: 7,                 // cinza do fundo em dark (0-60): quanto "escuro" é o escuro — knob 'fundo: claridade'
   strobe: {                  // estrobo de FUNDO (a sala atrás pisca, não a bola). O motor só o usa se enabled.
@@ -118,6 +119,8 @@ const CONFIG = {
   beamGlowZ: 0.8,            // R·z acima disto = feixe a vir para nós → brilho em vez de linha
   haze: 0.65,                // densidade da névoa (só afeta feixes e a auréola)
   beamMaxCount: 110,         // feixes visíveis no máximo
+  beamFractionMax: 1.0,      // teto do painel d: o motor escreve beamFraction = fração musical × isto
+  hazeMax: 1.0,              // teto do painel d: o motor escreve haze = haze musical × isto
   beamFraction: 1.0,         // fração dos tiles do foco a produzir feixe (1 = todos os espelhos iluminados)
   beamIntensity: 0.16,       // alpha máximo de um feixe (núcleo)
   beamWidthDeg: 0.7,         // meia-largura angular do wedge exterior — knob 'feixes: largura°'
@@ -128,6 +131,9 @@ const CONFIG = {
   dotMaxGrey: 0xd8,          // teto de brilho dos pontos
   bloomStrength: 0.75,       // alpha da passagem de bloom
   bloomBlurPx: 9,            // raio do blur (em px CSS, a meia resolução)
+  opacityMotor: false,       // false (defeito, pedido do David) = o motor não escreve sphereOpacity; liga-se no painel d
+  beamsMotor: true,          // false = o motor não toca em beamFraction/beamIntensity/haze
+  spotsMotor: true,          // false = o motor não toca na intensidade dos focos (nem flashes)
   sphereOpacity: 1.0,        // 1 = sólida; → 0 = raio-X (só malha + tiles ativos persistem)
   seamDarkness: 0.02,        // cinza das juntas (0..1)
   seamInset: 0.15,           // fração angular do tile reservada à junta (≈1–2 px)
@@ -630,6 +636,8 @@ function frame(now) {
     const drift = 0.015 * Math.sin(TAU * tSec / CONFIG.driftPeriod + T.driftPhase);
     let g = (T.grey + drift) * (1 + CONFIG.litSideGain * v.lit);
     g += 0.45 * clamp(CONFIG.ballLight || 0, 0, 1);                // luz da bola: sobe tudo por igual; os fatores 3D abaixo continuam a esculpir
+    { const mid = 0.5 * (CONFIG.baseTileGrey[0] + CONFIG.baseTileGrey[1]) + 0.45 * clamp(CONFIG.ballLight || 0, 0, 1);
+      g = mid + (g - mid) * (CONFIG.ballContrast || 1); }             // contraste: abre a diferença entre facetas sem subir o nível
     g += CONFIG.rimStrength * smooth(0.28, 0.0, nz);            // borda clara rasante
     g -= 0.035 * smooth(0.05, 0.22, nz) * smooth(0.5, 0.25, nz); // banda mais escura logo dentro
     g *= 0.75 + 0.25 * nz;                                       // volume suave
@@ -711,8 +719,11 @@ window.MIRRORBALL = {
   setHealth(h) { health = clamp(+h || 0, 0, 1); syncPanel(); },
   getHealth() { return health; },
   config: CONFIG,
-  // knobs do painel d (persistidos): get() → {nome: valor}; set(obj) aplica (ficheiro music-config.json `ball` > localStorage)
-  knobs: { get: () => knobsGet(), set: (o) => { const n = knobsSet(o, true); if (n) knobMsg.textContent = `${n} knobs do ficheiro`; return n; } },
+  // knobs do painel d (persistidos): get() → {nome: valor}; set(obj) aplica (localStorage > ficheiro `ball` > defaults)
+  // ⚠ prioridade: o que o David tocou por último (localStorage) GANHA; o ficheiro só preenche knobs nunca mexidos.
+  // Antes era ficheiro > localStorage e cada reload revertia os ajustes feitos em `d` sem "gravar".
+  knobs: { get: () => knobsGet(), set: (o) => { knobFile = Object.assign({}, o || {}); const fill = {}; for (const k in (o || {})) if (!Number.isFinite(knobStore[k])) fill[k] = o[k];
+    const n = knobsSet(fill, false); if (n) knobMsg.textContent = `${n} knobs do ficheiro (os teus ajustes locais mandam)`; return n; } },
   setSpot(i, partial) { if (CONFIG.spots[i]) Object.assign(CONFIG.spots[i], partial || {}); },
   // flash curto num sítio novo (motor: bombo/tarola). opts: {intensity, radius, len, az, el, aim}
   flash(opts) {
@@ -781,6 +792,7 @@ const sliders = [
   ['flash: raio ×', 0.2, 3, 0.05, v => { const b = 0.14; CH.flashRadius[0] = b * 0.7 * v; CH.flashRadius[1] = b * 1.3 * v; }, () => CH.flashRadius[1] / (0.14 * 1.3)],
   ['flash: dura ms (só manual)', 40, 600, 10, v => { CH.flashLen[0] = v * 0.6 / 1000; CH.flashLen[1] = v * 1.4 / 1000; }, () => CH.flashLen[1] * 1000 / 1.4],
   ['bola: luz', 0, 1, 0.02, v => CONFIG.ballLight = v, () => CONFIG.ballLight],
+  ['bola: contraste', 0.5, 2.5, 0.05, v => CONFIG.ballContrast = v, () => CONFIG.ballContrast],
   ['luz geral (volume)', 0, 1, 0.05, v => CONFIG.shade.key = v, () => CONFIG.shade.key],
   ['luz geral: az°', -180, 180, 5, v => CONFIG.shade.az = v, () => CONFIG.shade.az],
   ['luz geral: el°', -60, 90, 5, v => CONFIG.shade.el = v, () => CONFIG.shade.el],
@@ -795,7 +807,7 @@ const sliders = [
   ['cone: alcance', 1, 8, 0.2, v => CONFIG.incidentLen = v, () => CONFIG.incidentLen],
   ['cone: largura máx', 1, 3, 0.1, v => CONFIG.incidentMaxWidth = v, () => CONFIG.incidentMaxWidth],
   ['cone: teto (raios)', 0.03, 0.4, 0.01, v => CONFIG.incidentMaxPx = v, () => CONFIG.incidentMaxPx],
-  ['feixes: fração (motor manda)', 0, 1, 0.05, v => CONFIG.beamFraction = v, () => CONFIG.beamFraction],
+  ['feixes: fração máx (motor modula)', 0, 1, 0.05, v => { CONFIG.beamFractionMax = v; CONFIG.beamFraction = v; }, () => CONFIG.beamFractionMax],
   ['feixes: compr. 3D', 0.5, 8, 0.1, v => CONFIG.beamLen3D = v, () => CONFIG.beamLen3D],
   ['feixes: largura°', 0.1, 4, 0.05, v => CONFIG.beamWidthDeg = v, () => CONFIG.beamWidthDeg],
   ['feixes: dispersão', 0, 1, 0.02, v => CONFIG.beamSoft = v, () => CONFIG.beamSoft],
@@ -803,7 +815,10 @@ const sliders = [
   ['espelhos: filas', 16, 96, 2, v => { if (v !== CONFIG.facetRows) { CONFIG.facetRows = v; buildTiles(); } }, () => CONFIG.facetRows],
   // ---- bola ----
   ['rotationRpm (motor manda)', 0, 3, 0.05, v => CONFIG.rotationRpm = v, () => CONFIG.rotationRpm],
-  ['haze (motor manda)', 0, 1, 0.01, v => CONFIG.haze = v, () => CONFIG.haze],
+  ['haze máx (motor modula)', 0, 1, 0.01, v => { CONFIG.hazeMax = v; CONFIG.haze = v; }, () => CONFIG.hazeMax],
+  ['feixes+haze: motor manda (0/1)', 0, 1, 1, v => CONFIG.beamsMotor = !!v, () => CONFIG.beamsMotor ? 1 : 0],
+  ['focos+flashes: motor manda (0/1)', 0, 1, 1, v => CONFIG.spotsMotor = !!v, () => CONFIG.spotsMotor ? 1 : 0],
+  ['opacidade: motor manda (0/1)', 0, 1, 1, v => CONFIG.opacityMotor = !!v, () => CONFIG.opacityMotor ? 1 : 0], // 0 = o slider abaixo fixa a opacidade (diagnóstico: é a opacidade que pisca?)
   ['sphereOpacity (motor manda)', 0, 1, 0.01, v => CONFIG.sphereOpacity = v, () => CONFIG.sphereOpacity],
   ['health (motor manda)', 0, 1, 0.01, v => health = v, () => health],
 ];
@@ -818,8 +833,9 @@ function applyDbgSize() { dbg.style.setProperty('--dbgCols', dbgSize.cols); dbg.
   mk('A+', () => { dbgSize.scale = Math.min(1.5, +(dbgSize.scale + 0.1).toFixed(2)); applyDbgSize(); });
   dbg.appendChild(sz); applyDbgSize(); }
 const knobsBox = document.createElement('div'); knobsBox.className = 'knobs'; dbg.appendChild(knobsBox);
+let knobFile = null; // secção `ball` do music-config.json tal como foi carregada (botão 'repor ficheiro gravado')
 let knobStore = {}; try { knobStore = JSON.parse(localStorage.getItem('mb.knobs') || '{}') || {}; } catch (e) { /* sem storage */ }
-const PERSIST = new Set(sliders.slice(0, sliders.findIndex(x => x[0].startsWith('rotationRpm'))).map(x => x[0])); // tudo até ao bloco '---- bola' (antes era slice(0,32) e os 4 últimos não persistiam)
+const PERSIST = new Set(sliders.slice(0, sliders.findIndex(x => x[0].startsWith('rotationRpm'))).map(x => x[0]).concat(['feixes: fração máx (motor modula)', 'haze máx (motor modula)', 'feixes+haze: motor manda (0/1)', 'focos+flashes: motor manda (0/1)', 'opacidade: motor manda (0/1)'])); // tudo até ao bloco '---- bola' (antes era slice(0,32) e os 4 últimos não persistiam)
 const KNOB_DEFAULTS = {}; // valores do código, capturados ANTES de aplicar localStorage/ficheiro
 for (const [name, , , , , get] of sliders) if (PERSIST.has(name)) KNOB_DEFAULTS[name] = get();
 for (const [name, mn, mx, st, set, get] of sliders) {
@@ -849,6 +865,7 @@ function knobsSet(obj, persist) {
 const knobMsg = document.createElement('div'); knobMsg.style.cssText = 'margin-top:4px;color:#8a8a8a;font-size:11px';
 { const row = document.createElement('div'); row.style.cssText = 'margin-top:6px;display:flex;gap:6px';
   const mk = (txt, fn) => { const b = document.createElement('button'); b.textContent = txt; b.style.cssText = 'font:inherit;background:#222;color:#ccc;border:1px solid #444;padding:2px 8px;cursor:pointer'; b.onclick = fn; row.appendChild(b); return b; };
+  mk('repor ficheiro gravado', () => { if (!knobFile) { knobMsg.textContent = 'sem secção ball no music-config.json'; return; } const n = knobsSet(knobFile, true); knobMsg.textContent = `${n} knobs repostos do ficheiro`; });
   mk('repor knobs (defaults)', () => { knobsSet(KNOB_DEFAULTS, false); knobStore = {}; try { localStorage.removeItem('mb.knobs'); } catch (e) { /* */ } knobMsg.textContent = 'defaults do código repostos (por gravar)'; });
   // grava no MESMO music-config.json do painel k (secção `ball`), via MUSIC.save → sidecar /app-config
   mk('gravar (music-config.json)', async () => {
@@ -886,7 +903,7 @@ requestAnimationFrame(frame);
 <script src="core.js?v=1"></script>
 <script src="bridge.js?v=2"></script>
 <script src="emotion-v2.js?v=1"></script>
-<script src="music.js?v=47"></script>
+<script src="music.js?v=54"></script>
 <!-- painel de calibração ao vivo (tecla k). Inerte sem window.MUSIC (bola manual/câmara). -->
 <script src="tuner.js?v=1"></script>
 </body>

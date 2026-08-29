@@ -309,6 +309,8 @@ const MUSIC = {
     phraseChance: 0.20,     // prob. na fronteira de frase em DROP
     grooveEveryBars: [24, 48], // §ESPAÇOS: em GROOVE com atividade alta, um estrobo isolado a cada 24-48 compassos (como num clube)
     grooveAct: 0.6,           // só com atividade acima disto
+    burstChance: 0.35,        // §RAJADA: prob. de um estrobo sair em rajada de burstN[0..1] flashadas seguidas (≥ 360 ms cada, < 3 Hz)
+    burstN: [3, 4],
     kickChanceDrop: 0.10,   // prob. por bombo nos primeiros `flash.dropBars` de DROP
     level: [0.35, 0.7],
   },   // agudos marcam: feixes sobem, opacidade dá um tique
@@ -591,6 +593,8 @@ const TUNE = {
       { path: 'map.beamsFrom.0',  range: [0, 56],     step: 1,    label: 'nº feixes (mín)' },
       { path: 'map.beamsFrom.1',  range: [0, 56],     step: 1,    label: 'nº feixes (máx)' },
       // haze / opacidade
+      { path: 'map.spotDomGain',   range: [0.5, 1.6],  step: 0.05, label: 'foco dominante (ganho)' },
+      { path: 'map.spotSubGain',   range: [0.0, 1.2],  step: 0.05, label: 'outros focos (ganho)' },
       { path: 'map.hazeFrom.0',   range: [0.0, 1.0],  step: 0.01, label: 'haze (mín)' },
       { path: 'map.hazeFrom.1',   range: [0.0, 1.0],  step: 0.01, label: 'haze (máx)' },
       { path: 'map.opacityFrom.0', range: [0.0, 1.0], step: 0.01, label: 'opacidade (mín)' },
@@ -621,6 +625,8 @@ const TUNE = {
       { path: 'strobe.grooveEveryBars.0', range: [4, 96], step: 1, label: 'strobe: GROOVE a cada (mín bars)' },
       { path: 'strobe.grooveEveryBars.1', range: [4, 128], step: 1, label: 'strobe: GROOVE a cada (máx bars)' },
       { path: 'strobe.grooveAct',      range: [0.0, 1.0], step: 0.05, label: 'strobe: GROOVE só com atividade ≥' },
+      { path: 'strobe.burstChance',    range: [0.0, 1.0], step: 0.05, label: 'strobe: rajada 3-4 (prob.)' },
+      { path: 'strobe.burstN.1',       range: [2, 6],     step: 1,    label: 'strobe: rajada máx' },
       { path: 'flash.calmAct',         range: [0.0, 1.0], step: 0.05, label: 'flash: calmo abaixo de atividade' },
       { path: 'strobe.kickChanceDrop', range: [0.0, 0.5], step: 0.01, label: 'strobe: bombo no DROP (prob.)' },
       // §SNARE — a resposta visual do acento seco (o teto 0.18 é preservado por construção)
@@ -1564,13 +1570,15 @@ function emitLocalGrid(nowL) {
 function fireStrobe(why, n) {
   const S = MUSIC.strobe, MB = (typeof window !== 'undefined') && window.MIRRORBALL;
   if (!S || !S.on || !MB || typeof MB.strobe !== 'function' || !(MB.strobeEnabled && MB.strobeEnabled())) return;
+  // §RAJADA: um disparo isolado sai às vezes como 3-4 flashadas seguidas (o David: 'como num clube')
+  if ((n | 0) <= 1 && S.burstN && RNG2() < (S.burstChance || 0)) n = Math.round(rng2Range(S.burstN));
   const k = Math.max(1, n | 0), lv = () => S.level[0] + RNG2() * (S.level[1] - S.level[0]);
   for (let i = 0; i < k; i++) { if (i === 0) MB.strobe({ level: lv() }); else setTimeout(() => MB.strobe({ level: lv() }), i * 360); }
   state.strobeCount = (state.strobeCount || 0) + 1;
 }
 function fireFlash(why, n) {
   const F = MUSIC.flash, MB = (typeof window !== 'undefined') && window.MIRRORBALL;
-  if (!F || !F.on || !MB || typeof MB.flash !== 'function') return;
+  if (!F || !F.on || !MB || typeof MB.flash !== 'function' || MB.config.spotsMotor === false) return;
   const now = MB_CLOCK.now();
   if (now - state.lastFlashT < F.minGapMs) return;
   const k = Math.max(1, n | 0);
@@ -2020,10 +2028,14 @@ function applyToBall(o, gestInfo) {
   const MB = window.MIRRORBALL; if (!MB) return;
   const C = MB.config;
   C.rotationRpm = clamp(o.rpm, MUSIC.outMin.rpm, MUSIC.outMax.rpm);
-  C.haze = clamp(o.haze, MUSIC.outMin.haze, MUSIC.outMax.haze);
-  C.beamFraction = clamp(o.beams / MUSIC.outMax.beams, 0, 1);       // densidade/agudos → fração de espelhos com feixe
-  C.beamMaxCount = MUSIC.outMax.beamCap;                              // teto absoluto = performance, não expressão
-  C.beamIntensity = clamp(o.beamInt, 0, MUSIC.outMax.beamInt);       // teto inviolável 0.18
+  // os knobs `haze máx` e `feixes: fração máx` do painel d são TETOS do David: o motor modula por dentro deles
+  const hazeMax = Number.isFinite(C.hazeMax) ? C.hazeMax : 1, fracMax = Number.isFinite(C.beamFractionMax) ? C.beamFractionMax : 1;
+  if (C.beamsMotor !== false) {   // override do painel d ('feixes+haze: motor manda' = 0)
+    C.haze = clamp(o.haze, MUSIC.outMin.haze, MUSIC.outMax.haze) * hazeMax;
+    C.beamFraction = clamp(o.beams / MUSIC.outMax.beams, 0, 1) * fracMax;       // densidade/agudos → fração de espelhos com feixe
+    C.beamMaxCount = MUSIC.outMax.beamCap;                              // teto absoluto = performance, não expressão
+    C.beamIntensity = clamp(o.beamInt, 0, MUSIC.outMax.beamInt);       // teto inviolável 0.18
+  }
   /* §OPACSECO — a opacidade escrita na bola, e o porquê desta ordem.
    * MEDIDO em `tools/feat`: o ALVO de opacidade já satura (p50 e p95 = 1.000) e 1732 dos 2667
    * frames estão exatamente no piso de GROOVE (0.20). Ou seja o alvo é quase uma onda quadrada
@@ -2037,7 +2049,7 @@ function applyToBall(o, gestInfo) {
    * isso o teto nunca é excedido e o acento é maior justamente quando há espaço para ele. */
   const opDip = o.opacity * (1 - MUSIC.hat.opacityDip * (state.hatLevel || 0));
   const opAcc = opDip + (1 - opDip) * MUSIC.snare.opacityKick * (state.snareAccent || 0);
-  C.sphereOpacity = clamp(opAcc, MUSIC.outMin.opacity, 1);
+  if (C.opacityMotor !== false) C.sphereOpacity = clamp(opAcc, MUSIC.outMin.opacity, 1);   // override do painel d ('opacidade: motor manda' = 0)
   C.spotFadeMix = 0;   // §3.6: os fades internos (11/17/13 s) não são períodos musicais
   if (C.choreo) C.choreo.flashRate = 0; // os flashes Poisson internos da bola (0.6/s, aleatórios) não são música: em music só o motor dispara
   // ⚠ NADA de setSkinAuto aqui (§0.1 ponto 1): a skin é do utilizador, ponto final.
@@ -2076,7 +2088,7 @@ function applyToBall(o, gestInfo) {
     // junta sem se perder quem está a marcar.
     const a = 1 + acc * (i === dom ? 1 : 0.33);
     const dim = state.dimGain[Math.min(i, 2)];
-    MB.setSpot(i, { intensity: clamp(s._base * o.spot * g * a * dim, 0, 1.6) });
+    if (C.spotsMotor !== false) MB.setSpot(i, { intensity: clamp(s._base * o.spot * g * a * dim, 0, 1.6) });   // override do painel d
   });
 }
 

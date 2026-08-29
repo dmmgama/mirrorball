@@ -59,15 +59,17 @@
       7,
       39
     ],
+    "spotDomGain": 1,
+    "spotSubGain": 0.85,
     "hazeFrom": [
-      0.01,
+      0.6,
       1
     ],
     "opacityFrom": [
       0.31,
       1
     ],
-    "opacityFloorGroove": 0.3,
+    "opacityFloorGroove": 0.55,
     "opacityReleaseSec": 0.8,
     "spotSwapBars": 8,
     "spotSwapJitter": 3,
@@ -106,6 +108,11 @@
       48
     ],
     "grooveAct": 0.6,
+    "burstChance": 0.35,
+    "burstN": [
+      null,
+      4
+    ],
     "kickChanceDrop": 0.1
   },
   "hat": {
@@ -118,7 +125,7 @@
     "beamsMin": 0.32
   },
   "ball": {
-    "focos: quantos": 2,
+    "focos: quantos": 4,
     "focos: raio ×": 2.8,
     "focos: orla": 0.9,
     "espelhos: brilho": 0.6,
@@ -130,10 +137,10 @@
     "origem: el min°": 5,
     "origem: el max°": 30,
     "origem: mira (raios)": 0.14,
-    "spot0: az° (−=esq)": 104.97873644436875,
-    "spot0: el°": 26.650562167600725,
-    "spot1: az°": 68.67619933508321,
-    "spot1: el°": 17.101713894118724,
+    "spot0: az° (−=esq)": -94.98007563681014,
+    "spot0: el°": 28.390914557768568,
+    "spot1: az°": 125.36732199041208,
+    "spot1: el°": 9.572268494758205,
     "spot2: az°": -116.10633086589704,
     "spot2: el°": 16.064902643829658,
     "spot3: az°": -94.12744396049405,
@@ -156,11 +163,12 @@
     "cone: alcance": 3.2,
     "cone: largura máx": 1.3,
     "cone: teto (raios)": 0.14,
-    "feixes: fração (motor manda)": 0.9944765095046705,
-    "feixes: compr. 3D": 3.6,
+    "feixes: fração máx (motor modula)": 1,
+    "feixes: compr. 3D": 8,
     "feixes: largura°": 4,
     "feixes: dispersão": 0.48,
     "junta (seam)": 0.14,
-    "espelhos: filas": 64
+    "espelhos: filas": 64,
+    "haze máx (motor modula)": 0.65
   }
 }
