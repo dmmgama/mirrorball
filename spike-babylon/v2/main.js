@@ -284,7 +284,10 @@ function updateHalo(E) {
   const spotGain = Number.isFinite(E.spotGain) ? E.spotGain : spotGainDefault;
   const dk = 1 - (Number.isFinite(E.skinMix) ? E.skinMix : 0);
   const haze = num(E.haze, CONFIG.haze);
-  const a = 0.05 * num(CONFIG.halo, 0) * haze * spotGain * (0.35 + 0.65 * dk);
+  // F7 (:407): com a bola em estilhaços já não há uma esfera a devolver luz difusa — a auréola
+  // desvanece-se com `×(1 − 0.75·exS)`. Fica um resto (25%) porque os cacos ainda refletem.
+  const exS = clamp01(num(E.exS, 0));
+  const a = 0.05 * num(CONFIG.halo, 0) * haze * spotGain * (0.35 + 0.65 * dk) * (1 - 0.75 * exS);
   haloMat.alpha = clamp01(a);
 }
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
@@ -344,6 +347,82 @@ try {
 } catch (err) {
   console.error('dots.js falhou:', err);
 }
+
+/* ================================================================================================
+   ---- F6 fixtures/mini ----                                                       (bloco do SONNET)
+   Corpos PAR36 visíveis (v2/fixtures.js) + `?mini=1`/`?scale=`/`?light=1`. O Opus faz em paralelo o
+   bloco `// ---- F7 explode ----` (explode.js, ball.js, botão #xpl) — não se tocam.
+   ================================================================================================ */
+let fixtures = null;
+try {
+  const mod = await import('./fixtures.js');
+  fixtures = mod.createFixtures(scene, CONFIG, room);
+  console.log('fixtures.js carregado.');
+} catch (err) {
+  console.error('fixtures.js falhou:', err);
+}
+
+/* ---- ?mini=1 / ?scale=N / ?light=1 (paridade com web/index-v2.html:176-186, PARITY §1.16) ----
+   Na Canvas 2D isto reescreve CONFIG.ballSizeVH/ballCenter/etc. (fração do viewport em px). Aqui não
+   há canvas 2D — a métrica equivalente é o ENQUADRAMENTO da câmara: computeFov() já calcula o FOV
+   vertical para a bola ocupar `CONFIG.ballSizeVH` da altura do ecrã, a `CONFIG.camDistance` fixo.
+   `mini` só precisa de mudar `ballSizeVH` (0.66) — computeFov() já lê isso; chamamos resetCameraPose()
+   para reaplicar o novo FOV. `ballCenter` não tem equivalente 3D direto (é offset 2D do centro da bola
+   no ecrã) — divergência documentada em PARITY: aqui a bola fica sempre centrada (a câmara aponta à
+   origem); o deslocamento vertical do original existe para dar espaço à corrente por cima, que aqui já
+   está incluída no enquadramento da sala. `?scale=N` multiplica `ballSizeVH` (mesma fórmula do 2D). */
+(function applyMiniScale() {
+  const mini = qs.get('mini') === '1';
+  const scaleQ = parseFloat(qs.get('scale'));
+  const scale = Number.isFinite(scaleQ) && scaleQ > 0 ? scaleQ : 1;
+  if (mini) {
+    CONFIG.ballSizeVH = 0.66;
+    CONFIG.facetRows = 39;
+    CONFIG.beamWidthDeg = 1.6;
+    CONFIG.beamLen = CONFIG.beamLen3D || 3.6; // equivalente 3D a `beamLength:1.0` (fração do viewport 2D) — comprimento cheio do cone
+    CONFIG.dotScale = 0.5;
+    CONFIG.bloomBlurPx = 5;
+    CONFIG.grain = 0.02;
+    CONFIG.vignette = 0.35;
+    document.documentElement.classList.add('mini');
+    CONFIG.skin = qs.get('light') === '1' ? 'white' : 'dark';
+  }
+  CONFIG.ballSizeVH *= scale;
+  resetCameraPose(); // reaplica camera.fov com o novo ballSizeVH (função hoisted, já existe)
+  // `CONFIG.skin` já ficou definido acima quando `mini` — `syncSkinBtn()` (mais abaixo no módulo) lê-o
+  // no arranque (linha `if (skinBtn) { …; syncSkinBtn(); }`), por isso o botão já nasce sincronizado
+  // sem precisarmos de o chamar aqui (a `const skinBtn` ainda não existe nesta fase do módulo — TDZ).
+})();
+
+/* ---- botão #xpl ("explosões: on/off") — DOM/estilo meus; o handler real (setExplodeEnabled) é do
+   Opus (f67-sync.md). Persiste em localStorage['mb2.explode'] (mesma chave que o stub de F5 já lê). */
+(function setupXplButton() {
+  const ui = document.getElementById('ui');
+  if (!ui) return;
+  let btn = document.getElementById('xpl');
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.id = 'xpl';
+    ui.appendChild(btn);
+  }
+  function getOn() {
+    try { return localStorage.getItem('mb2.explode') !== 'off'; } catch (e) { return true; }
+  }
+  function setOn(on) {
+    try { localStorage.setItem('mb2.explode', on ? 'on' : 'off'); } catch (e) { /* sem storage */ }
+    btn.textContent = 'explosões: ' + (on ? 'on' : 'off');
+    dispatchEvent(new CustomEvent('mb2-xpl-toggle', { detail: { on } }));
+  }
+  setOn(getOn());
+  btn.onclick = () => {
+    // se o Opus já ligou window.MIRRORBALL.setExplodeEnabled, prefere-se a API real (fonte única de
+    // verdade); senão só o toggle visual/local (mini, sem F7 ainda carregado).
+    const next = !getOn();
+    if (window.MIRRORBALL && window.MIRRORBALL.setExplodeEnabled) window.MIRRORBALL.setExplodeEnabled(next);
+    setOn(next);
+  };
+})();
+/* ================================ fim do bloco F6 fixtures/mini =================================== */
 
 // ball.tiles pode ser uma contagem (stub) ou o array de tiles (API do Opus) — normaliza para a contagem.
 function tileCount() {
@@ -451,6 +530,7 @@ if (skinBtn) { skinBtn.onclick = () => setSkin(CONFIG.skin === 'white' ? 'dark' 
    ================================================================================================ */
 
 import { createChoreo } from './choreo.js';
+import { createExplode } from './explode.js';   // F7 (bloco `// ---- F7 explode ----`)
 const choreo = createChoreo(CONFIG);
 const reducedMotion = choreo.reducedMotion;
 
@@ -541,7 +621,53 @@ function motorAllowed(kind, opts) {
 // MULTIPLICADOR da valência, não o valor inicial). Nesta fase só se GUARDA (não há modo 'auto' no
 // crossfade da F4, que trata 'auto' como 'dark') — a Regra 1 mantém-se: nenhum motor muda a skin.
 let skinAuto = 0;
-let explodeEnabled = (() => { try { return localStorage.getItem('mb.explode') !== 'off'; } catch (e) { return true; } })();
+/* ================================================================================================
+   ---- F7 explode ----                                                             (bloco do OPUS)
+   Explosão em estilhaços. A MÁQUINA DE ESTADOS está em `v2/explode.js` (fases, easings, `maxHold`,
+   reentrada); a GEOMETRIA está em `ball.js` (posições/normais dos 4 vértices por tile). Aqui só:
+     - instanciar `createExplode(CONFIG)` e chamar `exp.step(dt)` uma vez por frame;
+     - publicar `E.exS` / `E.exFloat` / `E.angle0` (o `ball.js` e o `incident.js` leem daí);
+     - halo ×(1−0.75·exS) (:407) e cone incidente ×(1−0.8·exS) (:517);
+     - teclas `x` / `X` (:896-898) e o botão `#xpl` (id combinado com o Sonnet em `f67-sync.md`).
+   Persistência: `localStorage['mb2.explode']` (o spike v2 usa o prefixo `mb2.`; a bola Canvas 2D
+   usa `mb.explode`).                                                                            */
+const exp = createExplode(CONFIG);
+
+const XPL_KEY = 'mb2.explode';
+let explodeEnabled = (() => { try { return localStorage.getItem(XPL_KEY) !== 'off'; } catch (e) { return true; } })();
+exp.setEnabled(explodeEnabled);
+
+const xplBtn = document.getElementById('xpl');
+function syncXplBtn() { if (xplBtn) xplBtn.textContent = 'explosões: ' + (explodeEnabled ? 'on' : 'off'); }
+function setExplodeEnabled(v) {
+  explodeEnabled = !!v;
+  exp.setEnabled(explodeEnabled);
+  try { localStorage.setItem(XPL_KEY, explodeEnabled ? 'on' : 'off'); } catch (e) { /* sem storage */ }
+  syncXplBtn();
+}
+if (xplBtn) { xplBtn.onclick = () => setExplodeEnabled(!explodeEnabled); }
+// o botão do Sonnet (F6) despacha este evento; se ele correr primeiro, apanhamos o toggle na mesma
+addEventListener('mb2-xpl-toggle', (e) => {
+  const on = e && e.detail && typeof e.detail.on === 'boolean' ? e.detail.on : !explodeEnabled;
+  if (on !== explodeEnabled) setExplodeEnabled(on);
+});
+syncXplBtn();
+
+// teclas (index-v2.html:896-898). `x` = ciclo completo (estoiro → deriva → pausa → rewind);
+// `X` (shift) = estoiro e FICA no ar; 2.º `X` chama o rewind. Sem preventDefault — as outras
+// teclas (m/p/g/n/d/w) continuam a funcionar noutros handlers.
+addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = e.target && e.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (e.key === 'x') window.MIRRORBALL.explode();
+  else if (e.key === 'X') {
+    const ex = exp.get();
+    if (ex.phase === 'idle' || ex.phase === 'back') window.MIRRORBALL.explode({ autoHold: false });
+    else window.MIRRORBALL.rewind();
+  }
+});
+/* ============================== fim do bloco F7 explode (parte 1/2) ============================= */
 
 /* Escritas do motor no CONFIG passam por aqui: clamp + disjuntor. O `music.js` escreve direto em
    `MIRRORBALL.config` (:2082-2090), por isso a guarda real é uma sanitização por frame — ver
@@ -607,11 +733,14 @@ window.MIRRORBALL = {
   setSkinAuto(v) { skinAuto = clamp01(num(+v, 0)); },     // só guarda o valor (sem modo 'auto' nesta fase)
   getSkin() { return { mode: CONFIG.skin, mix: skinMix, target: skinTargetVal(), auto: skinAuto }; },
 
-  /* ---- STUBS da Fase 7 (explosão em estilhaços) — assinatura estável desde já ---- */
-  explode() { /* F7 */ },
-  rewind() { /* F7 */ },
-  getExplode() { return { phase: 'idle', s: 0, enabled: explodeEnabled }; },
-  setExplodeEnabled(v) { explodeEnabled = !!v; try { localStorage.setItem('mb.explode', explodeEnabled ? 'on' : 'off'); } catch (e) { /* sem storage */ } },
+  /* ---- Fase 7 (explosão em estilhaços) — implementação real no bloco `// ---- F7 explode ----`.
+     Aqui só a delegação, para a assinatura pública (index-v2.html:753-770) viver toda no mesmo
+     objeto. `exp` é criado mais acima (hoisting do `const` não serve: estas funções só correm
+     depois do módulo carregar, por isso a referência tardia é segura). ---- */
+  explode(opts) { exp.explode(opts, ball ? ball.angle : 0); },
+  rewind() { exp.rewind(); },
+  getExplode() { return exp.get(); },
+  setExplodeEnabled(v) { setExplodeEnabled(v); },
 };
 
 // o `music.js` lê `window.MIRRORBALL` no momento em que é carregado (`web/music.js:2077`) — o bloco
@@ -643,8 +772,11 @@ let frameEma = 16, dotDensityLive = num(CONFIG.dotDensity, 0.8);
 
 /* `E` = estado efetivo do frame. Desde a F5 é `effective()` que o preenche (health ALIVE→DEAD),
    mais `choreoGain[]`/`flashes` da coreografia — o `ball.js` consome ambos. */
+/* F7: `exS`/`exFloat`/`angle0` entram no `E` com valor inicial FINITO (regra 7 — um NaN aqui
+   multiplicava a geometria toda por NaN e apagava a bola). Em idle `exS` é 0 e o `ball.js` nem
+   entra no caminho da explosão. */
 const E = { spotGain: 1, rotationRpm: CONFIG.rotationRpm, sphereOpacity: CONFIG.sphereOpacity, haze: CONFIG.haze, skinMix: 0,
-  choreoGain: [], flashes: choreo.flashes };
+  choreoGain: [], flashes: choreo.flashes, exS: 0, exFloat: 0, angle0: 0 };
 scene.registerBeforeRender(() => {
   const now = performance.now();
   const dt = Math.min(0.1, (now - lastFrame) / 1000);
@@ -658,6 +790,16 @@ scene.registerBeforeRender(() => {
   E.choreoGain.length = CONFIG.spots.length;
   for (let i = 0; i < E.choreoGain.length; i++) E.choreoGain[i] = choreo.gainOf(i);
   E.flashes = choreo.flashes;
+
+  // ---- F7 explode (parte 2/2): avança a máquina e publica o escalar do frame ----
+  // Tem de correr ANTES de `ball.update` (o ball lê `E.exS` para reescrever a geometria) e antes
+  // do halo/incidente. `exp.step` clampa o dt a 50 ms internamente.
+  exp.step(dt);
+  E.exS = exp.s; E.exFloat = exp.floatT; E.angle0 = exp.angle0;
+  if (!Number.isFinite(E.exS)) E.exS = 0;                 // regra 7: rede final
+  if (!Number.isFinite(E.exFloat)) E.exFloat = 0;
+  if (!Number.isFinite(E.angle0)) E.angle0 = 0;
+
   updateStrobe(now);                  // estrobo de fundo: a sala pisca (emissive do room.material)
 
   // skin dark/white primeiro (Regra 1: só tecla/botão mexem em CONFIG.skin; isto só lê e faz o crossfade)
@@ -698,6 +840,10 @@ scene.registerBeforeRender(() => {
   if (dots && dots.update) {
     try { dots.update(E); }
     catch (e) { console.error('dots.update:', e); }
+  }
+  if (fixtures && fixtures.update) {
+    try { fixtures.update(ball && ball.mountedSpots, E); }
+    catch (e) { console.error('fixtures.update:', e); }
   }
   updateHalo(E);
   updatePostFx(dk);

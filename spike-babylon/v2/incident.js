@@ -124,7 +124,10 @@ export function createIncident(scene, CONFIG) {
   const tmpQuat = new BABYLON.Quaternion();
 
   function update(mountedSpots, E, camera) {
-    const haze = num(E && E.haze, CONFIG.haze);
+    // F7: `haze` já traz o fator da explosão — o cone incidente desvanece-se com `×(1 − 0.8·exS)`
+    // (index-v2.html:517). Com a bola partida não há uma esfera a intercetar o feixe, só cacos.
+    const exS = Math.min(1, Math.max(0, num(E && E.exS, 0)));
+    const haze = num(E && E.haze, CONFIG.haze) * (1 - 0.8 * exS);
     // posição real da câmara (ArcRotateCamera orbita com o rato) — atualizada uma vez por frame, não
     // por spot; usa-se globalPosition (já computada pelo motor no fim do frame anterior).
     const cp = (camera && camera.globalPosition) || (camera && camera.position) || { x: 0, y: 0, z: CONFIG.camDistance };

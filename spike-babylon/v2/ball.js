@@ -34,8 +34,22 @@
  *   (:308). Ordem em `mountedSpots`: focos, depois flashes, depois luz indireta (`wide`).
  * Quem faz a coreografia (Poisson, retarget, dwell) é o `choreo.js`; aqui só se consome.
  *
+ * F7 acrescenta a EXPLOSÃO EM ESTILHAÇOS (a máquina de estados vive em `v2/explode.js`; aqui só
+ * se consome o escalar). `update(tSec, spots, E)` passa a ler três campos novos de `E`:
+ *   `E.exS: number` — progresso 0..1 (0 = bola inteira). Em idle é 0 e **o custo é zero**: nenhum
+ *      buffer é reescrito, o caminho é exatamente o da F5.
+ *   `E.exFloat: number` — flutuação em pausa (já pesada por (s−0.7)/0.3 no explode.js);
+ *   `E.angle0: number` — rotação congelada no instante do estoiro.
+ * Com `exS > 0.0005` (bloco `// ---- F7 explode ----`): por tile calcula-se o centro deslocado `P`
+ * e a normal tombada `N` (Rodrigues em `T.exAxis`) — index-v2.html:420-429 — e **reescrevem-se as
+ * posições e normais dos 4 vértices** nos typed arrays PRÉ-ALOCADOS (cantos relativos a `N0`,
+ * rodados pelo mesmo Rodrigues, transladados para `P` — :628-634), com um único
+ * `updateVerticesData(PositionKind/NormalKind)` por frame. Feixes/pontos/glint nascem do MESMO
+ * loop, logo passam a sair de `P`/`N` novos sem código extra: o reflexo varre a sala.
+ *
  * NÃO faz: DESENHO dos feixes (beams.js), cone incidente (incident.js), DESENHO dos pontos na
- * parede (dots.js), explosão, corpos dos focos, painel, coreografia (choreo.js).
+ * parede (dots.js), a MÁQUINA de estados da explosão (explode.js), corpos dos focos (fixtures.js),
+ * painel, coreografia (choreo.js).
  */
 
 const BJS = (typeof BABYLON !== 'undefined') ? BABYLON : (typeof globalThis !== 'undefined' ? globalThis.BABYLON : undefined);
@@ -55,6 +69,16 @@ function spotDir(az, el) {
   return [c * Math.sin(a), Math.sin(e), c * Math.cos(a)];
 }
 function cross3(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+// Rodrigues (index-v2.html:316-320), versão sem alocação: roda (vx,vy,vz) em torno do eixo unitário
+// k, com seno/cosseno do ângulo pré-calculados, e escreve em `out` (array de 3). O loop da explosão
+// chama isto 5×/tile por frame — alocar um array por chamada matava o GC.
+function rodriguesTo(out, vx, vy, vz, kx, ky, kz, sA, cA) {
+  const m = (1 - cA) * (kx * vx + ky * vy + kz * vz);
+  out[0] = vx * cA + (ky * vz - kz * vy) * sA + kx * m;
+  out[1] = vy * cA + (kz * vx - kx * vz) * sA + ky * m;
+  out[2] = vz * cA + (kx * vy - ky * vx) * sA + kz * m;
+  return out;
+}
 // leitura defensiva: todo o knob novo tem de ter valor inicial finito (regra 7)
 function num(v, d) { return Number.isFinite(v) ? v : d; }
 
@@ -166,7 +190,16 @@ export function createBall(scene, CONFIG) {
   const tiles = [];
   let mesh = null;
   let positions = null, normals = null, indices = null, colors = null, uvs = null;
+  // F7: cópia IMUTÁVEL das posições em repouso. `positions` é reescrito por frame durante a
+  // explosão, por isso o canto de referência (relativo a N0) tem de sair daqui, não do buffer vivo
+  // — senão a explosão realimentava-se e os estilhaços fugiam para o infinito.
+  let restPos = null;
+  let exWasOn = false;   // último frame teve exS>0? (para restaurar o repouso UMA vez, não sempre)
   let angle = 0;
+  /* ---- F7: estado da explosão DESTE frame (vem de `E`, produzido por `explode.js`). ----
+     `exS` 0 = idle → o caminho é o da F5, sem nenhum custo extra. `angleUsed` é o ângulo que a
+     malha E o cálculo em CPU usam (congelado no estoiro, :369). Regra 7: valores iniciais finitos. */
+  let exS = 0, exFloat = 0, exOn = false, angleUsed = 0;
 
   // buildTiles: idêntico a index-v2.html:220-242 (mesmas sementes, mesma ordem de `id`)
   function buildTiles() {
@@ -264,6 +297,9 @@ export function createBall(scene, CONFIG) {
     const vd = new BJS.VertexData();
     vd.positions = positions; vd.indices = indices; vd.normals = normals;
     vd.colors = colors; vd.uvs = uvs;
+    // F7: snapshot do repouso ANTES de qualquer explosão poder tocar em `positions`
+    restPos = positions.slice();
+    exWasOn = false;
     vd.applyToMesh(mesh, true);            // updatable
     mesh.material = mat;
     mesh.parent = root;
@@ -647,7 +683,10 @@ export function createBall(scene, CONFIG) {
     const camD = num(cfg('camDistance'), 7);
 
     updateCamDir();
-    const ca = Math.cos(angle), sa = Math.sin(angle);
+    // F7: com a bola partida a rotação congela (`angleUsed`, :369) — a malha já roda por
+    // `root.rotation.y = angleUsed` no update(), e o cálculo em CPU tem de usar o MESMO ângulo,
+    // senão os feixes/pontos saíam de normais que não correspondem aos espelhos desenhados.
+    const ca = Math.cos(angleUsed), sa = Math.sin(angleUsed);
     const cdx = camDir.x, cdy = camDir.y, cdz = camDir.z;
     const drAmp = 0.015, drW = TAU * tSec / dPeriod;
     let boneAcc = 0, boneN = 0;
@@ -670,20 +709,78 @@ export function createBall(scene, CONFIG) {
     const emitDots = dotX !== null && dm > 0 && dotDensityLiveClamped > 0;
     dotCount = 0;
 
+    /* ---- F7 explode: parâmetros do frame ----------------------------------------------------
+       `exOn` false = caminho da F5 intacto (custo zero: nem se lê o CONFIG.explode). Todos os
+       valores abaixo são função pura de `exS` — o rewind é `exS` a descer pela mesma expressão. */
+    const EX = C.explode || {};
+    const exRadial = num(EX.radial, 1.9), exJitter = num(EX.jitter, 0.45);
+    const exDepth = num(EX.depth, 0.45), exGravity = num(EX.gravity, 1.1);
+    const exSpinMax = num(EX.spinMax, 3.2), exFloatSpin = num(EX.floatSpin, 0.35);
+    const exFloatBob = num(EX.floatBob, 0.05);
+    const exS2 = exS * exS;                          // queda: −gravity·s² (:423)
+    const exRadK = exRadial * exS, exJit = exJitter * exS;
+    const exBob = exFloat > 0 ? exFloatBob : 0;
+    const exSpinK = exSpinMax * exS + exFloatSpin * exFloat;
+    // buffers de trabalho reutilizados (nunca alocar dentro do loop por tile)
+    const rv = exOn ? [0, 0, 0] : null, rn = exOn ? [0, 0, 0] : null;
+
     for (let t = 0, vi = 0; t < tiles.length; t++, vi += 4) {
       const T = tiles[t];
-      // normal no MUNDO: N0 rodado em torno de Y por `angle` (a malha roda; o cálculo tem de acompanhar)
-      const nx = T.nx * ca + T.nz * sa;
-      const ny = T.ny;
-      const nz3 = -T.nx * sa + T.nz * ca;
+      // normal no MUNDO: N0 rodado em torno de Y por `angleUsed` (a malha roda; o cálculo acompanha)
+      let nx = T.nx * ca + T.nz * sa;
+      let ny = T.ny;
+      let nz3 = -T.nx * sa + T.nz * ca;
+
+      /* ---- F7 explode: centro deslocado `P` e normal tombada `N` (index-v2.html:419-429) ----
+         `P` (posição do estilhaço) e `N` (normal tombada) substituem a normal-como-posição do
+         repouso. É por isso que os feixes, os pontos na parede e o glint acompanham os estilhaços
+         sem uma linha de código extra: nascem deste mesmo P/N, mais abaixo no loop.
+         Tudo no espaço do MUNDO (nx/ny/nz3 já vêm rodados) — igual ao resto do loop. */
+      let px = nx, py = ny, pz = nz3;                // em repouso P ≡ N (esfera de raio 1)
+      let exSA = 0, exCA = 1;                        // seno/cosseno do tombo deste tile (Rodrigues)
+      let exKx = 0, exKy = 0, exKz = 0;              // eixo de tombo, JÁ rodado para o mundo
+      let dropped = false;                           // estilhaço perto demais da câmara (:426)
+      if (exOn) {
+        const rad = 1 + exRadK * T.exSpeed;
+        const bob = exBob > 0 ? exBob * Math.sin(exFloat * 0.7 + T.driftPhase) : 0;
+        // exJit é uma direção FIXA do tile em espaço da bola: roda-se para o mundo como a normal
+        const jx = T.exJit[0] * ca + T.exJit[2] * sa;
+        const jy = T.exJit[1];
+        const jz = -T.exJit[0] * sa + T.exJit[2] * ca;
+        // deslocação completa (radial + jitter + bob + queda), ainda SEM o achatamento `depth`
+        let dx = nx * (rad - 1) + jx * (exJit + bob);
+        let dy = ny * (rad - 1) + jy * exJit + bob - exGravity * exS2;
+        let dz = nz3 * (rad - 1) + jz * (exJit + bob);
+        // `depth` (<1) mantém os estilhaços mais no plano. Na Canvas 2D o eixo achatado é o Z de
+        // ECRÃ (:424); aqui a câmara orbita, por isso achata-se a componente da deslocação ao longo
+        // do eixo bola→CÂMARA (mesma intenção: "menos profundidade para quem olha") — PARITY §1.14.
+        const camComp = dx * cdx + dy * cdy + dz * cdz;
+        const k = camComp * (exDepth - 1);
+        dx += cdx * k; dy += cdy * k; dz += cdz * k;
+        px = nx + dx; py = ny + dy; pz = nz3 + dz;
+        // demasiado perto da câmara: na 2D o tile era simplesmente descartado (:426, `continue`).
+        // Aqui a malha existe sempre, por isso "descartar" é marcar `dropped` → alpha 0 e nenhum
+        // feixe/ponto emitido (a geometria continua a ser escrita, mas invisível).
+        dropped = (px * cdx + py * cdy + pz * cdz) > camD - 1.5;
+        // eixo de tombo do tile, rodado para o mundo
+        exKx = T.exAxis[0] * ca + T.exAxis[2] * sa;
+        exKy = T.exAxis[1];
+        exKz = -T.exAxis[0] * sa + T.exAxis[2] * ca;
+        const A = T.exSpin * exSpinK;
+        exSA = Math.sin(A); exCA = Math.cos(A);
+        rodriguesTo(rn, nx, ny, nz3, exKx, exKy, exKz, exSA, exCA);
+        nx = rn[0]; ny = rn[1]; nz3 = rn[2];
+      }
       // nz da cadeia = componente da normal na direção da CÂMARA (a câmara orbita)
       const nz = nx * cdx + ny * cdy + nz3 * cdz;
 
       // ---- lit / glint dos spots (:433-461) ----
       // visibilidade em perspetiva (:432): N·(cam − P); em repouso P=N e N·P=1 → nz·camD − 1
-      const facing = nz * camD - 1;
+      const facing = dropped ? -1 : exOn
+        ? (nx * (cdx * camD - px) + ny * (cdy * camD - py) + nz3 * (cdz * camD - pz))
+        : (nz * camD - 1);
       let lit = 0, gl = 0;
-      for (let s = 0; s < nS; s++) {
+      for (let s = 0; s < nS && !dropped; s++) {
         const sp = SP[s];
         const NdS = nx * sp.Sx + ny * sp.Sy + nz3 * sp.Sz;
         if (NdS <= 0.02) continue;
@@ -704,7 +801,10 @@ export function createBall(scene, CONFIG) {
         }
         // dentro do cone do pinspot? distância de P (=N em repouso) ao eixo (C + t·S) — :439-442.
         // RAIO FIXO: r = radius·spotRadiusMul, não depende de I.
-        const dx0 = nx - sp.Cx, dy0 = ny - sp.Cy, dz0 = nz3 - sp.Cz;
+        // F7: em explosão a distância ao eixo do cone mede-se a partir de `P` (a posição real do
+        // estilhaço), não da normal — é o que faz a mancha do foco "largar" os cacos que já saíram
+        // do cone. Em repouso P ≡ N e a expressão é a mesma de sempre.
+        const dx0 = px - sp.Cx, dy0 = py - sp.Cy, dz0 = pz - sp.Cz;
         const along = dx0 * sp.Sx + dy0 * sp.Sy + dz0 * sp.Sz;
         const ex = dx0 - along * sp.Sx, ey = dy0 - along * sp.Sy, ez = dz0 - along * sp.Sz;
         const dist = Math.sqrt(ex * ex + ey * ey + ez * ez);
@@ -725,19 +825,21 @@ export function createBall(scene, CONFIG) {
             // normal do plano ATINGIDO, com o sinal certo (aponta para dentro da sala, oposto à
             // parede) — não afeta `graze` (usa |N·R|, sign-independent) mas importa para `dots.js`
             // orientar o disco (translação = X + N·0.01) para o lado de dentro da sala.
+            // F7: a origem do raio é `P` (em repouso P ≡ N) — com a bola partida, o ponto na
+            // parede parte do estilhaço onde está agora, não de onde ele estava na esfera.
             let best = Infinity, nrmX = 0, nrmY = 0, nrmZ = 0;
             const txPos = Rx > 0;
-            const tx = txPos ? (roomHalfW - nx) / Rx : (-roomHalfW - nx) / Rx;
+            const tx = txPos ? (roomHalfW - px) / Rx : (-roomHalfW - px) / Rx;
             if (tx > 0 && tx < best) { best = tx; nrmX = txPos ? -1 : 1; nrmY = 0; nrmZ = 0; }
             const tyPos = Ry > 0;
-            const ty = tyPos ? (roomCeil - ny) / Ry : (roomFloor - ny) / Ry;
+            const ty = tyPos ? (roomCeil - py) / Ry : (roomFloor - py) / Ry;
             if (ty > 0 && ty < best) { best = ty; nrmX = 0; nrmY = tyPos ? -1 : 1; nrmZ = 0; }
             if (Rz3 < 0) {
-              const tz = (roomBack - nz3) / Rz3;
+              const tz = (roomBack - pz) / Rz3;
               if (tz > 0 && tz < best) { best = tz; nrmX = 0; nrmY = 0; nrmZ = 1; }
             }
             if (Number.isFinite(best) && best > 0) {
-              const Xw = nx + Rx * best, Yw = ny + Ry * best, Zw = nz3 + Rz3 * best;
+              const Xw = px + Rx * best, Yw = py + Ry * best, Zw = pz + Rz3 * best;
               // descarta se o ponto fica a < 0.6 raios da câmara (equivalente a `Z < camD − 0.6`,
               // mas em coordenadas do MUNDO: projeta no eixo bola→câmara em vez do Z de ecrã)
               const distToCam = Xw * cdx + Yw * cdy + Zw * cdz;
@@ -776,8 +878,10 @@ export function createBall(scene, CONFIG) {
             const Ival = inCone * NdS * sp.I * hazeE;
             if (Ival > 0 && beamRawCount < tiles.length) {
               const b3 = beamRawCount * 3;
-              // P = ponto do tile na superfície = a própria normal (esfera de raio 1), no MUNDO
-              beamP[b3] = nx; beamP[b3 + 1] = ny; beamP[b3 + 2] = nz3;
+              // P = ponto do tile na superfície = a própria normal (esfera de raio 1), no MUNDO.
+              // F7: com a bola partida, `P` é o centro do estilhaço — o feixe nasce onde o caco
+              // está e varre a sala com ele (fonte única: este loop).
+              beamP[b3] = px; beamP[b3 + 1] = py; beamP[b3 + 2] = pz;
               beamR[b3] = Rx; beamR[b3 + 1] = Ry; beamR[b3 + 2] = Rz3;
               beamI[beamRawCount] = Ival;
               beamRawCount++;
@@ -810,8 +914,35 @@ export function createBall(scene, CONFIG) {
       }
       if (nz > 0) { boneAcc += 0.4 + 0.6 * smooth(0.5, 0, nz); boneN++; }
       const val = clamp(g + gl * (1.0 - g) * 1.15, 0, 1);      // 8 (glint clareia aditivamente)
-      const alpha = lerp(op, 1, gl);                           // raio-X: só os tiles ativos persistem
+      // raio-X: só os tiles ativos persistem. F7: um estilhaço `dropped` (perto demais da câmara)
+      // desaparece — equivalente ao `continue` da 2D, que simplesmente não o desenhava.
+      const alpha = dropped ? 0 : lerp(op, 1, gl);
       T.val = val; T.alpha = alpha; T.lit = lit; T.glint = gl;
+
+      /* ---- F7 explode: reescrever as posições e normais dos 4 vértices (index-v2.html:628-634)
+         Cantos RELATIVOS a N0 (a posição em repouso menos a normal do centro), tombados pelo mesmo
+         Rodrigues da normal, e levados para P. `restPos` é a cópia imutável do repouso: usar o
+         buffer vivo realimentaria a explosão a cada frame. */
+      if (exOn) {
+        const N0x = T.nx, N0y = T.ny, N0z = T.nz;   // normal do centro em espaço da BOLA
+        for (let k = 0; k < 4; k++) {
+          const o = (vi + k) * 3;
+          // canto relativo ao centro, ainda em espaço da bola
+          const rx = restPos[o] - N0x, ry = restPos[o + 1] - N0y, rz = restPos[o + 2] - N0z;
+          // roda para o mundo (Y por angleUsed), depois tomba pelo Rodrigues do tile
+          const wx = rx * ca + rz * sa, wy = ry, wz = -rx * sa + rz * ca;
+          rodriguesTo(rv, wx, wy, wz, exKx, exKy, exKz, exSA, exCA);
+          // …e volta ao espaço da BOLA (a malha é filha de `root`, que já roda por angleUsed):
+          // roda −angleUsed. O mesmo para o ponto final P e para a normal.
+          const gx = px + rv[0], gy = py + rv[1], gz = pz + rv[2];
+          positions[o] = gx * ca - gz * sa;
+          positions[o + 1] = gy;
+          positions[o + 2] = gx * sa + gz * ca;
+          normals[o] = nx * ca - nz3 * sa;
+          normals[o + 1] = ny;
+          normals[o + 2] = nx * sa + nz3 * ca;
+        }
+      }
 
       const co = vi * 4;
       colors[co] = val; colors[co + 1] = val; colors[co + 2] = val; colors[co + 3] = alpha;
@@ -820,6 +951,26 @@ export function createBall(scene, CONFIG) {
       colors[co + 12] = val; colors[co + 13] = val; colors[co + 14] = val; colors[co + 15] = alpha;
     }
     if (boneN > 0) boneNzTerm = boneAcc / boneN;
+    /* ---- F7: um único upload de posições/normais por frame, SÓ enquanto a bola está partida.
+       Quando `exOn` cai para false, restauram-se as posições de repouso UMA vez (`exWasOn`) — sem
+       essa guarda a bola em idle pagava dois `updateVerticesData` por frame para nada. ---- */
+    if (exOn) {
+      mesh.updateVerticesData(BJS.VertexBuffer.PositionKind, positions, false, false);
+      mesh.updateVerticesData(BJS.VertexBuffer.NormalKind, normals, false, false);
+      exWasOn = true;
+    } else if (exWasOn) {
+      positions.set(restPos);
+      for (let t = 0, vi = 0; t < tiles.length; t++, vi += 4) {
+        const T = tiles[t];
+        for (let k = 0; k < 4; k++) {
+          const o = (vi + k) * 3;
+          normals[o] = T.nx; normals[o + 1] = T.ny; normals[o + 2] = T.nz;
+        }
+      }
+      mesh.updateVerticesData(BJS.VertexBuffer.PositionKind, positions, false, false);
+      mesh.updateVerticesData(BJS.VertexBuffer.NormalKind, normals, false, false);
+      exWasOn = false;
+    }
     mesh.updateVerticesData(BJS.VertexBuffer.ColorKind, colors, false, false);
     finalizeBeams();
     dots.count = dotCount;   // F4: nenhuma ordenação/truncagem — dots.js já degrada via dotDensityLive
@@ -837,13 +988,19 @@ export function createBall(scene, CONFIG) {
       mat.transparencyMode = wantAlpha ? BJS.PBRMaterial.MATERIAL_ALPHABLEND : BJS.PBRMaterial.MATERIAL_OPAQUE;
     }
     syncCoreMat();   // núcleo segue tileTone/seamDarkness/seamGreyReal ao vivo
-    // núcleo escuro: visível na medida da opacidade (com op=0 não há "interior" a tapar o osso)
-    core.setEnabled(op > 0.02);
-    if (core.visibility !== op) core.visibility = op;
+    // núcleo escuro: visível na medida da opacidade (com op=0 não há "interior" a tapar o osso).
+    // F7 (:610-611): o núcleo desfaz-se com a bola — `visibility · (1 − exS)`; a s=1 não sobra
+    // nenhuma esfera no meio dos estilhaços.
+    const coreVis = op * (1 - exS);
+    core.setEnabled(coreVis > 0.02);
+    if (core.visibility !== coreVis) core.visibility = coreVis;
     // malha osso: meshAlpha = (1−op)·0.45 · <(0.4+0.6·smooth(0.5,0,nz))> (nz médio — ver PARITY)
     if (bone) {
       const ma = (1 - op) * 0.45 * Math.max(0, num(cfg('boneAlphaMul'), 1)) * boneNzTerm;
-      const onB = ma > 0.01;
+      // F7: o osso é UM LineSystem construído sobre as posições de REPOUSO (não é atualizado por
+      // frame). Com a bola meio partida ficaria uma gaiola esférica fantasma no sítio antigo —
+      // por isso desliga-se a partir de metade da explosão (divergência documentada, PARITY §1.14).
+      const onB = ma > 0.01 && exS <= 0.5;
       if (bone.isEnabled() !== onB) bone.setEnabled(onB);
       if (onB) { bone.alpha = clamp(ma, 0, 1); if (bone.material) bone.material.alpha = bone.alpha; }
     }
@@ -874,10 +1031,21 @@ export function createBall(scene, CONFIG) {
     const rpm = num((E && E.rotationRpm), num(cfg('rotationRpm'), 1));
     angle += (rpm / 60) * TAU * dt;
     if (angle > TAU) angle -= TAU * Math.floor(angle / TAU);
-    root.rotation.y = angle;
+
+    /* ---- F7 explode: lê o escalar do frame (a máquina de estados vive em explode.js) ----
+       `angleUsed = angle + (angle0 − angle)·exS` (:369): no estoiro a rotação congela no ângulo
+       do momento; no rewind volta a apanhar a rotação viva sem salto, porque é função pura de exS. */
+    exS = clamp(num(E && E.exS, 0), 0, 1);
+    exOn = exS > 0.0005;
+    exFloat = exOn ? Math.max(0, num(E && E.exFloat, 0)) : 0;
+    const a0 = num(E && E.angle0, angle);
+    angleUsed = exOn ? angle + (a0 - angle) * exS : angle;
+    root.rotation.y = angleUsed;
 
     // cadeia primeiro (produz `boneNzTerm` e os spots montados), material/osso depois
-    if (lastColorT < 0 || (t - lastColorT) >= (1 / COLOR_HZ)) {
+    // F7: com a bola partida a cadeia CPU corre a cada frame (não a COLOR_HZ) — os estilhaços
+    // movem-se depressa e a 20 Hz o reflexo/feixes ficavam a saltar atrás da geometria.
+    if (exOn || lastColorT < 0 || (t - lastColorT) >= (1 / COLOR_HZ)) {
       lastColorT = t;
       computeColors(t, spots, E);
       updateChainTone();   // depende de mountedSpots, que computeColors acabou de montar

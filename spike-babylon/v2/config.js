@@ -145,4 +145,11 @@ window.CONFIG = {
   // ---- novidade da Fase 3 (Sonnet/Opus): comprimento do cone do feixe (thin instances, v2/beams.js) ----
   beamLen: 6,                // comprimento do cone do feixe 3D em raios da bola (2-12) — knob 'feixes: comprimento'
   beamBaseMul: 0.5,          // × largura da base do cone do feixe (0.1-2) — knob 'feixes: base ×'
+
+  // ---- novidade da Fase 6 (Sonnet): corpos PAR36 visíveis (v2/fixtures.js) — SEM paridade na
+  // Canvas 2D, tudo novo (ver docs/lighting-design-research.md + PARITY.md "Corpos PAR36 (F6)") ----
+  fixturesOn: true,          // corpos ligados — knob 'corpos (0/1)'
+  fixtureScale: 1.0,         // escala global do corpo (lata Ø0.12·isto, comprimento 0.18·isto) — knob 'corpos: escala'
+  lensGain: 1.0,             // × intensidade do spot → emissiveColor da lente ("a lente segue o dimmer") — knob 'corpos: lente ×'
+  fixtureStemOn: true,       // haste/yoke até ao teto/parede — knob 'corpos: haste (0/1)'
 };

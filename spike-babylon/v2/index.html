@@ -36,6 +36,9 @@
        font:11px/1.5 ui-monospace,Consolas,monospace;padding:10px 12px;border:1px solid #2a2a2a;
        white-space:pre;z-index:9;letter-spacing:.02em;display:none}
   #mus.on{display:block}
+  /* ---- ?mini=1 (Fase 6, paridade com web/index-v2.html classe `mini`): esconde HUD/painel/botões —
+       o quadrado do OS só quer a bola, sem chrome de debug. ---- */
+  html.mini #hud, html.mini #dbg, html.mini #ui, html.mini #mus, html.mini #err { display: none !important; }
 </style>
 </head>
 <body>

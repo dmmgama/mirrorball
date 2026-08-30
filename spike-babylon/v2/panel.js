@@ -134,6 +134,15 @@ export function initPanel(CONFIG, hooks = {}) {
     ['vinheta', 0, 1, 0.02, v => CONFIG.vignette = v, () => CONFIG.vignette],
     ['pós: tonemap (0/1)', 0, 1, 1, v => CONFIG.postTonemap = v, () => CONFIG.postTonemap],
     ['pós: exposição', 0.3, 2, 0.02, v => CONFIG.postExposure = v, () => CONFIG.postExposure],
+    // ---- Fase 6 (Sonnet): corpos PAR36 visíveis ----
+    ['corpos (0/1)', 0, 1, 1, v => { CONFIG.fixturesOn = v >= 0.5; }, () => (CONFIG.fixturesOn === false ? 0 : 1)],
+    ['corpos: escala', 0.2, 3, 0.05, v => CONFIG.fixtureScale = v, () => CONFIG.fixtureScale],
+    ['corpos: lente ×', 0, 6, 0.1, v => CONFIG.lensGain = v, () => CONFIG.lensGain],
+    ['corpos: haste (0/1)', 0, 1, 1, v => { CONFIG.fixtureStemOn = v >= 0.5; }, () => (CONFIG.fixtureStemOn === false ? 0 : 1)],
+    // ---- Fase 7 (Opus, pedido via f67-sync.md): explosão em estilhaços ----
+    ['explosão: alcance (radial)', 0.5, 4, 0.05, v => CONFIG.explode.radial = v, () => CONFIG.explode.radial],
+    ['explosão: deriva s', 1, 14, 0.1, v => CONFIG.explode.driftSec = v, () => CONFIG.explode.driftSec],
+    ['explosão: pausa s', 0, 6, 0.05, v => CONFIG.explode.hold = v, () => CONFIG.explode.hold],
   ];
   for (const s of newSliders) { sliders.push(s); PERSIST.add(s[0]); }
 

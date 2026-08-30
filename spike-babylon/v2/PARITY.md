@@ -505,7 +505,75 @@ propriedade) e só lhe tocar quando o alpha muda de facto. Depois: **4.5 ms com 
 contra 5.6 ms sem coreografia nenhuma — ou seja, custo nulo.
 
 ### 1.14 Explosão em estilhaços
-⏳ Fase 7 (máquina de estados idle→out→drift→hold/held→back, Rodrigues por tile).
+✅ **Feita** (F7). Máquina de estados em `v2/explode.js` (isolada, sem geometria); geometria em
+`ball.js` (bloco `// ---- F7 explode ----` dentro do loop por tile); halo/incidente/API/teclas no
+bloco `// ---- F7 explode ----` do `main.js`.
+
+**Máquina de estados — verbatim de `index-v2.html:337-363`.** `idle → out → drift → hold|held →
+back → idle`, com os mesmos easings (`out` easeOutQuad até `burstS`; `drift` easeOutCubic de
+`burstS` a 1; `back` easeInOutCubic com duração `rewind·max(sFrom,0.05)`). **Medido** com o relógio
+da cena forçado (dt fixo, sem render): `0.2 s → drift 0.174` · `1 s → drift 0.464` · `3 s → drift
+0.877` · `6 s → drift 1.000` · `6.2 s → hold` · `6.6 s → back 0.995` · `7.4 s → idle 0.000`. Ciclo
+completo ≈ 7.5 s com os defaults (0.16 + 6.0 + 0.5 + ~0.9).
+
+**`maxHold` (invariante de segurança).** Nenhuma fonte externa deixa a bola partida para sempre:
+**medido** com `{autoHold:false}` — `13.5 s → held`, `14.5 s → back 0.351`, `16.5 s → idle 0.000`.
+
+**Reentrada sem salto (`:760-764`).** `explode()` a meio do percurso resolve o tempo da fase que dá
+o `s` atual (inversa de easeOutQuad por `sqrt`, de easeOutCubic por `cbrt`). **Medido: salto = 0
+(exato)** nos dois casos — reentrada em `back` (`s 0.9945 → 0.9945`, fase passa a `drift` e `s`
+volta a subir) e durante o `out` (`s 0.1233 → 0.1233`, fica em `out`).
+
+**Geometria por tile (`:419-429`, `:628-634`).** `rad = 1 + radial·exSpeed·s`; jitter em `exJit`;
+queda `−gravity·s²`; tombo por **Rodrigues** em `exAxis` com ângulo `exSpin·(spinMax·s +
+floatSpin·exFloat)`. Os **4 vértices** de cada tile são reescritos por frame nos typed arrays
+pré-alocados (cantos relativos a `N0`, rodados pelo mesmo Rodrigues, transladados para `P`) e
+enviados com **um** `updateVerticesData(PositionKind)` + um de `NormalKind` — nunca por tile.
+`restPos` é uma cópia **imutável** do repouso: usar o buffer vivo realimentava a explosão e os
+estilhaços fugiam para o infinito. **Medido**: a s≈0.93 os vértices espalham-se entre 0.86 e 4.81
+raios; ao fim do rewind voltam a **1.0003-1.0011** (o achatamento no plano tangente), ou seja o
+repouso é restaurado exatamente, sem deriva acumulada.
+
+**Feixes / pontos / glint acompanham os estilhaços** sem código extra: nascem do mesmo loop, que
+passou a usar `P` (centro do estilhaço) em vez da normal-como-posição, e `N` tombada. Como na
+Canvas 2D (`:439-442` também mede a distância ao cone a partir de `P`), os cacos que saem do cone
+do pinspot deixam de dar feixe — **medido**: 29 feixes em repouso → 10 a s≈0.56 → 5 a s≈0.81. É
+fidelidade, não perda: os feixes que restam **varrem a sala** com o caco que os emite.
+
+⚠ **Divergências (3), todas por a bola ser 3D e a câmara orbitar:**
+1. **`depth` (achatamento em z).** Na 2D `depth` escala só a componente **Z de ecrã** (`:424`), num
+   referencial de câmara fixa em +Z. Aqui a câmara orbita, por isso achata-se a componente da
+   deslocação ao longo do eixo **bola→câmara** — mesma intenção ("menos profundidade para quem
+   olha"), resultado idêntico na pose default e coerente ao orbitar.
+2. **Descarte perto da câmara.** A 2D faz `continue` quando `P.z > camD − 1.5` (`:426`) e o tile
+   simplesmente não é desenhado. Aqui a malha existe sempre, por isso o equivalente é `alpha = 0`
+   e nenhum feixe/ponto emitido; a métrica é a distância projetada no eixo bola→câmara.
+3. **Malha "osso" (raio-X).** É **um** `LineSystem` construído sobre as posições de repouso e não
+   atualizado por frame (ver §1.10). Com a bola meio partida ficaria uma gaiola esférica fantasma
+   no sítio antigo, por isso **desliga-se com `exS > 0.5`**. Só se nota com `sphereOpacity` baixo.
+
+**Restantes multiplicadores, fiéis:** núcleo escuro `visibility·(1−exS)` (`:610`, medido 0.074 a
+s=0.93 e 1.0 no fim do rewind); halo `×(1−0.75·exS)` (`:407`, medido 0.003); cone incidente
+`×(1−0.8·exS)` (`:517`, aplicado no `haze` que o `incident.js` recebe — 1 linha); rotação congelada
+`angleUsed = angle + (angle0−angle)·exS` (`:369`), usada **tanto** em `root.rotation.y` como no
+cálculo em CPU (senão os feixes sairiam de normais que não correspondem aos espelhos desenhados).
+
+**Perf — medida com o loop rAF real** (`MB2.__perf()`, n=60 amostras, WebGL2, 2938 facetas):
+**idle 2.7 ms** (igual à F5 — em `exS === 0` o `ball.js` nem entra no caminho da explosão e não há
+upload de posições/normais) e **6.7 ms durante a explosão** (HUD ao vivo: 2.9 → 4.5 → 5.3 → 6.1 ms
+à medida que os cacos se espalham). Ambos dentro do teto (< 8 idle, < 10 explosão). **Draw calls
+inalterados: 22** — a explosão não acrescenta um único draw call. O custo é CPU: `ball.update()`
+medido a **3.4 ms** com a bola partida contra **0 ms** em idle (a cadeia corre a 60 Hz enquanto
+`exOn`, em vez dos 20 Hz do `COLOR_HZ` — os estilhaços movem-se depressa e a 20 Hz o reflexo ficava
+a saltar atrás da geometria).
+⚠ **Armadilha de medição:** num tab de Chrome em segundo plano o `scene.render()` chamado à mão dá
+números sem sentido (medimos 78-90 ms para trabalho que o loop real faz em 6.7 ms, e *esconder* a
+malha chegou a "custar" mais do que mostrá-la). Só valem medições com o rAF real e o tab a pintar.
+
+**Sem NaN (regra 7).** `E.exS/exFloat/angle0` arrancam a 0; `explode(opts)` só copia knobs
+`Number.isFinite`; `explode.js` repõe `idle` se `s` deixar de ser finito; `ball.js` lê tudo por
+`num(v, default)`. **Medido**: `explode({radial:NaN, driftSec:NaN, gravity:NaN})` e, à parte,
+`CONFIG.explode.radial = NaN` com a bola partida → **0 vértices NaN** nos dois casos.
 
 ### 1.15 Skin dark/white
 ✅ **Feita** (com uma divergência documentada). `CONFIG.skin ∈ {dark, white}` (`'auto'`, o default
@@ -528,8 +596,100 @@ portar as 3 tabelas de 33 valores como uma `ColorGradingTexture` 1D (mesmo padr�
 fase por ser mais trabalho que o "mais simples" que o brief autorizava.
 
 ### 1.16 Mini e scale
-⏳ Fase 6 (`?mini=1`, `?scale=`). O brief F1 só copiou o `CONFIG` das linhas 69-165; a lógica das
-linhas 166-176 fica para a Fase 6.
+✅ **Feita** (com uma divergência documentada). `?mini=1` reescreve `CONFIG.ballSizeVH:0.66`,
+`facetRows:39`, `beamWidthDeg:1.6`, `dotScale:0.5`, `bloomBlurPx:5`, `grain:0.02`, `vignette:0.35`,
+classe `mini` no `<html>` (CSS esconde `#hud`/`#dbg`/`#ui`/`#mus`/`#err`), skin fixa (`?light=1` →
+`white`, senão `dark`, via `CONFIG.skin` — Regra 1 respeitada: escrito uma vez no arranque, não por
+frame). `?scale=N` multiplica `ballSizeVH` (mesma fórmula do 2D, `:184`). Implementado em
+`v2/main.js` bloco `// ---- F6 fixtures/mini ----`, chamando `resetCameraPose()` (já existente da
+Fase 1) para recalcular `camera.fov` a partir do novo `ballSizeVH` — a métrica de enquadramento em
+vh já era `computeFov()` (`ang = 2·asin(1/camDistance); fov = ang/ballSizeVH`), por isso mini/scale
+só precisam de mudar `ballSizeVH` e reaplicar o FOV, sem tocar em `camDistance`/posição da câmara.
+**Medido**: `?scale=0.5` dá uma bola visivelmente ~metade da altura do viewport comparado com o
+default (`ballSizeVH` confirmado a 0.26 vs 0.52 via `MB2.cfg.ballSizeVH`); `?mini=1` esconde HUD/
+painel/botões e enquadra a 0.66 vh; `?mini=1&light=1` aplica skin white; consola limpa nos três
+casos (screenshots + `read_console_messages`).
+⚠ **Divergência documentada**: `ballCenter` (offset 2D do centro da bola no ecrã, usado no Canvas 2D
+para dar espaço à corrente por cima) **não tem equivalente 3D direto** — aqui a câmara aponta sempre
+à origem (bola sempre centrada no viewport); o espaço para a corrente já vem incluído no
+enquadramento vertical da bola+corrente da sala 3D, não precisa de um deslocamento extra. `beamLength`
+(fração do viewport 2D) não é lido pelo `beams.js` 3D (usa `beamLen`/`beamLen3D`, raios da bola) — o
+bloco mini usa `CONFIG.beamLen3D` como equivalente ao "comprimento cheio" pedido pelo brief, em vez
+de inventar uma conversão px↔raios sem base (`beamLen3D` já é o knob que o Opus/Sonnet da Fase 3
+expuseram para esse propósito).
+
+---
+
+## Corpos PAR36 (F6)
+
+⚠ **Tudo novo aqui — a bola Canvas 2D não tem corpos físicos dos focos** (só desenha a mancha/feixe/
+cone; o pinspot em si é invisível). `v2/fixtures.js` (`createFixtures(scene, CONFIG, room)` →
+`{ update(mountedSpots, E) }`) introduz um corpo PAR36 simplificado por foco montado, sem
+correspondência a documentar — cada escolha abaixo é decisão de design nova, não paridade.
+
+**Fonte única de posição**: `mountedSpots[i].S` (mesmo array que `updateSpotLights()` e
+`incident.js` já usam) `× CONFIG.spotDist` — o corpo fica exatamente no ponto onde a `SpotLight`
+ilumina e onde o cone incidente nasce (o brief pedia "a lente segue o dimmer" e "a luz nasce do
+corpo"; como a `SpotLight` e o cone já nascem em `S·spotDist`, o corpo só precisava de se colocar
+no mesmo ponto — não há cálculo extra). Percorre-se `mountedSpots` na ordem de chegada (não o índice
+de `CONFIG.spots`, que pode não bater — o comentário de `main.js:updateSpotLights` já avisa disto) e
+atribui-se ao próximo slot livre do pool (`CONFIG.spots.length` corpos pré-criados, nunca destruídos
+— só `setEnabled`). **Flashes (`isFlash:true`) e luz indireta (`wide:true`) não têm corpo** (pedido
+explícito do brief: só focos montados de verdade têm pinspot físico).
+
+**Geometria**: lata (cilindro Ø`0.12·fixtureScale`, comprimento `0.18·fixtureScale`, PBR metal
+escuro fosco `roughness 0.6`) + aro (cilindro mais largo/curto na boca) + lente (disco fino,
+material PBR `disableLighting:true`, cor = `emissiveColor` apenas — **a única coisa que emite**, e
+só quando `I ≥ 0.02`, mesmo limiar que `updateSpotLights` usa para (des)ligar a `SpotLight`) + haste/
+yoke (cilindro fino, comprimento variável por frame, do corpo até ao ponto de fixação).
+
+**Orientação**: eixo local do corpo (+Z) alinhado com `−S` (aponta à bola), via
+`Quaternion.FromUnitVectorsToRef` — mesma técnica que `incident.js` já usa para orientar os cones.
+
+**Rig / ponto de fixação** (brief §1-2, "o que for melhor agora"): `el > 45°` → teto (`room.ceil`);
+senão parede — lateral (`x = ±room.halfW`) ou traseira (`z = room.back`), escolhida pela mais
+**perto** do corpo (não pela direção de `S`, que daria hastes desproporcionalmente longas em alguns
+ângulos) para a haste ficar curta e crível. **Medido com os defaults** (2 focos, az ±52°/el 12-14°):
+ambos os corpos ficam dentro da sala sem precisar de clamp (`S·spotDist` com `spotDist:6` cai a
+~4.6-4.9 raios do centro em x, dentro de `room.halfW:5.2`) e a haste liga-os à parede lateral mais
+próxima (~0.6 raios de comprimento) — confirmado visualmente (screenshot com câmara a 1.5 raios do
+corpo) e via `stem.scaling`/`position`. **Clamp implementado mas não exercitado pelos defaults**:
+`clampToRoom()` encosta o corpo ao plano mais próximo (`halfW`/`ceil`/`floor`) se `S·spotDist` sair
+da sala — spots 5/6 do CONFIG (el 30°, spotDist alto) ou `spotDist` grande no slider exercitam este
+caminho; não há screenshot dedicado a esse caso nesta fase (fica para quando o David regular
+`spotDist`/rig ao vivo).
+
+**Cor**: greyscale por omissão; se `CONFIG.spotColorOn` (F2, opt-in do David), a lente tinge com o
+matiz do próprio `CONFIG.spots[k]` (mesma conversão HSV→RGB que `main.js:spotColor()` já usa) — a
+lata/aro ficam sempre greyscale (só a lente pode ter cor, e só é cosmético, não altera a `SpotLight`
+real que já existia).
+
+**Knobs novos** (`v2/panel.js`, persistem em `mb2.knobs`): `corpos (0/1)` → `CONFIG.fixturesOn`
+(esconde tudo, incluindo hastes — testado via `MB2.cfg.fixturesOn=false`, todos os `TransformNode`/
+`Mesh` de fixtures/stems confirmados `isEnabled(false)`); `corpos: escala` → `CONFIG.fixtureScale`
+(0.2-3, escala uniforme do corpo, não da haste — testado ×2, lente visivelmente maior); `corpos:
+lente ×` → `CONFIG.lensGain` (0-6, multiplica `I` antes de escrever o `emissiveColor` — testado ×3,
+lente visivelmente mais brilhante); `corpos: haste (0/1)` → `CONFIG.fixtureStemOn` (esconde só as
+hastes, corpo continua visível). `focos: distância` (`spotDist`) já existia da Fase 1 — reutilizado,
+não duplicado.
+
+⚠ **PERF (medido, corrigido nesta fase)**: a primeira versão usava `PBRMaterial` com
+`maxSimultaneousLights: 12` em 8 materiais novos (corpo/aro/6 lentes). Como o pool de `SpotLight`
+liga/desliga luzes por frame (`updateSpotLights`, conforme `spotCount`/fade/coreografia), qualquer
+mudança na contagem de luzes ativas forçava o Babylon a recompilar o shader de todo material com
+`maxSimultaneousLights` desatualizado para essa contagem — custo medido de **+7 a +17 ms por frame**
+(`scene.render()` isolado: ~3-6 ms com `fixturesOn:false`, ~10-20 ms com `fixturesOn:true`, mesma
+classe de bug do `roomEmissive`/estrobo já documentado no cabeçalho de `main.js`, mas via
+recompilação de shader em vez de dirty flag de propriedade). Corrigido: corpo/aro passam a
+`maxSimultaneousLights: 2` (não precisam de precisão de luz — são pretos foscos); a lente passa a
+`disableLighting: true` (é puramente emissiva — não deveria reagir à luz da sala mesmo antes desta
+correção, regra 6: nada aqui deve ser "lavado" pela sala). Depois da correção, `fixturesOn:true` e
+`fixturesOn:false` custam o mesmo (~2.5-6 ms isolado, dentro do ruído de medição) — `MB2.__perf()`
+via o loop real do motor mostrou 13-15 ms em ambos os casos nesta sessão, mas confirmado por
+`scene.render()` cronometrado a papel que a diferença fixtures on/off é ~0 depois da correção; o
+baseline de 13-15 ms vem do resto da cena (2938 tiles + feixes + pontos) somado a contenção de fundo
+do Chrome em automação (outro separador nesta mesma sessão, do Opus, a correr `runRenderLoop`
+continuamente em paralelo) — não é atribuível a `fixtures.js`.
 
 ---
 
