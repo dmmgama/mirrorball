@@ -70,8 +70,19 @@ spike-babylon/serve.py :8099   — proxy de /app-token e /app-config* → :3739;
 <tr><td>consola</td><td><code>MB2 = {scene, engine, camera, cfg, ball, setSkin, refreshPanel, __perf}</code>; <code>MB2.__perf()</code> = ms mediano de <code>scene.render()</code></td></tr>
 </table>
 <p><span class="key">d</span> painel · <span class="key">w</span> skin dark/white · <span class="key">x</span> explosão (ciclo completo) · <span class="key">X</span> explode e fica; 2.º <span class="key">X</span> volta · <span class="key">m</span> HUD do motor · <span class="key">p</span> perfil · <span class="key">g</span> gerador sintético · <span class="key">n</span> próxima fase (as 4 últimas só com <code>?src=music</code>). Rato: orbitar/zoom.</p>
-<p>Botões do painel: <b>repor ficheiro gravado</b> (aplica a secção <code>ball</code> do <code>music-config.json</code>) · <b>repor knobs (defaults)</b> (limpa <code>mb2.knobs</code>) · <b>gravar (music-config.json)</b> (só em modo música, POST ao sidecar — nunca automático) · checkboxes <b>spot i</b> (apaga a SpotLight i) · <b>explosões on/off</b> (bloqueia só as vindas do motor; a tecla continua).</p>
-<div class="note"><b>Prioridade:</b> o que tocaste por último no painel (localStorage) ganha; o ficheiro só preenche o que nunca mexeste; defaults por fim. Se algo "não obedece", carrega em <i>repor knobs (defaults)</i>.</div>
+<h3>Botões do painel — gravar e carregar knobs</h3>
+<table><tr><th>botão</th><th>modo manual (sem sidecar)</th><th>modo música (<code>?src=music</code>)</th></tr>
+<tr><td><b>gravar</b></td><td><b>gravar (ficheiro)</b> — descarrega <code>mb2-knobs.json</code> com os <b>98 knobs</b> + <code>__toggles</code> (checkboxes <i>spot i</i>, skin, explosões)</td><td><b>gravar (music-config.json)</b> — POST ao sidecar, secção <code>ball</code>. Nunca automático: só quando carregas.</td></tr>
+<tr><td><b>carregar ficheiro</b></td><td colspan="2">Abre o seletor de ficheiros e aplica o JSON (knobs + toggles). Aceita um <code>mb2-knobs.json</code> ou um <code>music-config.json</code> inteiro (usa a secção <code>ball</code>). Aplica na hora — reconstrói a malha se o ficheiro mudar filas/junta/corrente.</td></tr>
+<tr><td><b>repor ficheiro gravado</b></td><td>repõe o <code>v2/knobs-default.json</code></td><td>repõe a secção <code>ball</code> do <code>music-config.json</code></td></tr>
+<tr><td><b>repor knobs (defaults)</b></td><td colspan="2">limpa <code>mb2.knobs</code>/<code>mb2.knobsTouched</code> e volta aos defaults do <code>config.js</code></td></tr>
+</table>
+<p>Fora da linha dos botões: checkboxes <b>spot i</b> (apaga a SpotLight i) · <b>explosões on/off</b> (bloqueia só as vindas do motor; a tecla continua). Ambos persistem.</p>
+
+<div class="note"><b>Prioridade no arranque:</b> <code>localStorage['mb2.knobs']</code> &gt; <code>v2/knobs-default.json</code> &gt; <code>v2/config.js</code>.<br>
+<b>Tudo persiste</b>: os 98 knobs (não só os que mexeste), os checkboxes <i>spot i</i>, a skin e as explosões — chaves <code>mb2.knobs</code>, <code>mb2.knobsTouched</code>, <code>mb2.toggles</code>.<br>
+<b><code>knobs-default.json</code></b> é a camada de defaults do spike <i>fora do código</i>: edita-o para mudar o ponto de partida sem tocar no <code>config.js</code>. Não o escrevas à mão — regenera-o com <code>node gen-knobs-default.js</code> (lê o <code>config.js</code> e os getters reais do <code>panel.js</code>).<br>
+<b>Em modo música</b> o <code>music-config.json</code> só preenche os knobs que <i>nunca</i> mexeste (lista em <code>mb2.knobsTouched</code>) — o que afinaste ganha sempre. Se algo "não obedece", carrega em <i>repor knobs (defaults)</i>.</div>
 
 <h2 id="knobs">3. Knobs do painel <span class="key">d</span></h2>
 <p>Coluna "vai para" = chave em <code>CONFIG</code> (CH = <code>CONFIG.choreo</code>). ⏫ = obriga a reconstruir a malha.</p>

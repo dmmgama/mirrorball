@@ -457,7 +457,23 @@ export function createBall(scene, CONFIG) {
     for (const m of list) if (!skip(m)) probe.renderList.push(m);
     probe.refreshRate = BJS.RenderTargetTexture.REFRESHRATE_RENDER_ONCE;
     mat.reflectionTexture = probe.cubeTexture;
+    /* O cubo do probe é o ambiente da cena (é ele que dá a luz de ambiente ao PBR dos espelhos: sem
+       `scene.environmentTexture` a bola desenha-se PRETA — testado). */
     if (!scene.environmentTexture) scene.environmentTexture = probe.cubeTexture;
+
+    /* ⚠ REGRESSÃO S8 (ecrã preto): NENHUM material da `renderList` do probe pode amostrar
+       `scene.environmentTexture` (= este mesmo cubo), senão em WebGPU o cubo é render attachment e
+       texture binding no mesmo synchronization scope → GPUValidationError e o frame é descartado.
+       Hoje a renderList é só a sala, que já é StandardMaterial (v2/room.js, onde está a explicação
+       toda). Este aviso fica a guardar a invariante: se alguma vez entrar aqui um PBRMaterial sem
+       `reflectionTexture` próprio, o ecrã volta a ficar preto em WebGPU. */
+    for (const m of probe.renderList) {
+      const mm = m && m.material;
+      if (mm && mm.getClassName && mm.getClassName() === 'PBRMaterial' && !mm.reflectionTexture) {
+        console.warn('[MB2] probe.renderList tem um PBRMaterial sem reflectionTexture própria ("' +
+          mm.name + '") — em WebGPU isto dá GPUValidationError e o frame fica preto. Ver v2/room.js.');
+      }
+    }
     return probe;
   }
   function refreshProbe() { if (probe) probe.refreshRate = BJS.RenderTargetTexture.REFRESHRATE_RENDER_ONCE; }

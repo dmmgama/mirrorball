@@ -9,6 +9,33 @@ export function buildRoom(scene, CONFIG) {
   roomMat.backFaceCulling = false;
   roomMat.maxSimultaneousLights = 12;
 
+  /* ⚠ REGRESSÃO S8 — "tudo preto" (ver PARITY.md §"Regressão S8: tudo preto").
+     Um PBRMaterial SEM `reflectionTexture` própria cai no `scene.environmentTexture`, que aqui é o
+     cubo do ReflectionProbe da bola (v2/ball.js: attachProbe) — e os 5 planos DESTA sala são a
+     renderList desse mesmo probe. Em WebGPU o cubo fica então a ser render attachment (o probe a
+     desenhar a sala) e texture binding (a sala a amostrar o ambiente) no MESMO synchronization scope:
+       "[Texture ...TextureCube...] usage (TextureBinding|RenderAttachment) includes writable usage
+        and another usage in the same synchronization scope"
+     → GPUValidationError, o CommandBuffer inteiro é descartado, o probe fica por desenhar e os
+     espelhos (metallic 0.92) ficam sem nada para refletir: a bola desenha-se PRETA.
+     Correção: dar à sala uma `reflectionTexture` PRÓPRIA — um cubo 1×1 quase preto (a sala escura
+     que ela própria é). Corta o ciclo, mantém o PBR (a mesma resposta à luz de antes, sem as poças
+     ovais que o StandardMaterial fazia) e ainda tira trabalho ao frame:
+     medido nesta cena, render 143 ms → 20 ms. */
+  {
+    const px = new Uint8Array([10, 10, 10, 255]); // sala escura, constante em todas as direções
+    try {
+      roomMat.reflectionTexture = new BABYLON.RawCubeTexture(
+        scene, [px, px, px, px, px, px], 1,
+        BABYLON.Engine.TEXTUREFORMAT_RGBA, BABYLON.Engine.TEXTURETYPE_UNSIGNED_BYTE,
+        false, false, BABYLON.Texture.NEAREST_SAMPLINGMODE);
+    } catch (e) {
+      // sem RawCubeTexture o ciclo volta — avisa alto, senão o sintoma é só "está tudo preto"
+      console.error('[MB2] room.js: RawCubeTexture falhou — a sala vai cair no scene.environmentTexture ' +
+        'e em WebGPU o frame fica preto (ver comentário em v2/room.js):', e);
+    }
+  }
+
   function plane(name, w, h, pos, rot) {
     const p = BABYLON.MeshBuilder.CreatePlane(name, { width: w, height: h, sideOrientation: BABYLON.Mesh.DOUBLESIDE }, scene);
     p.position = pos;

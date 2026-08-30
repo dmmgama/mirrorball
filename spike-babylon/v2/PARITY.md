@@ -12,6 +12,69 @@ ligados ao ficheiro). Ver `spike-babylon/v2/briefs/f5-sonnet.md`, `f5-opus.md`, 
 
 ---
 
+## Regressão S8: tudo preto — causa e fix
+
+**Sintoma (David, 2026-08-30):** depois das fases F4-F7 (`ceeae55`, `7280271`, `c905f8b`),
+`http://127.0.0.1:8099/v2/index.html` abre **tudo preto** — em WebGPU e em `?webgl=1`. Na F3
+(`dfc796f`) a bola via-se bem.
+
+**Causa raiz: um ciclo de textura no `ReflectionProbe`, que em WebGPU descarta o frame inteiro.**
+
+`v2/ball.js:attachProbe()` faz duas coisas:
+1. `mat.reflectionTexture = probe.cubeTexture` — os espelhos refletem a sala (é o que se quer ver);
+2. `scene.environmentTexture = probe.cubeTexture` — o mesmo cubo passa a ser o **ambiente da cena**.
+
+E a `renderList` desse probe são os 5 planos da **sala** (`v2/room.js`), que eram `PBRMaterial`.
+Ora, um `PBRMaterial` **sem `reflectionTexture` própria cai no `scene.environmentTexture`**. Logo,
+durante a passagem do probe, o mesmo cubo é ao mesmo tempo:
+
+* **render attachment** — o probe a desenhar a sala lá para dentro, e
+* **texture binding** — a sala a amostrar o ambiente,
+
+no **mesmo synchronization scope**. O WebGL2 tolera (resultado indefinido); o WebGPU valida e recusa:
+
+```
+[Texture "…TextureCube…256x256…"] usage (TextureBinding|RenderAttachment) includes writable usage
+and another usage in the same synchronization scope. — While validating render pass usage.
+[Invalid CommandBuffer …] is invalid due to a previous error. — While calling [Queue].Submit(…)
+```
+
+O `CommandBuffer` **inteiro** é descartado: esse frame não é desenhado, o probe fica por preencher e
+os espelhos (`metallic 0.92`) ficam sem nada para refletir → **a bola desenha-se preta**.
+
+Porque é que só apareceu depois da F3: a F4 pôs um `DefaultRenderingPipeline` com 12 pós-processos
+e a F6 acrescentou os corpos PAR36 — o custo por frame subiu ao ponto de o browser passar a
+apanhar a passagem do probe dentro do mesmo scope de sincronização, e o que na F3 era um piscar de
+um frame passou a ser o estado permanente. O custo também explodiu (ver abaixo), o que com os knobs
+do David (78 filas = 7746 espelhos, `pontos na parede` 2.0) dava ~1-7 fps: com o tab a ser
+throttled, o ecrã ficava simplesmente parado e preto.
+
+**Fix (o que mudou):**
+
+* `v2/room.js` — a sala passa a ter uma **`reflectionTexture` própria**: um `RawCubeTexture` 1×1
+  quase preto (`rgb(10,10,10)`, a sala escura que ela própria é). Deixa de cair no
+  `scene.environmentTexture`, o ciclo desaparece e o material continua PBR (mesma resposta à luz —
+  passar a `StandardMaterial` foi tentado e desenhava poças ovais claras nas paredes, porque o PBR
+  divide a difusa por π e o Standard não).
+* `v2/ball.js` — `attachProbe()` continua a usar o cubo do probe como `scene.environmentTexture`
+  (**é preciso**: sem ele os espelhos ficam pretos, testado), mas ganha um **aviso na consola** se
+  alguma vez entrar na `renderList` do probe um `PBRMaterial` sem `reflectionTexture` própria — a
+  invariante que, se voltar a ser quebrada, volta a dar ecrã preto.
+* `v2/main.js` — os `import()` dinâmicos dos módulos deixaram de engolir falhas em `console.warn`:
+  `moduleFail()` escreve na caixa `#err` do `index.html`. Se o `ball.js` (ou outro) falhar a
+  carregar, vê-se **na página** qual foi, em vez de uma cena vazia sem explicação.
+
+**Medido (mesma cena, mesmo tab):** render **143 ms → 20 ms** com os defaults (2938 espelhos) e
+**875 ms → 22 ms** com os knobs do David (7746 espelhos). Consola limpa em WebGPU (zero
+`GPUValidationError`) e em `?webgl=1`.
+
+**Knobs guardados do David:** estavam válidos — a causa **não** era um knob. Dois estavam órfãos
+(ver §5, migração de labels da F5): `flash: por s (só manual)` e `flash: dura ms (só manual)`, que a
+F5 renomeou para `flash: por s` / `flash: dura ms`. O valor `flash: por s = 0` do David estava a ser
+ignorado (voltava ao default 0.6); a migração recupera-o.
+
+---
+
 ## 1. Fenómenos visuais desenhados
 
 ### 1.1 Facetas/tiles
@@ -852,9 +915,50 @@ bola Canvas 2D atual (arbitragem entre as duas instâncias, como pedido no brief
 ✅ `KNOB_DEFAULTS` capturado antes de aplicar o localStorage; `knobsGet()`/`knobsSet(obj, persist)`
 implementados com a mesma assinatura.
 
-✅ Botões "repor ficheiro gravado" (desativado — só liga na Fase 5, quando houver `music-config.json`
-a carregar), "repor knobs (defaults)" (funcional — limpa `mb2.knobs` e aplica `KNOB_DEFAULTS`),
-"gravar" (desativado até à Fase 5, conforme o brief).
+### Save/load e persistência — estado final (S8)
+
+**Prioridade dos valores no arranque:**
+
+```
+localStorage['mb2.knobs']   >   v2/knobs-default.json   >   v2/config.js
+```
+
+* **`v2/knobs-default.json`** — camada de defaults do spike **fora do código**. `panel.js` carrega-a
+  no arranque com `fetch('./knobs-default.json', {cache:'no-store'})`; se faltar ou falhar, cai nos
+  defaults do `config.js` e diz-o na consola. Editar este ficheiro muda os defaults sem tocar em
+  código. **Não se escreve à mão:** regenera-se com `node gen-knobs-default.js` (corre o `config.js`
+  e os getters reais do `panel.js` num `vm` com DOM stub e grava o `KNOB_DEFAULTS`). 98 knobs.
+* **`localStorage['mb2.knobs']`** — passa a guardar **todos** os 98 knobs persistíveis, não só os que
+  foram mexidos. Antes só se gravava o knob no `oninput`, e um `mb2.knobs` antigo perdia tudo o que
+  fosse knob novo. Normaliza-se no arranque (uma escrita, só se já houver algo gravado).
+* **`localStorage['mb2.knobsTouched']`** — lista dos knobs que o David mexeu **de facto**. É esta
+  lista, e já não "está no `mb2.knobs`?", que dá a prioridade `localStorage > ficheiro` ao
+  `MIRRORBALL.knobs.set` do modo música (senão, ao passar a gravar tudo, o `music-config.json` nunca
+  mais seria aplicado a nada).
+* **`localStorage['mb2.toggles']`** — o que não é slider: checkboxes `spot i` (0-5), `skin`
+  (`dark`/`white`, Regra 1 — é escolha do utilizador, tem de sobreviver ao reload) e `explosões`
+  (espelha `mb2.explode`). Antes, os `spot i` voltavam sempre a ligados e a skin voltava sempre ao
+  default.
+* **Migração de labels** — a F5 (`7280271`) renomeou sliders (`flash: por s (só manual)` →
+  `flash: por s`, `auréola (fase 3)` → `auréola`, `… (fase 4)`/`(fase 5)` → sem sufixo…). Os valores
+  gravados com os nomes antigos ficavam órfãos e eram silenciosamente perdidos. `panel.js` tem agora
+  um mapa `RENAMED` e migra-os na leitura (do localStorage e de qualquer ficheiro carregado).
+
+**Botões do painel `d`** (linha por baixo dos sliders):
+
+| botão | modo manual (`:8095`/`:8099`, sem sidecar) | modo música (`?src=music`) |
+|---|---|---|
+| **gravar** | `gravar (ficheiro)` — descarrega `mb2-knobs.json` (Blob + `<a download>`) com os 98 knobs **+ `__toggles`** | `gravar (music-config.json)` — `MUSIC.tune.save()` → sidecar `/app-config` (secção `ball`), como antes |
+| **carregar ficheiro** | `<input type=file>` → lê o JSON e aplica com `knobsSet(obj, true)` + `togglesSet(obj.__toggles)`; aceita tanto um `mb2-knobs.json` como um `music-config.json` inteiro (usa a secção `ball`) | igual |
+| **repor ficheiro gravado** | repõe o **`knobs-default.json`** | repõe a secção `ball` do `music-config.json` (snapshot de `setKnobFile`) |
+| **repor knobs (defaults)** | limpa `mb2.knobs`/`mb2.knobsTouched` e aplica os `KNOB_DEFAULTS` do código | igual |
+
+`knobsSet()` chama os 4 hooks (`onRebuildBall`/`onSpotsChanged`/`onShadeChanged`/`onBgGreyChanged`)
+depois de aplicar, para que um ficheiro que mude `espelhos: filas`, `junta`, `corrente` ou os focos
+tenha efeito imediato sem reload.
+
+⚠ `initPanel()` é **assíncrona** desde a S8 (o `fetch` do `knobs-default.json`) — `main.js` faz
+`await initPanel(...)`.
 
 ✅ `localStorage['mb2.dbgSize']` — 1-3 colunas, escala 0.7-1.5, mesmo mecanismo (`--dbgCols`/
 `--dbgScale`).

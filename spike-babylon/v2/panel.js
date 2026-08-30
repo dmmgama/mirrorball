@@ -8,8 +8,66 @@
 // ainda é guardado/persistido, só o comportamento é que chega mais tarde.
 //
 // initPanel(CONFIG, hooks) — hooks: { onRebuildBall, onSpotsChanged, onShadeChanged, onBgGreyChanged }
+//
+// ---- S8: persistência e save/load (pedido do David) --------------------------------------------
+// Prioridade dos valores no arranque:   localStorage['mb2.knobs']  >  knobs-default.json  >  config.js
+//
+//  * `knobs-default.json` (ficheiro ao lado deste, gerado por `node gen-knobs-default.js`) é a camada
+//    de defaults do SPIKE fora do código — carregado com `fetch(..., {cache:'no-store'})` no arranque.
+//    Editá-lo muda os defaults sem tocar em `config.js`. Se faltar/falhar, cai nos defaults do código.
+//  * `localStorage['mb2.knobs']` guarda TODOS os knobs persistíveis (não só os que foram mexidos) —
+//    antes só se escrevia o knob no `oninput`, e um `mb2.knobs` antigo perdia tudo o que fosse novo.
+//  * `localStorage['mb2.knobsTouched']` guarda a LISTA dos knobs que o David mexeu de facto. É esta
+//    lista (e já não "está no mb2.knobs?") que dá a prioridade `localStorage > ficheiro` do
+//    `MIRRORBALL.knobs.set` em modo música — senão, ao passar a gravar tudo, o music-config.json
+//    nunca mais seria aplicado a nada.
+//  * `localStorage['mb2.toggles']` guarda o que NÃO é slider: checkboxes `spot i`, `skin`, `explosões`.
+//  * Botões: "gravar" descarrega `mb2-knobs.json` (Blob + <a download>), "carregar ficheiro" lê um
+//    JSON e aplica-o, "repor ficheiro gravado" repõe o `knobs-default.json` (modo manual) ou a secção
+//    `ball` do `music-config.json` (modo música, quando o motor o carregou), "repor knobs (defaults)"
+//    limpa o localStorage e volta aos defaults do código.
+//
+// initPanel é ASSÍNCRONA (o fetch do knobs-default.json) — main.js faz `await initPanel(...)`.
 
-export function initPanel(CONFIG, hooks = {}) {
+const KEY_KNOBS = 'mb2.knobs';
+const KEY_TOUCHED = 'mb2.knobsTouched';
+const KEY_TOGGLES = 'mb2.toggles';
+const DEFAULTS_URL = './knobs-default.json';
+
+/* Labels renomeados na F5 (commit 7280271) — um `mb2.knobs` gravado antes disso tem as chaves
+   antigas e os valores ficavam ÓRFÃOS (o David perdia esses knobs sem aviso). Migra-se na leitura. */
+const RENAMED = {
+  'flash: por s (só manual)': 'flash: por s',
+  'flash: dura ms (só manual)': 'flash: dura ms',
+  'focos+flashes: motor manda (0/1) (fase 5)': 'focos+flashes: motor manda (0/1)',
+  'auréola (fase 3)': 'auréola',
+  'strobe fundo (0/1) (fase 4)': 'strobe fundo (0/1)',
+  'strobe: frequência × (fase 4)': 'strobe: frequência ×',
+  'pontos na parede (densidade) (fase 4)': 'pontos na parede (densidade)',
+  'strobe: força (fase 4)': 'strobe: força',
+  'strobe: dura ms (fase 4)': 'strobe: dura ms',
+  'health (motor manda) (fase 5)': 'health (motor manda)',
+};
+function migrate(obj) {
+  if (!obj || typeof obj !== 'object') return {};
+  const out = {}, moved = [];
+  for (const k in obj) {
+    const nk = RENAMED[k];
+    if (nk) { if (!(nk in obj)) { out[nk] = obj[k]; moved.push(k + ' → ' + nk); } }
+    else out[k] = obj[k];
+  }
+  if (moved.length) console.log('[MB2] knobs renomeados recuperados:', moved.join(', '));
+  return out;
+}
+
+function readJSON(key) {
+  try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { return null; }
+}
+function writeJSON(key, val) {
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { /* sem storage */ }
+}
+
+export async function initPanel(CONFIG, hooks = {}) {
   const noop = () => {};
   const onRebuildBall = hooks.onRebuildBall || noop;
   const onSpotsChanged = hooks.onSpotsChanged || noop;
@@ -187,16 +245,62 @@ export function initPanel(CONFIG, hooks = {}) {
   const knobsBox = document.createElement('div'); knobsBox.className = 'knobs';
   dbg.appendChild(knobsBox);
 
-  let knobFile = null; // secção `ball` do music-config.json (ainda não carregado nesta fase — fica pronto para a Fase 5)
-  let knobStore = {};
-  try { knobStore = JSON.parse(localStorage.getItem('mb2.knobs') || '{}') || {}; } catch (e) { /* sem storage */ }
+  let knobFile = null; // secção `ball` do music-config.json (só em ?src=music, via setKnobFile)
 
-  const KNOB_DEFAULTS = {}; // valores do código, capturados ANTES de aplicar localStorage
+  const KNOB_DEFAULTS = {}; // valores do CÓDIGO (config.js), capturados ANTES de qualquer ficheiro/storage
   for (const [name, , , , , get] of sliders) if (PERSIST.has(name)) KNOB_DEFAULTS[name] = get();
+
+  /* ---- camada 2: knobs-default.json (defaults do spike FORA do código) ----
+     fetch relativo, no-store. Falhar não é erro fatal: fica-se com os defaults do config.js. */
+  let fileDefaults = {};
+  try {
+    const r = await fetch(DEFAULTS_URL, { cache: 'no-store' });
+    if (r.ok) {
+      const j = await r.json();
+      if (j && typeof j === 'object') fileDefaults = j;
+      console.log('[MB2] knobs-default.json:', Object.keys(fileDefaults).length, 'knobs');
+    } else {
+      console.warn('[MB2] knobs-default.json não encontrado (HTTP ' + r.status + ') — defaults do código');
+    }
+  } catch (e) {
+    console.warn('[MB2] knobs-default.json não carregou — defaults do código:', e && e.message);
+  }
+
+  /* ---- camada 3: localStorage (ganha a tudo) ---- */
+  let knobStore = migrate(readJSON(KEY_KNOBS) || {});
+  let touched = new Set(migrate2list(readJSON(KEY_TOUCHED)));
+  function migrate2list(arr) {
+    if (!Array.isArray(arr)) {
+      // primeira execução depois do S8: um `mb2.knobs` antigo só continha o que o David TOCOU,
+      // por isso as suas chaves são exatamente a lista de "tocados" que faltava.
+      return Object.keys(knobStore);
+    }
+    return arr.map(k => RENAMED[k] || k);
+  }
+  function persistAll() {
+    const all = {};
+    for (const [name, , , , , get] of sliders) if (PERSIST.has(name)) {
+      const v = get();
+      if (Number.isFinite(v)) all[name] = v;
+    }
+    knobStore = all;
+    writeJSON(KEY_KNOBS, all);
+    writeJSON(KEY_TOUCHED, [...touched]);
+  }
+
+  // valor efetivo no arranque: localStorage > knobs-default.json > config.js
+  function startValue(name) {
+    if (Number.isFinite(knobStore[name])) return knobStore[name];
+    if (Number.isFinite(fileDefaults[name])) return fileDefaults[name];
+    return undefined; // fica o que o config.js já pôs
+  }
 
   const inputs = {};
   for (const [name, mn, mx, st, set, get] of sliders) {
-    if (PERSIST.has(name) && Number.isFinite(knobStore[name])) set(knobStore[name]);
+    if (PERSIST.has(name)) {
+      const v0 = startValue(name);
+      if (v0 !== undefined) set(v0);
+    }
     const lab = document.createElement('label');
     lab.innerHTML = `<span>${name}</span>`;
     const val = document.createElement('b');
@@ -208,14 +312,19 @@ export function initPanel(CONFIG, hooks = {}) {
       set(+inp.value);
       val.textContent = (+inp.value).toFixed(st < 0.1 ? 2 : st < 1 ? 1 : 0);
       if (PERSIST.has(name)) {
-        knobStore[name] = +inp.value;
-        try { localStorage.setItem('mb2.knobs', JSON.stringify(knobStore)); } catch (e) { /* */ }
+        touched.add(name);
+        persistAll();   // grava TODOS os knobs, não só este (senão os novos perdem-se)
       }
     };
     lab.appendChild(val); lab.appendChild(inp);
     knobsBox.appendChild(lab);
     inputs[name] = inp;
   }
+
+  /* Normaliza o localStorage no arranque: passa a ter os 98 knobs (nenhum knob novo se perde numa
+     sessão futura) e as chaves antigas dos labels renomeados desaparecem já migradas. Só se escreve
+     quando havia mesmo algo gravado — numa primeira visita não se cria nada. */
+  if (Object.keys(knobStore).length || touched.size) persistAll();
 
   function knobsGet() {
     const o = {};
@@ -224,65 +333,164 @@ export function initPanel(CONFIG, hooks = {}) {
   }
   function knobsSet(obj, persist) {
     if (!obj || typeof obj !== 'object') return 0;
+    const src = migrate(obj);
     let n = 0;
     for (const [name, , , st, set] of sliders) {
-      if (!PERSIST.has(name) || !Number.isFinite(obj[name])) continue;
-      set(obj[name]); n++;
+      if (!PERSIST.has(name) || !Number.isFinite(src[name])) continue;
+      set(src[name]); n++;
       const inp = inputs[name];
-      if (inp) { inp.value = obj[name]; inp.previousSibling.textContent = (+obj[name]).toFixed(st < 0.1 ? 2 : st < 1 ? 1 : 0); }
-      if (persist) knobStore[name] = obj[name];
+      if (inp) { inp.value = src[name]; inp.previousSibling.textContent = (+src[name]).toFixed(st < 0.1 ? 2 : st < 1 ? 1 : 0); }
+      if (persist) touched.add(name);
     }
-    if (persist) { try { localStorage.setItem('mb2.knobs', JSON.stringify(knobStore)); } catch (e) { /* */ } }
+    // hooks: um ficheiro pode mudar filas/junta/corrente (rebuild) e focos/luz geral/fundo
+    if (n) { onRebuildBall(); onSpotsChanged(); onShadeChanged(); onBgGreyChanged(); }
+    if (persist) persistAll();
     return n;
   }
+
+  /* `knobsTouched` — quais os knobs que o David mexeu de facto (o `MIRRORBALL.knobs.set` do modo
+     música usa isto para não sobrepor o que ele afinou; ver comentário no topo). */
+  function knobsTouched() { return [...touched]; }
 
   // ---- botões (Fase 5: mesma semântica de web/index-v2.html:873-883) ----
   const sp = document.createElement('div'); sp.className = 'sp';
   const knobMsg = document.createElement('div');
   knobMsg.style.cssText = 'margin-top:4px;color:#8a8a8a;font-size:11px';
 
+  /* "repor ficheiro gravado":
+       - modo música (?src=music): repõe a secção `ball` do music-config.json (snapshot em knobFile);
+       - modo manual (:8095/:8099 sem sidecar): repõe o `knobs-default.json` do spike. */
   const btnFile = document.createElement('button');
   btnFile.textContent = 'repor ficheiro gravado';
-  btnFile.disabled = !knobFile;
+  btnFile.disabled = !knobFile && !Object.keys(fileDefaults).length;
   btnFile.onclick = () => {
-    if (!knobFile) { knobMsg.textContent = 'sem secção ball no music-config.json'; return; }
-    const n = knobsSet(knobFile, true);
-    knobMsg.textContent = `${n} knobs repostos do ficheiro`;
+    const src = knobFile || fileDefaults;
+    const from = knobFile ? 'music-config.json' : 'knobs-default.json';
+    if (!src || !Object.keys(src).length) { knobMsg.textContent = 'sem ficheiro de knobs'; return; }
+    const n = knobsSet(src, true);
+    knobMsg.textContent = `${n} knobs repostos de ${from}`;
   };
 
   const btnDefaults = document.createElement('button');
   btnDefaults.textContent = 'repor knobs (defaults)';
   btnDefaults.onclick = () => {
-    knobStore = {};
-    try { localStorage.removeItem('mb2.knobs'); } catch (e) { /* */ }
+    knobStore = {}; touched = new Set();
+    try { localStorage.removeItem(KEY_KNOBS); localStorage.removeItem(KEY_TOUCHED); } catch (e) { /* */ }
     knobsSet(KNOB_DEFAULTS, false);
-    knobMsg.textContent = 'defaults do código repostos (por gravar)';
+    knobMsg.textContent = 'defaults do código repostos (localStorage limpo)';
   };
 
-  // grava no MESMO music-config.json do painel k (secção `ball`), via MUSIC.tune.save → sidecar /app-config
-  // (só quando o David carrega — nunca automático; window.MUSIC só existe em ?src=music, ver web/music.js:2570-2585)
+  /* "gravar":
+       - modo manual: descarrega `mb2-knobs.json` com TODOS os knobs (Blob + <a download>);
+       - modo música: grava a secção `ball` no music-config.json via MUSIC.tune.save (sidecar). */
   const btnSave = document.createElement('button');
-  btnSave.textContent = 'gravar (music-config.json)';
+  function syncSaveLabel() {
+    const hasMusic = !!(window.MUSIC && window.MUSIC.tune && typeof window.MUSIC.tune.save === 'function');
+    btnSave.textContent = hasMusic ? 'gravar (music-config.json)' : 'gravar (ficheiro)';
+  }
+  syncSaveLabel();
   btnSave.onclick = async () => {
     const T = window.MUSIC && window.MUSIC.tune;
-    if (!T || typeof T.save !== 'function') { knobMsg.textContent = 'sem motor de música (só localStorage)'; return; }
-    knobMsg.textContent = 'a gravar…';
-    const r = await T.save();
-    knobMsg.textContent = r && r.ok ? `gravado em ${r.path}` : `não gravou: ${(r && r.error) || '?'}`;
+    if (T && typeof T.save === 'function') {
+      knobMsg.textContent = 'a gravar…';
+      const r = await T.save();
+      knobMsg.textContent = r && r.ok ? `gravado em ${r.path}` : `não gravou: ${(r && r.error) || '?'}`;
+      return;
+    }
+    // sem sidecar: download de mb2-knobs.json (knobs + toggles, para reproduzir o estado todo)
+    const payload = knobsGet();
+    payload.__toggles = togglesGet();
+    const blob = new Blob([JSON.stringify(payload, null, 2) + '\n'], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'mb2-knobs.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    knobMsg.textContent = `mb2-knobs.json descarregado (${Object.keys(payload).length - 1} knobs)`;
   };
 
-  sp.appendChild(btnFile); sp.appendChild(btnDefaults); sp.appendChild(btnSave);
-  dbg.appendChild(sp); dbg.appendChild(knobMsg);
+  /* "carregar ficheiro": <input type=file> escondido; lê o JSON e aplica com knobsSet(obj, true). */
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = '.json,application/json';
+  fileInput.style.display = 'none';
+  fileInput.onchange = async () => {
+    const f = fileInput.files && fileInput.files[0];
+    if (!f) return;
+    try {
+      const obj = JSON.parse(await f.text());
+      if (!obj || typeof obj !== 'object') throw new Error('JSON não é um objeto');
+      // um music-config.json inteiro traz os knobs na secção `ball`
+      const knobs = (obj.ball && typeof obj.ball === 'object') ? obj.ball : obj;
+      const n = knobsSet(knobs, true);
+      const t = togglesSet(knobs.__toggles || obj.__toggles);
+      knobMsg.textContent = `${n} knobs${t ? ` + ${t} toggles` : ''} carregados de ${f.name}`;
+    } catch (e) {
+      knobMsg.textContent = 'ficheiro inválido: ' + (e && e.message);
+    } finally {
+      fileInput.value = ''; // permite recarregar o MESMO ficheiro outra vez
+    }
+  };
+  const btnLoad = document.createElement('button');
+  btnLoad.textContent = 'carregar ficheiro';
+  btnLoad.onclick = () => fileInput.click();
 
-  // ---- checkboxes `spot i` (web/index-v2.html:884-889) → CONFIG.spots[i].on (a SpotLight i apaga) ----
+  sp.appendChild(btnFile); sp.appendChild(btnDefaults); sp.appendChild(btnSave); sp.appendChild(btnLoad);
+  dbg.appendChild(sp); dbg.appendChild(fileInput); dbg.appendChild(knobMsg);
+
+  /* ---- checkboxes `spot i` (web/index-v2.html:884-889) → CONFIG.spots[i].on (a SpotLight i apaga) ----
+     S8: passam a persistir em localStorage['mb2.toggles'] (antes voltavam sempre a ligadas). */
+  const savedToggles = readJSON(KEY_TOGGLES) || {};
+  const spotChecks = [];
   const spRow = document.createElement('div'); spRow.className = 'sp';
   CONFIG.spots.forEach((s, i) => {
+    const saved = savedToggles.spots && savedToggles.spots[i];
+    if (typeof saved === 'boolean') s.on = saved;
     const l = document.createElement('label');
     const c = document.createElement('input'); c.type = 'checkbox'; c.checked = s.on !== false;
-    c.onchange = () => { CONFIG.spots[i].on = c.checked; onSpotsChanged(); };
+    c.onchange = () => { CONFIG.spots[i].on = c.checked; onSpotsChanged(); persistToggles(); };
     l.appendChild(c); l.append(` spot ${i}`); spRow.appendChild(l);
+    spotChecks.push(c);
   });
   dbg.appendChild(spRow);
+  if (savedToggles.spots) onSpotsChanged();
+
+  /* `skin` e `explosões` vivem fora do painel (botões do #ui, teclas w/x) mas são estado do David —
+     guardam-se aqui, na mesma chave. `main.js` chama `panel.togglesApply()` depois de criar os
+     botões, e `panel.persistToggles()` sempre que os muda. */
+  function togglesGet() {
+    const t = { spots: CONFIG.spots.map(s => s.on !== false) };
+    if (CONFIG.skin === 'dark' || CONFIG.skin === 'white') t.skin = CONFIG.skin;
+    try { const x = localStorage.getItem('mb2.explode'); if (x) t.explode = x; } catch (e) { /* */ }
+    return t;
+  }
+  function togglesSet(t) {
+    if (!t || typeof t !== 'object') return 0;
+    let n = 0;
+    if (Array.isArray(t.spots)) {
+      t.spots.forEach((on, i) => {
+        if (typeof on !== 'boolean' || !CONFIG.spots[i]) return;
+        CONFIG.spots[i].on = on;
+        if (spotChecks[i]) spotChecks[i].checked = on;
+        n++;
+      });
+      onSpotsChanged();
+    }
+    if (t.skin === 'dark' || t.skin === 'white') { CONFIG.skin = t.skin; n++; }
+    if (t.explode === 'on' || t.explode === 'off') {
+      try { localStorage.setItem('mb2.explode', t.explode); } catch (e) { /* */ }
+      // o botão #xpl e a máquina da F7 vivem no main.js — avisa-os (o handler lá resincroniza)
+      dispatchEvent(new CustomEvent('mb2-xpl-restore', { detail: { on: t.explode === 'on' } }));
+      n++;
+    }
+    if (t.skin === 'dark' || t.skin === 'white') dispatchEvent(new CustomEvent('mb2-skin-restore', { detail: { skin: t.skin } }));
+    persistToggles();
+    return n;
+  }
+  function persistToggles() { writeJSON(KEY_TOGGLES, togglesGet()); }
+  // skin gravada: aplica-se ANTES de o main.js ler CONFIG.skin para o botão (Regra 1 — é o
+  // utilizador que manda na skin, e uma escolha dele tem de sobreviver ao reload).
+  if (savedToggles.skin === 'dark' || savedToggles.skin === 'white') CONFIG.skin = savedToggles.skin;
 
   addEventListener('keydown', (e) => {
     if (e.key === 'd' && !isTypingTarget(e.target)) dbg.classList.toggle('on');
@@ -309,8 +517,14 @@ export function initPanel(CONFIG, hooks = {}) {
   // ter mexido nos sliders. `setKnobFile` é chamado pelo bloco `// ---- F5 music ----` do main.js.
   function setKnobFile(obj) {
     knobFile = (obj && typeof obj === 'object') ? obj : null;
-    btnFile.disabled = !knobFile;
+    btnFile.disabled = !knobFile && !Object.keys(fileDefaults).length;
+    syncSaveLabel(); // com música, o botão passa a "gravar (music-config.json)"
   }
 
-  return { sliders, PERSIST, KNOB_DEFAULTS, knobsGet, knobsSet, setKnobFile, get knobFile() { return knobFile; }, dbgSize, inputs, refresh };
+  return {
+    sliders, PERSIST, KNOB_DEFAULTS, knobsGet, knobsSet, knobsTouched, setKnobFile,
+    get knobFile() { return knobFile; }, get fileDefaults() { return fileDefaults; },
+    togglesGet, togglesSet, persistToggles, syncSaveLabel,
+    dbgSize, inputs, refresh,
+  };
 }

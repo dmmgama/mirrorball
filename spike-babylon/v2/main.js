@@ -11,6 +11,24 @@ const D2R = Math.PI / 180;
 const qs = new URLSearchParams(location.search);
 const forceWebGL = qs.get('webgl') === '1';
 
+/* ---- REGRESSÃO S8: os imports dinâmicos abaixo estavam a engolir falhas em `console.warn`
+   (`ball.js indisponível, a usar stub`) — se o `ball.js` falhasse a importar, a cena ficava
+   praticamente vazia e o David via "tudo preto" SEM nada no ecrã que o dissesse. `moduleFail()`
+   escreve no #err (a caixa vermelha do index.html), que é impossível não ver. ---- */
+const moduleErrors = [];
+function moduleFail(file, err) {
+  moduleErrors.push(file);
+  const msg = (err && (err.message || err)) + '';
+  console.error(`[MB2] ${file} FALHOU a carregar:`, err);
+  try {
+    const d = document.getElementById('err');
+    if (d) {
+      d.style.display = 'block';
+      d.textContent += `MÓDULO EM FALTA: ${file} — ${msg}\n`;
+    }
+  } catch (e) { /* sem DOM */ }
+}
+
 /* ---------------- engine: WebGPU quando existe, WebGL2 como recurso ----------------
    ?webgl=1 força WebGL2 — o WebGPU initAsync() pendura com o tab em segundo plano
    (Chrome em automação para screenshots), ver docs/babylon-reference.md §1 e §9. */
@@ -302,7 +320,7 @@ try {
   console.log('ball.js carregado —', ball && ball.tiles, 'tiles');
   if (ball.attachProbe) ball.attachProbe(room.planes); // sala refletida nos espelhos (ONCE)
 } catch (err) {
-  console.warn('ball.js indisponível, a usar stub (esfera simples):', err);
+  moduleFail('ball.js', err);
   const stubMat = new BABYLON.PBRMaterial('stubMat', scene);
   stubMat.albedoColor = new BABYLON.Color3(0.5, 0.5, 0.5);
   stubMat.metallic = CONFIG.mirrorMetallic;
@@ -326,7 +344,7 @@ try {
   beams = mod.createBeams(scene, CONFIG, ball);
   console.log('beams.js carregado.');
 } catch (err) {
-  console.warn('beams.js indisponível ainda (Opus em paralelo):', err);
+  moduleFail('beams.js', err);
 }
 
 let incident = null;
@@ -335,7 +353,7 @@ try {
   incident = mod.createIncident(scene, CONFIG);
   console.log('incident.js carregado.');
 } catch (err) {
-  console.error('incident.js falhou:', err);
+  moduleFail('incident.js', err);
 }
 
 /* ---------------- pontos na parede: import dinâmico (Fase 4) ---------------- */
@@ -345,7 +363,7 @@ try {
   dots = mod.createDots(scene, CONFIG, ball);
   console.log('dots.js carregado.');
 } catch (err) {
-  console.error('dots.js falhou:', err);
+  moduleFail('dots.js', err);
 }
 
 /* ================================================================================================
@@ -359,7 +377,7 @@ try {
   fixtures = mod.createFixtures(scene, CONFIG, room);
   console.log('fixtures.js carregado.');
 } catch (err) {
-  console.error('fixtures.js falhou:', err);
+  moduleFail('fixtures.js', err);
 }
 
 /* ---- ?mini=1 / ?scale=N / ?light=1 (paridade com web/index-v2.html:176-186, PARITY §1.16) ----
@@ -412,8 +430,17 @@ try {
     try { localStorage.setItem('mb2.explode', on ? 'on' : 'off'); } catch (e) { /* sem storage */ }
     btn.textContent = 'explosões: ' + (on ? 'on' : 'off');
     dispatchEvent(new CustomEvent('mb2-xpl-toggle', { detail: { on } }));
+    // S8: entra também em localStorage['mb2.toggles'], para o "gravar"/"carregar ficheiro" o levarem
+    // (o painel ainda pode não existir quando isto corre no arranque — daí a guarda).
+    try { if (window.MB2 && MB2.panel && MB2.panel.persistToggles) MB2.panel.persistToggles(); } catch (e) { /* */ }
   }
   setOn(getOn());
+  // S8: "carregar ficheiro" no painel pode trazer o estado das explosões — resincroniza o botão.
+  addEventListener('mb2-xpl-restore', (ev) => {
+    const on = !!(ev.detail && ev.detail.on);
+    if (window.MIRRORBALL && window.MIRRORBALL.setExplodeEnabled) window.MIRRORBALL.setExplodeEnabled(on);
+    btn.textContent = 'explosões: ' + (on ? 'on' : 'off');
+  });
   btn.onclick = () => {
     // se o Opus já ligou window.MIRRORBALL.setExplodeEnabled, prefere-se a API real (fonte única de
     // verdade); senão só o toggle visual/local (mini, sem F7 ainda carregado).
@@ -438,7 +465,9 @@ function beamCount() {
 }
 
 /* ---------------- painel `d` ---------------- */
-const panelApi = initPanel(CONFIG, {
+// S8: `initPanel` é async (carrega `knobs-default.json` — camada de defaults do spike fora do código,
+// prioridade localStorage > knobs-default.json > config.js). main.js é um módulo com top-level await.
+const panelApi = await initPanel(CONFIG, {
   onRebuildBall: () => { try { ball && ball.rebuild && ball.rebuild(); } catch (e) { console.error(e); } },
   onSpotsChanged: () => { rebuildSpotLights(); },
   onShadeChanged: () => { updateShadeLight(); },
@@ -517,11 +546,16 @@ function setSkin(mode) {
   if (mode !== 'dark' && mode !== 'white') return;
   CONFIG.skin = mode;
   syncSkinBtn();
+  // S8: a skin é escolha do utilizador (Regra 1) — sobrevive ao reload (localStorage['mb2.toggles']).
+  if (panelApi && panelApi.persistToggles) panelApi.persistToggles();
 }
 addEventListener('keydown', (e) => {
   if (e.key === 'w' || e.key === 'W') setSkin(CONFIG.skin === 'white' ? 'dark' : 'white');
 });
 if (skinBtn) { skinBtn.onclick = () => setSkin(CONFIG.skin === 'white' ? 'dark' : 'white'); syncSkinBtn(); }
+// S8: "carregar ficheiro" pode trazer a skin — o painel dispara isto (não é o motor a mexer: Regra 1
+// mantém-se, é o utilizador a repor um ficheiro que ele próprio gravou).
+addEventListener('mb2-skin-restore', (ev) => { const s = ev.detail && ev.detail.skin; if (s === 'dark' || s === 'white') { CONFIG.skin = s; syncSkinBtn(); } });
 
 /* ================================================================================================
    ---- F5 choreo/API ----                                                          (bloco do OPUS)
@@ -702,9 +736,12 @@ window.MIRRORBALL = {
       const obj = o || {};
       if (panelApi.setKnobFile) panelApi.setKnobFile(obj);   // snapshot p/ 'repor ficheiro gravado'
       const cur = panelApi.knobsGet ? panelApi.knobsGet() : {};
-      const touched = (() => { try { return JSON.parse(localStorage.getItem('mb2.knobs') || '{}') || {}; } catch (e) { return {}; } })();
+      // S8: "tocado" deixou de ser "está no mb2.knobs?" (agora grava-se TUDO) e passou a ser a lista
+      // explícita `mb2.knobsTouched` — só assim o music-config.json continua a preencher os knobs
+      // que o David nunca mexeu, sem apagar os que ele afinou.
+      const touched = new Set(panelApi.knobsTouched ? panelApi.knobsTouched() : []);
       const fill = {};
-      for (const k in obj) if (!Number.isFinite(touched[k]) && Number.isFinite(obj[k]) && k in cur) fill[k] = obj[k];
+      for (const k in obj) if (!touched.has(k) && Number.isFinite(obj[k]) && k in cur) fill[k] = obj[k];
       return panelApi.knobsSet(fill, false);
     },
   },
