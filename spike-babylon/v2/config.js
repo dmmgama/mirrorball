@@ -68,6 +68,9 @@ window.CONFIG = {
   dotMaxGrey: 0xd8,          // teto de brilho dos pontos
   bloomStrength: 0.75,       // alpha da passagem de bloom
   bloomBlurPx: 9,            // raio do blur (em px CSS, a meia resolução)
+  bloomThreshold: 0.8,       // NOVO (F4): fonte do bloom = só o que já está quase branco (~ gl>0.35 do Canvas 2D)
+  postTonemap: 1,            // NOVO (F4): 0/1 — ACES tonemap no DefaultRenderingPipeline (knob, handoff S7)
+  postExposure: 1,           // NOVO (F4): exposição do pipeline (0.3-2)
   opacityMotor: false,       // false (defeito, pedido do David) = o motor não escreve sphereOpacity; liga-se no painel d
   beamsMotor: true,          // false = o motor não toca em beamFraction/beamIntensity/haze
   spotsMotor: true,          // false = o motor não toca na intensidade dos focos (nem flashes)

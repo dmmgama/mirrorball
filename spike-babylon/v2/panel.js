@@ -50,13 +50,13 @@ export function initPanel(CONFIG, hooks = {}) {
     ['luz geral (volume)', 0, 1, 0.05, v => { CONFIG.shade.key = v; onShadeChanged(); }, () => CONFIG.shade.key],
     ['luz geral: az°', -180, 180, 5, v => { CONFIG.shade.az = v; onShadeChanged(); }, () => CONFIG.shade.az],
     ['luz geral: el°', -60, 90, 5, v => { CONFIG.shade.el = v; onShadeChanged(); }, () => CONFIG.shade.el],
-    ['auréola (fase 3)', 0, 1, 0.05, v => CONFIG.halo = v, () => CONFIG.halo],
+    ['auréola', 0, 1, 0.05, v => CONFIG.halo = v, () => CONFIG.halo],
     ['fundo: claridade (dark)', 0, 60, 1, v => { CONFIG.bgGrey = v; onBgGreyChanged(); }, () => CONFIG.bgGrey],
-    ['strobe fundo (0/1) (fase 4)', 0, 1, 1, v => CONFIG.strobe.enabled = v >= 1, () => CONFIG.strobe.enabled ? 1 : 0],
-    ['strobe: frequência × (fase 4)', 0, 3, 0.1, v => CONFIG.strobeRate = v, () => CONFIG.strobeRate],
-    ['pontos na parede (densidade) (fase 4)', 0, 3, 0.05, v => CONFIG.dotDensity = v, () => CONFIG.dotDensity],
-    ['strobe: força (fase 4)', 0, 1, 0.05, v => CONFIG.strobe.level = v, () => CONFIG.strobe.level],
-    ['strobe: dura ms (fase 4)', 20, 200, 5, v => CONFIG.strobe.lenMs = v, () => CONFIG.strobe.lenMs],
+    ['strobe fundo (0/1) (fase 5)', 0, 1, 1, v => CONFIG.strobe.enabled = v >= 1, () => CONFIG.strobe.enabled ? 1 : 0],
+    ['strobe: frequência × (fase 5)', 0, 3, 0.1, v => CONFIG.strobeRate = v, () => CONFIG.strobeRate],
+    ['pontos na parede (densidade)', 0, 3, 0.05, v => CONFIG.dotDensity = v, () => CONFIG.dotDensity],
+    ['strobe: força (fase 5)', 0, 1, 0.05, v => CONFIG.strobe.level = v, () => CONFIG.strobe.level],
+    ['strobe: dura ms (fase 5)', 20, 200, 5, v => CONFIG.strobe.lenMs = v, () => CONFIG.strobe.lenMs],
     ['luz indireta', 0, 0.4, 0.01, v => AMB.intensity = v, () => AMB.intensity],
     ['indireta: área°', 8, 70, 1, v => AMB.areaDeg = v, () => AMB.areaDeg],
     ['cone incidente', 0, 0.3, 0.005, v => CONFIG.incidentAlpha = v, () => CONFIG.incidentAlpha],
@@ -118,6 +118,17 @@ export function initPanel(CONFIG, hooks = {}) {
     ['espelhos: junta (real)', 0, 1, 0.02, v => CONFIG.seamGreyReal = v, () => CONFIG.seamGreyReal],
     ['espelhos: junta larg. (real)', 0, 1, 0.02, v => { CONFIG.seamInsetRealMul = v; onRebuildBall(); }, () => CONFIG.seamInsetRealMul],
     ['espelhos: junta var. (real)', 0, 1, 0.02, v => { CONFIG.seamVarRealMul = v; onRebuildBall(); }, () => CONFIG.seamVarRealMul],
+    // ---- Fase 4 (Sonnet): pontos na parede, bloom/grão/vinheta, pós-processo ----
+    ['pontos: escala', 0.05, 1, 0.01, v => CONFIG.dotScale = v, () => CONFIG.dotScale],
+    ['pontos: queda', 0, 0.2, 0.002, v => CONFIG.dotFalloff = v, () => CONFIG.dotFalloff],
+    ['pontos: teto cinza', 0, 255, 1, v => CONFIG.dotMaxGrey = v, () => CONFIG.dotMaxGrey],
+    ['bloom: força', 0, 2, 0.05, v => CONFIG.bloomStrength = v, () => CONFIG.bloomStrength],
+    ['bloom: limiar', 0, 1, 0.02, v => CONFIG.bloomThreshold = v, () => CONFIG.bloomThreshold],
+    ['bloom: raio px', 1, 40, 1, v => CONFIG.bloomBlurPx = v, () => CONFIG.bloomBlurPx],
+    ['grão', 0, 0.2, 0.005, v => CONFIG.grain = v, () => CONFIG.grain],
+    ['vinheta', 0, 1, 0.02, v => CONFIG.vignette = v, () => CONFIG.vignette],
+    ['pós: tonemap (0/1)', 0, 1, 1, v => CONFIG.postTonemap = v, () => CONFIG.postTonemap],
+    ['pós: exposição', 0.3, 2, 0.02, v => CONFIG.postExposure = v, () => CONFIG.postExposure],
   ];
   for (const s of newSliders) { sliders.push(s); PERSIST.add(s[0]); }
 
@@ -248,5 +259,19 @@ export function initPanel(CONFIG, hooks = {}) {
   });
   function isTypingTarget(t) { return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'); }
 
-  return { sliders, PERSIST, KNOB_DEFAULTS, knobsGet, knobsSet, dbgSize };
+  // bónus (brief F4 §7): sliders re-lêem CONFIG quando este é escrito pela consola/motor — chama-se
+  // `get()` de cada slider e escreve-se no input, sem passar por `set()` (não reescreve o CONFIG).
+  function refresh() {
+    for (const [name, , , st, , get] of sliders) {
+      const inp = inputs[name];
+      if (!inp) continue;
+      const v = get();
+      if (!Number.isFinite(v)) continue;
+      inp.value = v;
+      const val = inp.previousSibling;
+      if (val) val.textContent = (+v).toFixed(st < 0.1 ? 2 : st < 1 ? 1 : 0);
+    }
+  }
+
+  return { sliders, PERSIST, KNOB_DEFAULTS, knobsGet, knobsSet, dbgSize, inputs, refresh };
 }

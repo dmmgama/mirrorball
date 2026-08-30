@@ -22,8 +22,13 @@
  * aqui porque é o loop por tile que já tem N/NdS/inCone/facing; recalcular noutro sítio era pagar
  * o loop duas vezes.
  *
- * NÃO faz: DESENHO dos feixes (beams.js), cone incidente (incident.js), pontos na parede,
- * explosão, corpos dos focos, painel.
+ * F4 acrescenta: a FONTE dos pontos na parede (`ball.dots` = {count, X, N, R, I, size}, bloco
+ * delimitado `// ---- F4 dots ----` dentro do mesmo loop por tile/spot dos feixes — mesma razão:
+ * evitar pagar o loop duas vezes) e o setter `ball.dotDensityLive` (degradação adaptativa, o
+ * `main.js` escreve). O DESENHO (thin instances de disco) é do `v2/dots.js`.
+ *
+ * NÃO faz: DESENHO dos feixes (beams.js), cone incidente (incident.js), DESENHO dos pontos na
+ * parede (dots.js), explosão, corpos dos focos, painel.
  */
 
 const BJS = (typeof BABYLON !== 'undefined') ? BABYLON : (typeof globalThis !== 'undefined' ? globalThis.BABYLON : undefined);
@@ -92,6 +97,11 @@ const BALL_DEFAULTS = {
   chainLink: 0.045,          // NOVO: comprimento de um elo em RAIOS da bola (≈ chainLinkPx 11 px)
   chainLinkPx: 11,           // (da Canvas 2D) só usado como recurso se `chainLink` faltar
   room: { halfW: 5.2, ceil: 4.2, floor: -5.0, back: -7.0 },
+  // ---- F4: pontos na parede (guardas defensivas — regra 7, todo o knob novo tem valor inicial) ----
+  dotDensity: 0.8,
+  dotScale: 0.32,
+  dotMaxGrey: 0xd8,
+  dotFalloff: 0.028,
 };
 // spots por defeito (finitos) para `update()` sem argumento — mesmo rig dos 2 primeiros de CONFIG.spots
 const DEFAULT_SPOTS = [
@@ -504,6 +514,28 @@ export function createBall(scene, CONFIG) {
     beams.P = beamPo; beams.R = beamRo; beams.I = beamIo; beams.count = 0;
   }
 
+  /* ================= F4 dots ====================================================================
+     Fonte dos "pontos na parede" (docs/parity-canvas2d.md §1.8, index-v2.html:443-481). Mesmo padrão
+     dos feixes: typed arrays pré-alocados (capacidade = nº de tiles), preenchidos no MESMO loop por
+     tile/spot que já calcula N/NdS/dist (pagar o loop uma vez só). `v2/dots.js` só DESENHA (thin
+     instances de um disco); aqui decide-se QUE tiles projetam ponto, ONDE na sala (interseção com os
+     5 planos implícitos) e com que intensidade/tamanho.
+     `ball.dotDensityLive` é escrito pelo `main.js` (degradação adaptativa, §6) — setter próprio para
+     não obrigar a recriar o objeto `dots` a cada frame. */
+  let dotX = null, dotN = null, dotR = null, dotI = null, dotSize = null; // typed arrays, capacidade = tiles.length
+  let dotCount = 0;
+  const dots = { count: 0, X: null, N: null, R: null, I: null, size: null };
+  let dotDensityLiveVal = 1; // valor "ao vivo" (adaptativo); setter próprio, guarda Number.isFinite (regra 7)
+
+  function allocDots(nT) {
+    dotX = new Float32Array(nT * 3);
+    dotN = new Float32Array(nT * 3);
+    dotR = new Float32Array(nT * 3);
+    dotI = new Float32Array(nT);
+    dotSize = new Float32Array(nT);
+    dots.X = dotX; dots.N = dotN; dots.R = dotR; dots.I = dotI; dots.size = dotSize; dots.count = 0;
+  }
+
   // largura média de um tile em raios da bola — base do cone do feixe (`tileRad` de :565).
   // `Math.PI / facetRows` é a altura angular de uma fila; com tiles ~quadrados serve de largura.
   let tileWidth = Math.PI / 48;
@@ -591,6 +623,17 @@ export function createBall(scene, CONFIG) {
     const emitBeams = beamP !== null && beamFrac > 0 && hazeE > 0;
     beamRawCount = 0;
 
+    // ---- F4: pontos na parede — parâmetros do frame (index-v2.html:445, :467-478) ----
+    const dm = Math.max(1, num(cfg('dotDensity'), 1));           // alarga o cone ELEGÍVEL (rDot)
+    const dotDensityLiveClamped = Math.min(1, Math.max(0, num(dotDensityLiveVal, 1)));
+    const dotFalloffV = Math.max(0, num(cfg('dotFalloff'), 0.028));
+    const dotScaleV = Math.max(0, num(cfg('dotScale'), 0.32));
+    const roomCfg = cfg('room') || BALL_DEFAULTS.room;
+    const roomHalfW = num(roomCfg.halfW, 5.2), roomCeil = num(roomCfg.ceil, 4.2);
+    const roomFloor = num(roomCfg.floor, -5.0), roomBack = num(roomCfg.back, -7.0);
+    const emitDots = dotX !== null && dm > 0 && dotDensityLiveClamped > 0;
+    dotCount = 0;
+
     for (let t = 0, vi = 0; t < tiles.length; t++, vi += 4) {
       const T = tiles[t];
       // normal no MUNDO: N0 rodado em torno de Y por `angle` (a malha roda; o cálculo tem de acompanhar)
@@ -629,6 +672,55 @@ export function createBall(scene, CONFIG) {
         const along = dx0 * sp.Sx + dy0 * sp.Sy + dz0 * sp.Sz;
         const ex = dx0 - along * sp.Sx, ey = dy0 - along * sp.Sy, ez = dz0 - along * sp.Sz;
         const dist = Math.sqrt(ex * ex + ey * ey + ez * ez);
+
+        // ---- F4 dots ----
+        // cone ELEGÍVEL para ponto na parede, calculado ANTES do `continue` do glint
+        // (index-v2.html:445-447) — a orla larga (coroa fraca do foco) também dá pontos, mesmo
+        // quando `inCone` (glint) já é ~0. `rDot = sp.r·dm` alarga o raio do cone com `dotDensity`. ----
+        if (emitDots) {
+          const rDot = sp.r * dm;
+          const dotCone = smooth(rDot, rDot * (1 - edge), dist);
+          if (dotCone > 0.001 && T.dotHash < dotDensityLiveClamped) {
+            const k2 = 2 * NdS;
+            const Rx = k2 * nx - sp.Sx, Ry = k2 * ny - sp.Sy, Rz3 = k2 * nz3 - sp.Sz;
+            // interseção de P + t·R com os 5 planos da sala implícita (só 3 candidatos: X, Y, Z-back —
+            // câmara fica em +Z, sem plano "à frente"), t>0 mais próximo — index-v2.html:468-472.
+            // P = a própria normal do tile (esfera de raio 1), no MUNDO, como nos feixes.
+            // normal do plano ATINGIDO, com o sinal certo (aponta para dentro da sala, oposto à
+            // parede) — não afeta `graze` (usa |N·R|, sign-independent) mas importa para `dots.js`
+            // orientar o disco (translação = X + N·0.01) para o lado de dentro da sala.
+            let best = Infinity, nrmX = 0, nrmY = 0, nrmZ = 0;
+            const txPos = Rx > 0;
+            const tx = txPos ? (roomHalfW - nx) / Rx : (-roomHalfW - nx) / Rx;
+            if (tx > 0 && tx < best) { best = tx; nrmX = txPos ? -1 : 1; nrmY = 0; nrmZ = 0; }
+            const tyPos = Ry > 0;
+            const ty = tyPos ? (roomCeil - ny) / Ry : (roomFloor - ny) / Ry;
+            if (ty > 0 && ty < best) { best = ty; nrmX = 0; nrmY = tyPos ? -1 : 1; nrmZ = 0; }
+            if (Rz3 < 0) {
+              const tz = (roomBack - nz3) / Rz3;
+              if (tz > 0 && tz < best) { best = tz; nrmX = 0; nrmY = 0; nrmZ = 1; }
+            }
+            if (Number.isFinite(best) && best > 0) {
+              const Xw = nx + Rx * best, Yw = ny + Ry * best, Zw = nz3 + Rz3 * best;
+              // descarta se o ponto fica a < 0.6 raios da câmara (equivalente a `Z < camD − 0.6`,
+              // mas em coordenadas do MUNDO: projeta no eixo bola→câmara em vez do Z de ecrã)
+              const distToCam = Xw * cdx + Yw * cdy + Zw * cdz;
+              if (distToCam < camD - 0.6 && dotCount < tiles.length) {
+                // graze (|N·R̂|, ângulo rasante) recalcula-se em dots.js a partir de N/R — evita
+                // guardar mais um float por ponto aqui.
+                const d3 = dotCount * 3;
+                dotX[d3] = Xw; dotX[d3 + 1] = Yw; dotX[d3 + 2] = Zw;
+                dotN[d3] = nrmX; dotN[d3 + 1] = nrmY; dotN[d3 + 2] = nrmZ;
+                dotR[d3] = Rx; dotR[d3 + 1] = Ry; dotR[d3 + 2] = Rz3;
+                dotI[dotCount] = dotCone * (0.6 + 0.4 * dm) * NdS * sp.I / (1 + dotFalloffV * best * best);
+                dotSize[dotCount] = T.dphi * dotScaleV;
+                dotCount++;
+              }
+            }
+          }
+        }
+        // ---- fim F4 dots ----
+
         const inCone = smooth(sp.r, sp.r * (1 - edge), dist);
         if (inCone <= 0.001) continue;
         if (facing > 0 && cpuGlint > 0) {                        // :457-460
@@ -694,6 +786,7 @@ export function createBall(scene, CONFIG) {
     if (boneN > 0) boneNzTerm = boneAcc / boneN;
     mesh.updateVerticesData(BJS.VertexBuffer.ColorKind, colors, false, false);
     finalizeBeams();
+    dots.count = dotCount;   // F4: nenhuma ordenação/truncagem — dots.js já degrada via dotDensityLive
   }
 
   /* ================= knobs PBR / opacidade ================= */
@@ -727,6 +820,7 @@ export function createBall(scene, CONFIG) {
     buildBone();
     buildChain();
     allocBeams(tiles.length);   // capacidade dos feixes segue o nº de tiles (F3)
+    allocDots(tiles.length);    // capacidade dos pontos na parede segue o nº de tiles (F4)
     computeTileWidth();
     lastColorT = -1;
     return tiles.length;
@@ -782,6 +876,14 @@ export function createBall(scene, CONFIG) {
     beams,
     /* Largura média de um tile em raios da bola — base do cone do feixe (`tileRad` de :565). */
     get tileWidth() { return tileWidth; },
+    /* PONTOS NA PAREDE (F4) — fonte para `v2/dots.js`. Preenchido a cada passagem da cadeia (20 Hz).
+       `X`/`N`/`R` são Float32Array xyz (3 floats por ponto, no espaço do MUNDO): `X` = posição do
+       ponto na parede, `N` = normal do plano atingido, `R` = direção do feixe refletido (unit).
+       `I`/`size` um float por ponto. Arrays PRÉ-ALOCADOS — lê sempre só `0 .. count-1`. */
+    dots,
+    /* Degradação adaptativa (§6): o `main.js` escreve aqui a cada frame (0..CONFIG.dotDensity). */
+    get dotDensityLive() { return dotDensityLiveVal; },
+    set dotDensityLive(v) { if (Number.isFinite(v)) dotDensityLiveVal = v; },
     material: mat,
     tiles,
     rebuild,

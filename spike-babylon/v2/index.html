@@ -14,6 +14,8 @@
   #err{position:fixed;left:12px;bottom:12px;right:12px;background:rgba(40,10,10,.94);color:#ffb4b4;
        font:11px/1.5 ui-monospace,Consolas,monospace;padding:10px 12px;border:1px solid #642;
        white-space:pre-wrap;z-index:10;display:none;max-height:40vh;overflow:auto}
+  #ui{position:fixed;left:12px;bottom:12px;display:flex;gap:8px;z-index:9}
+  #ui button{background:#111;color:#cfcfcf;border:1px solid #2a2a2a;font:11px ui-monospace,Consolas,monospace;padding:6px 10px;cursor:pointer;letter-spacing:.02em}
   /* ---- painel `d` (knobs) — mesmo visual do web/index-v2.html, chave própria mb2.knobs ---- */
   #dbg{position:fixed;top:12px;right:12px;background:rgba(10,10,10,.86);color:#cfcfcf;
        font:11px/1.6 ui-monospace,Consolas,monospace;padding:10px 12px;border:1px solid #2a2a2a;
@@ -36,6 +38,7 @@
 <div id="hud">a carregar…</div>
 <div id="err"></div>
 <div id="dbg"></div>
+<div id="ui"><button id="skin">skin: dark</button></div>
 <script>
   // erros visíveis no ecrã — sem depender da consola (mesmo padrão do spike v1 index.html)
   function showErr(msg, where) {

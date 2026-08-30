@@ -3,11 +3,11 @@
 Tabela de paridade, item a item, a partir de `docs/parity-canvas2d.md` §1-§7. Estado por item:
 ✅ igual · ⚠ divergência (com porquê) · ⏳ por fazer. Atualizada no fim de cada fase.
 
-Fase atual: **Fase 3** (Sonnet: cone incidente `v2/incident.js`, knobs de feixes/haze/incidente
-sem sufixo, `feixes: intensidade/glow z/comprimento` novos, HUD `feixes N`, 5 knobs extra de
-corrente/junta-real pedidos pelo coordenador; Opus em paralelo: feixes refletidos `v2/beams.js`
-— ainda não existia neste checkpoint, `main.js` tolera). Ver `spike-babylon/v2/briefs/` e
-`docs/plan-babylon-v2.md`.
+Fase atual: **Fase 4** (Sonnet: pontos na parede — fonte `ball.js` bloco `// ---- F4 dots ----`,
+desenho `v2/dots.js`; auréola `halo` (`main.js`); pós-processo `DefaultRenderingPipeline` (bloom/
+grão/vinheta/tonemap/exposição); degradação adaptativa `dotDensityLive`; skin dark/white com
+crossfade + botão/tecla `w`; knobs novos sem sufixo de fase, strobe passa a `(fase 5)`). Ver
+`spike-babylon/v2/briefs/f4-sonnet.md` e `docs/plan-babylon-v2.md`.
 
 ---
 
@@ -262,6 +262,23 @@ em `mb2.knobs`.
 o `CONFIG` não o pode furar venha de onde vier. ✅ **Medido**: com `beamIntensity = 99` o valor
 usado é 0.18 e o alpha máximo de um feixe fica em **0.074** (pior caso, `soft=0`, camada do núcleo).
 
+**Seguimento Fase 4 (pendente do handoff S7): tonemap como knob, medido.** Mesmo cenário do §1.6
+acima (residual de saturação mesmo com `beamGlowMul 0.25`), agora com o pipeline de pós-processo
+(§1.10) ligado. `pós: tonemap (0/1)` (ACES, default **ligado**) + `pós: exposição` (default 1).
+**Medido** com `readPixels` numa caixa central de 10% do viewport (`spotCount 4, haze 0.6,
+beamFraction 1`, rig default do `CONFIG.spots`, pior ângulo de bola por varrimento de 32 poses):
+- **Tonemap desligado, exposição 1** (equivalente ao estado antes desta fase): **6.9%** da caixa
+  central acima de 0.95 (quase-branco), `maxV = 1.0` (saturado).
+- **Tonemap ligado (ACES), exposição 1 — o novo default**: **0%** acima de 0.95, `maxV = 0.89`.
+  Cumpre o critério do brief (nada > 0.95 ocupando > 1% do viewport) neste cenário.
+- **Pior caso adicional testado** (não é o cenário do brief, é um stress test à parte: 4 spots
+  apontados quase todos para a câmara simultaneamente, configuração fisicamente incomum mas
+  possível via knobs): tonemap sozinho reduz de **100%→35.5%** saturado; com `exposição 0.3`
+  (o piso do knob) desce a **16.7%** — ainda acima de 1%. Divergência documentada: em rigs
+  extremos (muitos spots quase colineares com a câmara) o tonemap/exposição não elimina toda a
+  saturação — se o David montar um rig assim ao vivo, o próximo recurso é um teto de soma no
+  `beamGlowMul`/`beamIntensity` por frame (não implementado nesta fase, fora do âmbito do brief).
+
 **Estrutura.** 3 cones aninhados por feixe como **thin instances** de UM cone unitário (3 draw
 calls no total, para 1 ou para 110 feixes) + um mesh de disco para os glows. `StandardMaterial`
 sem luz (`disableLighting`, `emissiveColor` branco), `alphaMode ALPHA_ADD`, `disableDepthWrite`,
@@ -365,19 +382,67 @@ Knobs no painel **sem sufixo** desde esta fase: `cone incidente`, `cone: alcance
 máx`, `cone: teto (raios)`.
 
 ### 1.8 Pontos na parede
-⏳ Fase 4 — mas a **sala já é geometria real** (`v2/room.js`, 5 planos nas medidas de
-`CONFIG.room`), então "vem de graça" assim que houver luz a bater lá via `SpotLight`/reflexo.
-Knob `pontos na parede (densidade)` no painel com sufixo `(fase 4)`.
+✅ **Feita.** Fonte em `v2/ball.js` (bloco `// ---- F4 dots ----`, dentro do MESMO loop por
+tile/spot dos feixes — mesma razão: não pagar o loop duas vezes), desenho em `v2/dots.js` (thin
+instances de um disco, `CreateDisc` 12 lados).
+- `rDot = sp.r·dm` (`dm = max(1, dotDensity)`) calculado **antes** do `continue` do cone de glint
+  (`inCone`) — a orla larga do foco também dá pontos, verbatim `index-v2.html:445-447`. ✅
+- Amostragem `T.dotHash < min(1, dotDensityLive)`. ✅
+- Interseção `P + t·R` com os 3 candidatos (X, Y, Z-back — sem plano "à frente", câmara em +Z),
+  `t>0` mais próximo, coordenadas do MUNDO (não há projeção de ecrã em 3D). ✅ **Verificado**:
+  com elevações/azimutes extremos os 5 planos (esquerda/direita/teto/chão/fundo) são todos
+  alcançáveis; com o rig default (elevações 12-20°) predominam esquerda/direita, o que é
+  geometria correta do rig, não um bug (testado).
+- Descarte por proximidade da câmara: `distToCam = X·ĉam < camD − 0.6`, onde `ĉam` é a direção
+  bola→câmara — equivalente 3D ao `Z < camD − 0.6` de ecrã. ✅
+- `I = dotCone·(0.6+0.4·dm)·NdS·sp.I / (1 + dotFalloff·t²)`, `size = T.dphi·dotScale`. ✅
+- **Elongação por ângulo rasante**: `graze = |N·R̂|` (R já sai unitário da reflexão de vetores
+  unitários — verificado numericamente), `elong = clamp(1/max(graze,0.2), 1, 4.5)`, calculada em
+  `dots.js` (não guardada em `ball.dots`, para poupar um float/ponto). Eixo maior alinhado à
+  projeção de R no plano do disco (rotação extra em torno de N). ✅ **Verificado**: fórmula testada
+  isoladamente (graze 0.05→4.5×, graze 1→1×).
+- Cor por instância `v = clamp(I,0,1)·dotMaxGrey/255`, descarta `v<8/255` — mesmo teto do Canvas
+  2D. Material `StandardMaterial` sem luz, `emissiveColor` branco, `ALPHA_ADD`, sem depth write,
+  greyscale. ✅
+- **Medido** (cenário do brief: `spotCount=4, haze=0.6, beamFraction=1, dotDensity=0.8`): 27-72
+  pontos ativos consoante a pose da bola/spots, 0 NaN no buffer de matrizes das thin instances.
+- ⚠ **Divergência**: `N`/`R` guardados por ponto (`ball.dots`) em vez de só a normal com sinal —
+  corrigido para o sinal correto (aponta para dentro da sala) depois de um bug inicial em que as
+  paredes esquerda/direita partilhavam `N=[1,0,0]` sem distinguir o lado (não afetava `graze`,
+  que usa `|N·R|`, mas afetava a translação `X + N·0.01` de `dots.js` — corrigido antes do handoff).
 
 ### 1.9 Auréola (`halo`)
-⏳ Fase 3 (névoa/glow). Knob no painel com sufixo `(fase 3)`.
+✅ **Feita.** Disco billboard (`BILLBOARDMODE_ALL`) na posição da bola, raio 2.6 raios,
+`opacityTexture` procedural gerada UMA vez (`DynamicTexture` 128px, gradiente radial `1→0` de
+r=0.9 a r=2.6). `StandardMaterial` sem luz, `ALPHA_ADD`, sem depth write, `renderingGroupId 0` +
+`alphaIndex -1` (desenha antes da bola no mesmo grupo). Alpha por frame = `0.05·halo·haze·
+spotGain·(0.35+0.65·dk)` — verbatim `index-v2.html:406-407` (sem o termo `(1−0.75·exS)` da
+explosão, fora do âmbito da Fase 4). `spotGain` = `E.spotGain` (sempre 1 nesta fase, sem motor) com
+fallback à média de `sp.I` dos `mountedSpots` para quando a Fase 5 ligar o motor. **Medido**: alpha
+0.009 com `halo=0.3` (default), 0 com `halo=0` — confirma o toggle.
 
 ### 1.10 Bloom
-⏳ Fase 4 (`DefaultRenderingPipeline.bloom*`). Sem knob dedicado ainda (`bloomStrength`/
-`bloomBlurPx` do CONFIG ainda não ligados a um pipeline).
+✅ **Feita.** `DefaultRenderingPipeline.bloomEnabled`, `bloomThreshold` (knob `bloom: limiar`,
+default 0.8 — fonte = só o quase-branco, equivalente a `gl>0.35`), `bloomWeight` (knob `bloom:
+força`), `bloomKernel = bloomBlurPx·2` (knob `bloom: raio px`), `bloomScale 0.5` (meia resolução,
+como a bola original). Divergência estrutural aceite (documentada no plano): pipeline nativo do
+Babylon em vez do único-blur-offscreen do Canvas 2D — visualmente equivalente, mede-se pelo
+resultado (tiles a brilhar acendem o halo aditivo à sua volta), não pela implementação.
 
 ### 1.11 Grão e vinheta
-⏳ Fase 4 (`pipe.grainEnabled`, `imageProcessing.vignette*`).
+✅ **Feita** (com uma divergência documentada). `pipe.grainEnabled`, `grain.intensity = grain·dk·K`
+(`K=6`, calibrado a olho para aproximar o pattern 256² do Canvas 2D); `imageProcessing.
+vignetteEnabled`, `vignetteWeight = vignette·dk·15` (fator `15` calibrado a olho — a escala do
+`vignetteWeight` do Babylon não é 1:1 com o alpha 0-1 do Canvas 2D). Ambos multiplicados por `dk`
+(só pesam em dark) — **medido**: grão 0.192→0.047 e vinheta 8.25→2.03 ao cruzar dark→white
+(skinMix 0→0.75), confirma o comportamento.
+⚠ **Divergência**: `grain.animated = false` fica **estático** em vez de reposicionado a cada 400 ms
+(regra 6: nada > 3 Hz). A API pública do `GrainPostProcess` do Babylon 9.23 não expõe um método de
+reseed do ruído sem tocar em internos não documentados (`_effectWrapper`); um grão estático ainda
+respeita a regra (nunca muda, portanto nunca excede 3 Hz), mas não bate exatamente com o "grão que
+troca a cada 400 ms" do original. Pendente: investigar se uma versão mais recente do Babylon expõe
+isto, ou substituir por um `PostProcess` custom com seed via uniform (mesmo padrão do
+`beamRamp`/`haloRamp`) se o David achar a diferença visível.
 
 ### 1.12 Corrente
 ✅ **Feita** (antecipada da Fase 6, pedido do David 2026-08-30). `ball.js: buildChain()/updateChainTone()`,
@@ -418,8 +483,24 @@ cadeia de cinza (`updateChainTone()` a seguir a `computeColors()`, que é quem m
 ⏳ Fase 7 (máquina de estados idle→out→drift→hold/held→back, Rodrigues por tile).
 
 ### 1.15 Skin dark/white
-⏳ Fora do âmbito da Fase 1 (regra do motor: skin é do utilizador, o motor nunca lhe toca — ver
-`CLAUDE.md`). Ainda sem tecla `w` nem crossfade nesta fase; `bgGrey` já controla `scene.clearColor`.
+✅ **Feita** (com uma divergência documentada). `CONFIG.skin ∈ {dark, white}` (`'auto'`, o default
+do CONFIG, trata-se como `dark` nesta fase — precisa do motor de música/emoções da Fase 5, que
+ainda não existe). Tecla `w`/`W` e botão `#skin` (só estes dois — **Regra 1 respeitada**: nenhum
+código de motor/render toca em `CONFIG.skin`, só `setSkin()` chamado pela tecla/botão/`MB2.setSkin`).
+Crossfade `skinMix += (target − skinMix)·(1 − exp(−skinEase·dt))`, verbatim `index-v2.html:331-333`.
+`dk = 1 − skinMix` entra em halo/grão/vinheta (ver §1.9/§1.11). Fundo interpola `bgGrey → rgb(243,
+247,249)` por frame (`applyBgGreySkin()`, chamada depois de `updateSkin()`). **Medido**: crossfade
+dark→white→dark testado com tempo de parede real (não frames forçados): skinMix sobe/desce
+suavemente (0→0.75 em 1.5s, 0.75→0.19 em 1.2s ao voltar), fundo interpola de `rgb(7,7,7)` para
+`rgb(219,223,225)` a 90% do mix (convergindo para `243,247,249`).
+⚠ **Divergência documentada**: o `#tone` do Canvas 2D é uma LUT SVG (`feComponentTransfer`, 3
+tabelas de 33 valores fixos) aplicada como filtro CSS sobre um segundo canvas. Aqui aproxima-se
+com `pipe.imageProcessing.contrast = 1 + 0.6·(1 − dk)` (sobe com skinMix) — não é a mesma curva
+(a LUT crava as sombras a ~8% e levanta o meio-tom de forma não-linear; o knob `contrast` do
+Babylon é uma curva simples). Se a leitura em white não bater com a bola atual, o próximo passo é
+portar as 3 tabelas de 33 valores como uma `ColorGradingTexture` 1D (mesmo padrão dos `beamRamp`/
+`haloRamp`: `DynamicTexture` gerada uma vez, sampled no post-process) — ficou fora do prazo desta
+fase por ser mais trabalho que o "mais simples" que o brief autorizava.
 
 ### 1.16 Mini e scale
 ⏳ Fase 6 (`?mini=1`, `?scale=`). O brief F1 só copiou o `CONFIG` das linhas 69-165; a lógica das
@@ -529,10 +610,17 @@ valores refletem `config.js`, `rebuild()`/render sem exceções.
 ---
 
 ## 6. Performance adaptativa
-⏳ `dotDensityLive`/`frameEma`/degradação adaptativa dos pontos na parede ficam para a Fase 4
-(dependem dos pontos na parede existirem). O HUD desta fase já mostra o **custo real** de
-`scene.render()` (mediana de amostras via `onBeforeRenderObservable`/`onAfterRenderObservable`,
-não `getDeltaTime()` — ver `docs/babylon-reference.md` §9).
+✅ **Feita.** `frameEma = frameEma·0.9 + dtMs·0.1` (`dtMs` do `dt` real do `registerBeforeRender`,
+clampado a 50 ms). `frameEma > perf.targetMs` → `dotDensityLive = max(perf.minDotDensity,
+dotDensityLive·0.97)`; senão recupera `×1.005` até `CONFIG.dotDensity`. `ball.dotDensityLive` é um
+setter (`main.js` escreve todo o frame) — guarda `Number.isFinite` (regra 7). **Só os pontos na
+parede degradam** — feixes/facetas/glint/bloom não têm degradação automática, como pedido.
+HUD mostra `dots N · dens X.XX`. **Medido**: com `perf.targetMs` forçado a 2 ms (render real ~11 ms
+no ambiente de teste), `dotDensityLive` desceu de 0.8 para 0.21 em 20 frames; com `targetMs`
+generoso (1000 ms) recuperou 0.21→0.27 em 50 frames — confirma as duas direções. Cenário do brief
+(`spotCount=4, haze=0.6, beamFraction=1, dotDensity=0.8, spotRadiusMul=2.5` para forçar
+`beamMaxCount=110`): **110 feixes + 72 pontos, `MB2.__perf()` mediana 5.7 ms** (tab automatizado,
+sem foco — abaixo do teto de 8 ms pedido).
 
 ---
 

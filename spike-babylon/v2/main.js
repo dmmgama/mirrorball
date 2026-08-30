@@ -204,6 +204,62 @@ function updateAmbientLights(tSec) {
   activeAmbientCount = active;
 }
 
+/* ---------------- auréola (halo) — Fase 4 ----------------
+   Disco billboard na posição da bola, raio 2.6 (raios da bola), gradiente radial gerado UMA vez
+   (1 a r=0.9 → 0 a r=2.6, 128 px) via `opacityTexture` procedural — index-v2.html:406-407.
+   ALPHA_ADD, sem depth write, desenhado ATRÁS da bola (renderingGroupId 0, mas a bola desenha por
+   cima porque a auréola nasce primeiro na lista — ver ordem de criação/`alphaIndex` abaixo). */
+const HALO_R = 2.6;
+function makeHaloTexture(scene) {
+  const size = 128;
+  const dt = new BABYLON.DynamicTexture('haloRamp', { width: size, height: size }, scene, false);
+  const ctx = dt.getContext();
+  const cx = size / 2, cy = size / 2;
+  const g = ctx.createRadialGradient(cx, cy, (0.9 / HALO_R) * cx, cx, cy, cx);
+  g.addColorStop(0, '#fff'); g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.clearRect(0, 0, size, size);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  dt.update();
+  dt.hasAlpha = true;
+  dt.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
+  dt.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
+  return dt;
+}
+const haloTex = makeHaloTexture(scene);
+const haloMat = new BABYLON.StandardMaterial('haloMat', scene);
+haloMat.disableLighting = true;
+haloMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
+haloMat.diffuseColor = new BABYLON.Color3(0, 0, 0);
+haloMat.specularColor = new BABYLON.Color3(0, 0, 0);
+haloMat.opacityTexture = haloTex;
+haloMat.alphaMode = BABYLON.Engine.ALPHA_ADD;
+haloMat.disableDepthWrite = true;
+haloMat.backFaceCulling = false;
+haloMat.needAlphaBlending = () => true;
+const haloMesh = BABYLON.MeshBuilder.CreatePlane('halo', { size: HALO_R * 2 }, scene);
+haloMesh.material = haloMat;
+haloMesh.isPickable = false;
+haloMesh.alwaysSelectAsActiveMesh = true;
+haloMesh.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL; // encara sempre a câmara — mais robusto que lookAt manual
+haloMesh.renderingGroupId = 0;
+haloMesh.alphaIndex = -1; // desenha ANTES da bola dentro do mesmo grupo (menor alphaIndex primeiro)
+function updateHalo(E) {
+  const spotGainDefault = (() => {
+    const mounted = ball && ball.mountedSpots;
+    if (!mounted || !mounted.length) return 0;
+    let sum = 0;
+    for (let i = 0; i < mounted.length; i++) sum += num(mounted[i].I, 0);
+    return sum / mounted.length;
+  })();
+  const spotGain = Number.isFinite(E.spotGain) ? E.spotGain : spotGainDefault;
+  const dk = 1 - (Number.isFinite(E.skinMix) ? E.skinMix : 0);
+  const haze = num(E.haze, CONFIG.haze);
+  const a = 0.05 * num(CONFIG.halo, 0) * haze * spotGain * (0.35 + 0.65 * dk);
+  haloMat.alpha = clamp01(a);
+}
+function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+
 /* ---------------- bola: import dinâmico de ./ball.js (API do Opus) ----------------
    createBall(scene, CONFIG) -> { mesh, rebuild(), update(tSec, spots, E), tiles }
    Se ainda não existir (ou falhar), stub = esfera simples, só para se poder testar o resto. */
@@ -250,6 +306,16 @@ try {
   console.error('incident.js falhou:', err);
 }
 
+/* ---------------- pontos na parede: import dinâmico (Fase 4) ---------------- */
+let dots = null;
+try {
+  const mod = await import('./dots.js');
+  dots = mod.createDots(scene, CONFIG, ball);
+  console.log('dots.js carregado.');
+} catch (err) {
+  console.error('dots.js falhou:', err);
+}
+
 // ball.tiles pode ser uma contagem (stub) ou o array de tiles (API do Opus) — normaliza para a contagem.
 function tileCount() {
   const t = ball && ball.tiles;
@@ -264,12 +330,90 @@ function beamCount() {
 }
 
 /* ---------------- painel `d` ---------------- */
-initPanel(CONFIG, {
+const panelApi = initPanel(CONFIG, {
   onRebuildBall: () => { try { ball && ball.rebuild && ball.rebuild(); } catch (e) { console.error(e); } },
   onSpotsChanged: () => { rebuildSpotLights(); },
   onShadeChanged: () => { updateShadeLight(); },
   onBgGreyChanged: () => { applyBgGrey(); },
 });
+// bónus (§7 do brief F4): sliders re-lêem CONFIG quando escrito pela consola — `MB2.refreshPanel()`.
+function refreshPanel() { if (panelApi && panelApi.refresh) panelApi.refresh(); }
+
+/* ---------------- skin dark/white (Fase 4) ----------------
+   Regra 1 (CLAUDE.md): NENHUM motor toca na skin — só tecla `w` / botão. `CONFIG.skin` ∈
+   dark|white (sem 'auto' nesta fase — sem motor de música ainda, ver Fase 5). Crossfade
+   `skinMix → target` com `1 − exp(−skinEase·dt)` (index-v2.html:331-333); `dk = 1 − skinMix`
+   entra em halo/grão/vinheta/incidentAlpha. Fundo interpola bgGrey → rgb(243,247,249). */
+// 'auto' (CONFIG.skin default) precisa do motor de música/emoções (Fase 5, ainda não existe aqui) —
+// nesta fase trata-se como 'dark' (o mesmo fallback do `bgGrey` estático da Fase 1).
+let skinMix = CONFIG.skin === 'white' ? 1 : 0;
+function skinTargetVal() { return CONFIG.skin === 'white' ? 1 : 0; }
+function updateSkin(dt) {
+  const target = skinTargetVal();
+  const ease = Math.max(0, num(CONFIG.skinEase, 7));
+  skinMix += (target - skinMix) * (1 - Math.exp(-ease * dt));
+  if (Math.abs(skinMix - target) < 0.0005) skinMix = target;
+  return skinMix;
+}
+
+/* ---------------- pós-processo: DefaultRenderingPipeline (Fase 4) ----------------
+   bloom (fonte = tiles quase brancos, bloomThreshold alto ~ gl>0.35), grão (reposicionado <3 Hz,
+   nunca animado), vinheta — todos multiplicados por `dk` (só pesam em dark, index-v2.html §1.11).
+   Tone-mapping como KNOB (pendente do handoff S7: centro saturado ao olhar de frente com vários
+   feixes a somar) — ACES + exposição, para o David poder desligar/afinar sem recompilar. */
+const pipe = new BABYLON.DefaultRenderingPipeline('mb2Pipe', true, scene, [camera]);
+pipe.bloomEnabled = true;
+pipe.bloomThreshold = num(CONFIG.bloomThreshold, 0.8);
+pipe.bloomWeight = num(CONFIG.bloomStrength, 0.75);
+pipe.bloomKernel = Math.max(1, num(CONFIG.bloomBlurPx, 9) * 2);
+pipe.bloomScale = 0.5; // meia resolução — como a bola (:666)
+pipe.grainEnabled = true;
+pipe.grain.animated = false; // < 3 Hz (regra 6): reposiciona-se a semente a cada 400 ms, não por frame
+pipe.imageProcessing.vignetteEnabled = true;
+pipe.imageProcessing.vignetteWeight = 0; // escrito por frame (× dk)
+pipe.imageProcessing.toneMappingEnabled = CONFIG.postTonemap !== 0;
+pipe.imageProcessing.toneMappingType = BABYLON.ImageProcessingConfiguration.TONEMAPPING_ACES;
+pipe.imageProcessing.exposure = num(CONFIG.postExposure, 1);
+
+// grão: alpha calibrado a olho para parecer o pattern 256² da Canvas 2D (:691) — knob `grão` já
+// controla a intensidade "crua"; K é só o fator de escala entre as duas implementações.
+const GRAIN_K = 6;
+function updatePostFx(dk) {
+  pipe.bloomThreshold = clamp01(num(CONFIG.bloomThreshold, 0.8));
+  pipe.bloomWeight = Math.max(0, num(CONFIG.bloomStrength, 0.75));
+  pipe.bloomKernel = Math.max(1, num(CONFIG.bloomBlurPx, 9) * 2);
+  pipe.grain.intensity = Math.max(0, num(CONFIG.grain, 0.032)) * dk * GRAIN_K;
+  // `grain.animated = false` (regra 6: nada > 3 Hz) — a API pública do Babylon não expõe reseed do
+  // ruído do GrainPostProcess sem tocar em internos não documentados; ficou como divergência
+  // documentada em PARITY §1.11 (grão estático em vez de reposicionado a cada 400 ms).
+  pipe.imageProcessing.vignetteWeight = Math.max(0, num(CONFIG.vignette, 0.55)) * dk * 15; // calibrado a olho (ver PARITY §1.11)
+  pipe.imageProcessing.toneMappingEnabled = num(CONFIG.postTonemap, 1) >= 0.5;
+  pipe.imageProcessing.exposure = Math.max(0.05, num(CONFIG.postExposure, 1));
+  // skin white (item 6 do brief F4): aproximação do filtro `#tone` (LUT SVG de 33 valores,
+  // index-v2.html:53-58, que crava as sombras a ~8% e levanta o meio-tom) via
+  // `imageProcessing.contrast` — sobe com skinMix (1 − dk). Divergência documentada em PARITY §1.15:
+  // não é a LUT exata (3 tabelas de 33 valores), é uma aproximação de contraste/exposição.
+  pipe.imageProcessing.contrast = 1 + 0.6 * (1 - dk);
+}
+function applyBgGreySkin() {
+  // chamada a cada frame (depois de updateSkin): sobrepõe o applyBgGrey estático (Fase 1) com o
+  // crossfade dark→white — bgGrey (dark) → rgb(243,247,249) (white), index-v2.html:700.
+  const g = clamp01(num(CONFIG.bgGrey, 7) / 255);
+  const wr = 243 / 255, wg = 247 / 255, wb = 249 / 255;
+  const r = g + (wr - g) * skinMix, gr = g + (wg - g) * skinMix, b = g + (wb - g) * skinMix;
+  scene.clearColor = new BABYLON.Color4(r, gr, b, 1);
+}
+const skinBtn = document.getElementById('skin');
+function syncSkinBtn() { if (skinBtn) skinBtn.textContent = 'skin: ' + (CONFIG.skin === 'white' ? 'white' : 'dark'); }
+function setSkin(mode) {
+  if (mode !== 'dark' && mode !== 'white') return;
+  CONFIG.skin = mode;
+  syncSkinBtn();
+}
+addEventListener('keydown', (e) => {
+  if (e.key === 'w' || e.key === 'W') setSkin(CONFIG.skin === 'white' ? 'dark' : 'white');
+});
+if (skinBtn) { skinBtn.onclick = () => setSkin(CONFIG.skin === 'white' ? 'dark' : 'white'); syncSkinBtn(); }
 
 /* ---------------- loop, tempo, HUD ----------------
    getDeltaTime() mente com o tab em segundo plano (docs/babylon-reference.md §9) — mede-se o
@@ -284,7 +428,14 @@ scene.onAfterRenderObservable.add(() => {
   if (samples.length > 60) samples.shift();
 });
 
-const E = { spotGain: 1, sphereOpacity: CONFIG.sphereOpacity, haze: CONFIG.haze };
+/* ---------------- degradação adaptativa dos pontos na parede (§6) ----------------
+   `frameEma = frameEma·0.9 + dt·0.1` sobre o custo REAL de scene.render() (o que `medianRenderMs()`
+   já mede, via onAfterRenderObservable — não getDeltaTime). `> perf.targetMs` → dotDensityLive
+   ×0.97 (piso perf.minDotDensity); senão recupera ×1.005 até CONFIG.dotDensity. Só os pontos na
+   parede degradam — feixes/facetas/glint/bloom não têm degradação automática (regra do plano). */
+let frameEma = 16, dotDensityLive = num(CONFIG.dotDensity, 0.8);
+
+const E = { spotGain: 1, sphereOpacity: CONFIG.sphereOpacity, haze: CONFIG.haze, skinMix: 0 };
 scene.registerBeforeRender(() => {
   const now = performance.now();
   const dt = Math.min(0.1, (now - lastFrame) / 1000);
@@ -292,6 +443,24 @@ scene.registerBeforeRender(() => {
   tSec += dt;
   E.sphereOpacity = CONFIG.sphereOpacity;
   E.haze = CONFIG.haze;
+
+  // skin dark/white primeiro (Regra 1: só tecla/botão mexem em CONFIG.skin; isto só lê e faz o crossfade)
+  const sk = updateSkin(dt);
+  E.skinMix = sk;
+  const dk = 1 - sk;
+  applyBgGreySkin();
+
+  // degradação adaptativa: usa a mediana das últimas amostras de render (já calculada abaixo);
+  // frameEma segue o dt em ms para reagir ao vivo, como no original (index-v2.html:326-329)
+  const dtMs = dt * 1000;
+  frameEma = frameEma * 0.9 + dtMs * 0.1;
+  const perf = CONFIG.perf || { targetMs: 17.5, minDotDensity: 0.12 };
+  const targetMs = num(perf.targetMs, 17.5), minDotDensity = num(perf.minDotDensity, 0.12);
+  const dotDensityTarget = Math.max(0, num(CONFIG.dotDensity, 0.8));
+  if (frameEma > targetMs) dotDensityLive = Math.max(minDotDensity, dotDensityLive * 0.97);
+  else if (dotDensityLive < dotDensityTarget) dotDensityLive = Math.min(dotDensityTarget, dotDensityLive * 1.005);
+  if (ball) ball.dotDensityLive = dotDensityLive;
+
   // ball.update primeiro: monta mountedSpots/ambientPoses deste frame (fonte única de verdade),
   // as SpotLight/RectAreaLight lêem-nos a seguir, no MESMO frame.
   if (ball && ball.update) {
@@ -300,8 +469,8 @@ scene.registerBeforeRender(() => {
   }
   updateSpotLights();
   updateAmbientLights(tSec);
-  // feixes/cone incidente depois das SpotLight: leem ball.mountedSpots (montado em ball.update acima),
-  // fonte única de verdade para posição/intensidade dos focos deste frame.
+  // feixes/cone incidente/pontos depois das SpotLight: leem ball.mountedSpots (montado em
+  // ball.update acima), fonte única de verdade para posição/intensidade dos focos deste frame.
   if (beams && beams.update) {
     try { beams.update(E); }
     catch (e) { console.error('beams.update:', e); }
@@ -310,12 +479,25 @@ scene.registerBeforeRender(() => {
     try { incident.update(ball && ball.mountedSpots, E, camera); }
     catch (e) { console.error('incident.update:', e); }
   }
+  if (dots && dots.update) {
+    try { dots.update(E); }
+    catch (e) { console.error('dots.update:', e); }
+  }
+  updateHalo(E);
+  updatePostFx(dk);
 });
 
 function medianRenderMs() {
   if (!samples.length) return 0;
   const s = samples.slice().sort((a, b) => a - b);
   return s[s.length >> 1];
+}
+
+// ball.dots = { count, X, N, R, I, size } (F4) — HUD 'dots N · dens X.XX'; 0 se dots.js/ball.dots
+// ainda não existem.
+function dotCount() {
+  const d = ball && ball.dots;
+  return (d && Number.isFinite(d.count)) ? d.count : 0;
 }
 
 let lastHud = performance.now();
@@ -329,7 +511,8 @@ scene.registerAfterRender(() => {
     `render ${med.toFixed(2)} ms  (teto ${med > 0 ? (1000 / med).toFixed(0) : '—'} fps)\n` +
     `facetas ${tileCount()}  ·  filas ${CONFIG.facetRows}\n` +
     `spots ${activeSpotCount}/${CONFIG.spotCount}  ·  ambient ${activeAmbientCount}/${CONFIG.ambient.n}  ·  feixes ${beamCount()}\n` +
-    `[d] painel  ·  [0] repor câmara  ·  rato: orbitar/zoom`;
+    `dots ${dotCount()}  ·  dens ${dotDensityLive.toFixed(2)}  ·  skin ${CONFIG.skin}\n` +
+    `[d] painel  ·  [w] skin  ·  [0] repor câmara  ·  rato: orbitar/zoom`;
 });
 
 engine.runRenderLoop(() => scene.render());
@@ -342,6 +525,11 @@ window.MB2 = {
     const s = samples.slice().sort((a, b) => a - b);
     return { medianRenderMs: s.length ? s[s.length >> 1] : 0, n: s.length, tiles: tileCount() };
   },
+  /* Skin dark/white (Fase 4, Regra 1: só tecla `w`/botão/API — nenhum motor lhe toca). */
+  setSkin,
+  get skinMix() { return skinMix; },
+  /* Bónus §7 do brief F4: sliders re-lêem CONFIG quando este é escrito pela consola. */
+  refreshPanel,
 };
 
 console.log('MB2 pronto —', engine.isWebGPU ? 'WebGPU' : 'WebGL2');
