@@ -228,10 +228,35 @@ linhas duras de laser, `1` dá halo difuso.
 
 ✅ **`base = clamp(I)·beamIntensity·smooth(0, 6, nb−i)`** (`:600`) — os últimos esbatem.
 
-✅ **`beamGlowZ`** (`:570`): com `R.z > beamGlowZ` desenha-se um **disco billboard** de raio
-`0.02 + 0.10·(R.z−glowZ)/(1−glowZ)` em vez de um cone. ✅ **Testado**: com um foco quase atrás da
-câmara (az 6°), 15 dos 27 feixes viram glow e 12 ficam cones — os espelhos apontados a nós leem-se
-como chapas a brilhar, não como linhas.
+⚠ **`beamGlowZ` — DIVERGÊNCIA (correção 2026-08-30, Opus): o cone desenha-se SEMPRE.**
+A Canvas 2D (`:570`) **substitui** a linha por um disco billboard quando `R.z > beamGlowZ`, porque
+em 2D uma linha vista de frente degenera num ponto e deixa de se ler. **Em 3D isso está errado**:
+por mais pequeno que seja o ângulo o cone continua a existir — vê-se apenas encurtado em
+perspetiva. Bug reportado pelo David: ao orbitar a câmara para ficar **de frente para a reflexão**
+de um foco, não via feixe nenhum, só um **disco branco saturado**.
+
+**Medido** (câmara do lado do spot0, az −52°, el 14°, `spotCount 4`, `haze 0.6`,
+`beamFraction 1`, 50 feixes dos quais **22 frontais** com `Rz > 0.8`): o código antigo somava
+**α = 1.17** de alpha aditivo no centro — acima de 1.0, ou seja **saturação garantida a branco
+liso**, exatamente o sintoma. Daí o "disco branco".
+
+**Correção.** Duas mudanças em `beams.js`:
+1. **O ramo exclusivo `if (Rz > glowZ) { …; continue; }` desapareceu** — os 3 cones são emitidos
+   para **todos** os feixes, frontais incluídos.
+2. **O glow passa a ser aditivo e fraco por cima**, com o knob novo `beamGlowMul` (0-1,
+   **default 0.25**): `alpha = base · beamGlowMul · (Rz−glowZ)/(1−glowZ)` — rampa linear de 0 na
+   fronteira `glowZ` até ao peso máximo a pino. O raio fica como estava
+   (`0.02 + 0.10·(Rz−glowZ)/(1−glowZ)`).
+
+**Porquê 0.25.** Com o mesmo enquadramento, o alpha somado no centro cai de **1.17** para
+**0.23** (rácio 0.20) — abaixo da saturação, portanto os 22 feixes frontais somados continuam a
+ler-se como **espelhos individuais a brilhar** e não como um disco liso. ✅ **Verificado a olho**:
+de frente para a reflexão veem-se cones a vir para a câmara e, no centro, o aglomerado de
+quadrados brancos distintos (as facetas apontadas a nós), com brilho moderado à volta. Levar o
+knob a 1.0 alarga o halo mas **os cones continuam lá** — já não há substituição.
+
+O knob está no painel `d` como **`feixes: glow ×`**, logo a seguir a `feixes: glow z`, persistido
+em `mb2.knobs`.
 
 ✅ **Teto da regra 6.** `beamIntensity` é **clampado a 0.18 na leitura**, dentro do `beams.js`:
 o `CONFIG` não o pode furar venha de onde vier. ✅ **Medido**: com `beamIntensity = 99` o valor
@@ -488,6 +513,8 @@ sem implementação, respetivamente). `PERSIST` atualizado para os novos nomes s
 
 ➕ **Novos (Fase 3, fora dos 54):** `feixes: intensidade` (`CONFIG.beamIntensity`, 0-0.18, clamp
 duro ao teto invulável do CLAUDE.md — regra 6), `feixes: glow z` (`CONFIG.beamGlowZ`, 0-1),
+`feixes: glow ×` (`CONFIG.beamGlowMul`, 0-1, default **0.25** — peso do brilho aditivo por cima do
+cone frontal; ver §1.6, correção 2026-08-30),
 `feixes: comprimento` (`CONFIG.beamLen`, 2-12, default 6 — knob pedido pelo brief F3-Opus para o
 comprimento do cone de `beams.js`, distinto de `beamLen3D`/`feixes: compr. 3D` legado).
 

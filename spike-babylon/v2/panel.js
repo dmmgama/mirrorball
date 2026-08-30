@@ -110,6 +110,7 @@ export function initPanel(CONFIG, hooks = {}) {
     // ---- Fase 3 (Sonnet/Opus): feixes refletidos — teto invulável beamIntensity ≤ 0.18 (regra 6 do CLAUDE.md) ----
     ['feixes: intensidade', 0, 0.18, 0.005, v => CONFIG.beamIntensity = Math.min(0.18, v), () => CONFIG.beamIntensity],
     ['feixes: glow z', 0, 1, 0.02, v => CONFIG.beamGlowZ = v, () => CONFIG.beamGlowZ],
+    ['feixes: glow ×', 0, 1, 0.02, v => CONFIG.beamGlowMul = v, () => CONFIG.beamGlowMul],
     ['feixes: comprimento', 2, 12, 0.2, v => CONFIG.beamLen = v, () => CONFIG.beamLen],
     // ---- correções do David (2026-08-30, Opus): corrente 3D + junta em modo 'real' ----
     ['corrente (0/1)', 0, 1, 1, v => { CONFIG.chainOn = v >= 0.5; onRebuildBall(); }, () => (CONFIG.chainOn === false ? 0 : 1)],

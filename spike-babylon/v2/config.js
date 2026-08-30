@@ -51,7 +51,8 @@ window.CONFIG = {
   incidentMaxWidth: 1.3,     // teto relativo: meia-largura ≤ este × raio da mancha na bola (nunca uma banda)
   incidentMaxPx: 0.14,       // teto absoluto: meia-largura ≤ este × Rpx — 4-6° não ocupa meio ecrã, mesmo com raio ×3
   beamLen3D: 3.6,            // comprimento do feixe refletido em raios da bola (3D, projetado)
-  beamGlowZ: 0.8,            // R·z acima disto = feixe a vir para nós → brilho em vez de linha
+  beamGlowZ: 0.8,            // R·z acima disto = feixe a vir para nós → brilho ADITIVO por cima do cone (o cone desenha-se sempre)
+  beamGlowMul: 0.25,         // × peso desse brilho (0-1; 0 = só cones) — knob 'feixes: glow ×'
   haze: 0.65,                // densidade da névoa (só afeta feixes e a auréola)
   beamMaxCount: 110,         // feixes visíveis no máximo
   beamFractionMax: 1.0,      // teto do painel d: o motor escreve beamFraction = fração musical × isto

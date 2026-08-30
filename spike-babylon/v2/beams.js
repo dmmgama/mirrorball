@@ -5,9 +5,14 @@
 //
 // Estrutura: 3 cones aninhados por feixe (as 3 larguras/alphas de :562) como **thin instances** de
 // UM cone unitário — 3 draw calls no total, independentemente de haver 1 ou 110 feixes. Mais um
-// mesh de disco billboard para os feixes que vêm direitos à câmara (`beamGlowZ`, :570).
+// mesh de disco billboard que ACRESCENTA um brilho fraco aos feixes que vêm direitos à câmara.
 //
 // Divergências documentadas em PARITY §1.6:
+//  - **o cone desenha-se SEMPRE** (correção 2026-08-30): a Canvas 2D `:570` SUBSTITUI a linha por
+//    um disco quando `R.z > beamGlowZ`, porque uma linha 2D vista de frente degenera num ponto. Em
+//    3D isso é errado — o cone visto de frente encurta-se em perspetiva mas continua a ler-se, e a
+//    substituição dava um disco branco saturado (40 discos somados no centro) sem feixe nenhum. Cá
+//    o glow é só um brilho ADITIVO fraco por cima, com o knob `beamGlowMul`;
 //  - o gradiente ao longo do feixe é **vertex alpha do cone** (1 na base → 0 na ponta), cozido na
 //    geometria uma vez, em vez do `createLinearGradient` por feixe por frame da Canvas 2D;
 //  - o leque em perspetiva sai do próprio 3D (o cone afasta-se da câmara), não do cálculo
@@ -89,7 +94,8 @@ function makeRampTexture(scene) {
 }
 
 /* Disco billboard para o glow (:570-577): raio 1 no plano XY, vertex alpha radial
-   1 no centro → 0 na borda, com a paragem a 0.35 do original. */
+   1 no centro → 0 na borda, com a paragem a 0.35 do original. Já NÃO substitui o cone (ver
+   cabeçalho): é um brilho aditivo por cima, escalado por `beamGlowMul`. */
 function buildGlowDisc(name, scene) {
   const positions = [0, 0, 0], indices = [], uvs = [0.5, 1];   // centro: v=1 (opaco)
   const rings = [{ r: 0.35, a: 0.389 }, { r: 1.0, a: 0.0 }];  // 0.35/0.9 = 0.389 (relativo ao pico)
@@ -257,6 +263,9 @@ export function createBeams(scene, CONFIG, ball) {
     // comprimento em raios: `beamLen3D · beamLength / 0.78` (:568), knob `beamLen` a sobrepor-se
     const L3 = Math.max(0.05, num(cfg('beamLen', num(cfg('beamLen3D', 3.6), 3.6) * num(cfg('beamLength', 0.78), 0.78) / 0.78), 6));
     const glowZ = clamp(num(cfg('beamGlowZ', 0.8), 0.8), 0.01, 0.999);
+    // peso do brilho aditivo por cima do cone (0 = só cones). 0.25 medido de frente para o spot0:
+    // com 40 feixes frontais o centro lê-se como espelhos a brilhar, não como um disco branco liso.
+    const glowMul = clamp(num(cfg('beamGlowMul', 0.25), 0.25), 0, 1);
     // base do cone = largura de um tile em raios (:565), com o afinamento do laser (:583),
     // vezes o knob `beamBaseMul` (default 0.5): o David achou os cones "muito gordos" na base.
     const baseMul = clamp(num(cfg('beamBaseMul', 0.5), 0.5), 0.1, 2);
@@ -292,21 +301,28 @@ export function createBeams(scene, CONFIG, ball) {
       // R.z = componente na direção da câmara (:570 usa R[2] com a câmara em +Z)
       const Rz = rx * camDir.x + ry * camDir.y + rz * camDir.z;
 
+      /* Glow: brilho ADITIVO **por cima** do cone, não em vez dele (correção 2026-08-30).
+         O `continue` que estava aqui trocava o feixe por um disco assim que `Rz > glowZ` — de
+         frente para a reflexão os 40 feixes viravam 40 discos somados e o centro saturava a branco
+         liso, sem cone nenhum. Agora o cone desenha-se sempre (abaixo) e isto só acrescenta uma
+         auréola fraca, rampa linear de 0 na fronteira `glowZ` até `beamGlowMul` a pino (Rz=1). */
       if (Rz > glowZ) {
-        // vem quase direito a nós: brilho no espelho, não linha (:570-577)
-        const rad = 0.02 + 0.10 * (Rz - glowZ) / (1 - glowZ);
-        // billboard: encara sempre a câmara
-        BJS.Matrix.ScalingToRef(rad, rad, rad, mScale);
-        quatFromZTo(camDir, qRot);
-        BJS.Matrix.FromQuaternionToRef(qRot, mRot);
-        mScale.multiplyToRef(mRot, mOut);
-        mOut.setTranslationFromFloats(px, py, pz);
-        mOut.copyToArray(gMat, nGlow * 16);
-        const gc = nGlow * 4, a = base * 0.9;
-        gCol[gc] = gCol[gc + 1] = gCol[gc + 2] = 1;
-        gCol[gc + 3] = a;
-        nGlow++;
-        continue;
+        const t = (Rz - glowZ) / (1 - glowZ);       // 0 na fronteira → 1 a vir direito a nós
+        const a = base * glowMul * t;
+        if (a > 0.0005) {
+          const rad = 0.02 + 0.10 * t;              // raio como estava
+          // billboard: encara sempre a câmara
+          BJS.Matrix.ScalingToRef(rad, rad, rad, mScale);
+          quatFromZTo(camDir, qRot);
+          BJS.Matrix.FromQuaternionToRef(qRot, mRot);
+          mScale.multiplyToRef(mRot, mOut);
+          mOut.setTranslationFromFloats(px, py, pz);
+          mOut.copyToArray(gMat, nGlow * 16);
+          const gc = nGlow * 4;
+          gCol[gc] = gCol[gc + 1] = gCol[gc + 2] = 1;
+          gCol[gc + 3] = a;
+          nGlow++;
+        }
       }
 
       vR.set(rx, ry, rz);
