@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store">
+<title>MirrorBall v2 — spike Babylon.js</title>
+<style>
+  html,body{margin:0;height:100%;background:#070707;overflow:hidden}
+  canvas#rc{position:fixed;inset:0;width:100%;height:100%;display:block;outline:none;touch-action:none}
+  #hud{position:fixed;top:12px;left:12px;background:rgba(10,10,10,.86);color:#cfcfcf;
+       font:11px/1.6 ui-monospace,Consolas,monospace;padding:10px 12px;border:1px solid #2a2a2a;
+       white-space:pre;z-index:9;letter-spacing:.02em}
+  #err{position:fixed;left:12px;bottom:12px;right:12px;background:rgba(40,10,10,.94);color:#ffb4b4;
+       font:11px/1.5 ui-monospace,Consolas,monospace;padding:10px 12px;border:1px solid #642;
+       white-space:pre-wrap;z-index:10;display:none;max-height:40vh;overflow:auto}
+  /* ---- painel `d` (knobs) — mesmo visual do web/index-v2.html, chave própria mb2.knobs ---- */
+  #dbg{position:fixed;top:12px;right:12px;background:rgba(10,10,10,.86);color:#cfcfcf;
+       font:11px/1.6 ui-monospace,Consolas,monospace;padding:10px 12px;border:1px solid #2a2a2a;
+       display:none;min-width:230px;letter-spacing:.02em;z-index:9}
+  #dbg.on{display:block;max-height:calc(100vh - 24px);overflow:auto;resize:both;font-size:calc(11px * var(--dbgScale,1))}
+  #dbg .knobs{display:grid;grid-template-columns:repeat(var(--dbgCols,1),minmax(230px,1fr));column-gap:18px}
+  #dbg .sz{display:flex;gap:4px;margin:0 0 6px}
+  #dbg .sz button{font:inherit;background:#222;color:#ccc;border:1px solid #444;padding:0 6px;cursor:pointer}
+  #dbg label{display:flex;justify-content:space-between;gap:10px;align-items:center}
+  #dbg label span{opacity:.85}
+  #dbg input[type=range]{width:120px;accent-color:#bdbdbd}
+  #dbg .sp{display:flex;gap:10px;margin-top:6px}
+  #dbg .sp button{font:inherit;background:#111;color:#cfcfcf;border:1px solid #2a2a2a;padding:6px 10px;cursor:pointer;letter-spacing:.02em}
+  #dbg .sp button:disabled{opacity:.5;cursor:default}
+  #dbg h4{margin:0 0 6px;font-weight:400;color:#8a8a8a}
+</style>
+</head>
+<body>
+<canvas id="rc"></canvas>
+<div id="hud">a carregar…</div>
+<div id="err"></div>
+<div id="dbg"></div>
+<script>
+  // erros visíveis no ecrã — sem depender da consola (mesmo padrão do spike v1 index.html)
+  function showErr(msg, where) {
+    const d = document.getElementById('err');
+    d.style.display = 'block';
+    d.textContent += 'ERRO: ' + msg + (where ? '\n  ' + where : '') + '\n';
+  }
+  window.addEventListener('error', e =>
+    showErr(e.message || e.error, (e.filename || '') + ':' + (e.lineno || '')));
+  window.addEventListener('unhandledrejection', e =>
+    showErr('promise: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason)));
+</script>
+<script src="../vendor/babylon.js"></script>
+<script src="config.js?v=2"></script>
+<script type="module" src="main.js?v=2"></script>
+</body>
+</html>
