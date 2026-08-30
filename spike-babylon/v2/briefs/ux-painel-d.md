@@ -1,7 +1,27 @@
 # UX do painel `d` — diagnóstico e proposta
 
 Avaliação a 2026-08-30, painel medido ao vivo em `http://127.0.0.1:8096/v2/index.html?webgl=1`, janela 1512×767.
-Nada foi implementado. Isto é só o plano.
+
+**Implementado 2026-08-30 (Passos 1, 2 e 3 completos).** `panel.js`/`index.html` reescritos: os 9 grupos
+(§2), a barra inferior + popover + favoritos (§3-c), valor editável por teclado, ⏫ nos knobs de rebuild,
+e do Passo 3 — busca por substring, reset por grupo, modo compacto e indicador "por gravar" (ponto no
+separador). Ver `MANUAL.html` §2 para o resumo dirigido ao David. Divergências do plano original:
+- A largura do popover (430px) passou a escalar com `--dbgCols` (`1/2/3 col` na barra, botões movidos
+  do "Ficheiro" antigo grupo de tamanho para dentro do popover **Ficheiro**) — o doc original só previa
+  430px fixos; um grupo de 22 knobs (Bola & Espelhos) ainda cabia sem scroll a 1 coluna, mas 2 colunas
+  ficou mais confortável para o David escolher.
+- `MB2` já expunha `panel.knobsGet/knobsSet/dbgSize`; passou a expor também `panel.vals/favInputs/
+  favVals/GROUPS/FAVORITES/openGroupByName/closeGroup` (consola/debug), sem tirar nada do que já existia.
+- Risco `inp.previousSibling` (ver §Riscos): resolvido com mapas explícitos `inputs[name]`/`vals[name]`/
+  `favInputs[name]`/`favVals[name]`, sincronizados nos dois sentidos em `knobsSet`/`refresh()`/`apply()`.
+- Achado durante a verificação (não estava nos riscos do doc): `.dbgpop-group[hidden]` e `label[hidden]`
+  precisaram de uma regra `[hidden]{display:none}` própria — o `display:flex`/`grid` do `.dbgpop-group`/
+  `label` tem mais especificidade CSS que o atributo `hidden` sozinho e ficava a ganhar, mostrando dois
+  grupos empilhados ao mesmo tempo. Ficou corrigido antes de qualquer verificação ao vivo ter passado.
+- Contagem real medida na consola: **101 sliders no DOM** (98 em `PERSIST`/`knobsGet()` + 3 só de
+  runtime: `health`, `sphereOpacity`, `rotationRpm`, que o motor lê/escreve mas não persistem em
+  `mb2.knobs`) — bate certo com a medição original deste doc (101), não com o "98" solto noutros sítios
+  do repo (esse refere-se só ao conjunto persistido).
 
 **Medições reais (não estimativas):** 101 sliders + 6 checkboxes + 8 botões.
 

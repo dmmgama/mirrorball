@@ -16,29 +16,68 @@
        white-space:pre-wrap;z-index:10;display:none;max-height:40vh;overflow:auto}
   #ui{position:fixed;left:12px;bottom:12px;display:flex;gap:8px;z-index:9}
   #ui button{background:#111;color:#cfcfcf;border:1px solid #2a2a2a;font:11px ui-monospace,Consolas,monospace;padding:6px 10px;cursor:pointer;letter-spacing:.02em}
-  /* ---- painel `d` (knobs) — mesmo visual do web/index-v2.html, chave própria mb2.knobs ---- */
-  #dbg{position:fixed;top:12px;right:12px;background:rgba(10,10,10,.86);color:#cfcfcf;
-       font:11px/1.6 ui-monospace,Consolas,monospace;padding:10px 12px;border:1px solid #2a2a2a;
-       display:none;min-width:230px;letter-spacing:.02em;z-index:9}
-  #dbg.on{display:block;max-height:calc(100vh - 24px);overflow:auto;resize:both;font-size:calc(11px * var(--dbgScale,1))}
-  #dbg .knobs{display:grid;grid-template-columns:repeat(var(--dbgCols,1),minmax(230px,1fr));column-gap:18px}
+  /* ---- painel `d` — brief ux-painel-d.md: barra de separadores (#dbgbar) + faixa de favoritos
+       (#dbgfav) sempre no fundo, sem tapar a bola; #dbg passa a ser só o popover do grupo aberto.
+       Contraste subido de #cfcfcf/#9a9a9a para --dbgTxt/--dbgVal (§4 do doc, legível sem ofuscar). ---- */
+  :root{--dbgTxt:#c8c8c8;--dbgDim:#8f8f8f;--dbgVal:#e8e8e8;--dbgScale:1}
+  #dbgbar{position:fixed;left:0;right:0;bottom:0;height:34px;display:none;align-items:center;
+       gap:2px;padding:0 8px;background:rgba(8,8,8,.92);border-top:1px solid #2a2a2a;
+       font:calc(12px * var(--dbgScale)) ui-monospace,Consolas,monospace;z-index:10;overflow-x:auto}
+  #dbgbar.on{display:flex}
+  #dbgbar button{position:relative;background:none;border:0;color:var(--dbgDim);padding:8px 10px;cursor:pointer;
+       letter-spacing:.02em;font:inherit;white-space:nowrap}
+  #dbgbar button:hover{color:var(--dbgTxt)}
+  #dbgbar button[aria-expanded=true]{color:#fff;box-shadow:inset 0 -2px 0 #6a6a6a}
+  #dbgbar button .dot{position:absolute;top:6px;right:2px;width:6px;height:6px;border-radius:50%;background:#c9a227}
+  /* faixa de favoritos, imediatamente acima da barra */
+  #dbgfav{position:fixed;left:0;right:0;bottom:34px;height:30px;display:none;gap:14px;
+       align-items:center;padding:0 8px;background:rgba(8,8,8,.80);overflow-x:auto;
+       font:calc(11px * var(--dbgScale)) ui-monospace,Consolas,monospace;color:var(--dbgDim);z-index:10}
+  #dbgfav.on{display:flex}
+  #dbgfav label{display:flex;align-items:center;gap:6px;white-space:nowrap;flex:none}
+  #dbgfav label span{max-width:110px;overflow:hidden;text-overflow:ellipsis}
+  #dbgfav input[type=range]{width:70px;accent-color:#bdbdbd}
+  #dbgfav input[type=number]{width:42px;background:#1a1a1a;border:1px solid #333;color:var(--dbgVal);font:inherit;text-align:right}
+  /* popover: um grupo, largura fixa, ancorado acima da barra+faixa (68px) */
+  #dbg{position:fixed;left:auto;right:12px;bottom:68px;top:auto;width:calc(430px * var(--dbgCols,1));max-width:calc(100vw - 24px);
+       max-height:55vh;background:rgba(10,10,10,.94);color:var(--dbgTxt);border:1px solid #333;
+       font:calc(11px * var(--dbgScale)) ui-monospace,Consolas,monospace;letter-spacing:.02em;
+       display:none;z-index:11;padding:0}
+  #dbg.on.open{display:block}
+  #dbg .dbgpop-group{display:flex;flex-direction:column;max-height:55vh}
+  #dbg .dbgpop-group[hidden]{display:none}
+  #dbg .dbgpop-head{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #2a2a2a;flex:none}
+  #dbg .dbgpop-title{font-weight:600;color:#fff;white-space:nowrap}
+  #dbg .dbgpop-search{flex:1;min-width:0;background:#161616;border:1px solid #333;color:var(--dbgTxt);font:inherit;padding:3px 6px}
+  #dbg .dbgpop-head button{font:inherit;background:#111;color:var(--dbgTxt);border:1px solid #2a2a2a;padding:3px 8px;cursor:pointer}
+  #dbg .dbgpop-list{overflow:auto;padding:8px 10px;display:grid;grid-template-columns:repeat(var(--dbgCols,1),1fr);gap:0 18px;align-content:start}
+  #dbg label{display:grid;grid-template-columns:1fr 46px 110px;gap:8px;align-items:center;height:20px}
+  #dbg label[hidden]{display:none}
+  #dbg label span{opacity:.9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #dbg label .rb{color:#c9a227;opacity:1}
+  #dbg.compact label{height:17px;grid-template-columns:1fr 42px 96px;font-size:calc(10px * var(--dbgScale))}
+  #dbg input[type=range]{width:110px;accent-color:#bdbdbd}
+  #dbg.compact input[type=range]{width:96px}
+  #dbg input[type=number]{width:44px;background:#1a1a1a;border:1px solid #333;color:var(--dbgVal);font:inherit;text-align:right}
   #dbg .sz{display:flex;gap:4px;margin:0 0 6px}
   #dbg .sz button{font:inherit;background:#222;color:#ccc;border:1px solid #444;padding:0 6px;cursor:pointer}
-  #dbg label{display:flex;justify-content:space-between;gap:10px;align-items:center}
-  #dbg label span{opacity:.85}
-  #dbg input[type=range]{width:120px;accent-color:#bdbdbd}
-  #dbg .sp{display:flex;gap:10px;margin-top:6px}
-  #dbg .sp button{font:inherit;background:#111;color:#cfcfcf;border:1px solid #2a2a2a;padding:6px 10px;cursor:pointer;letter-spacing:.02em}
+  #dbg .sp{display:flex;gap:10px;margin-top:6px;flex-wrap:wrap}
+  #dbg .sp button{font:inherit;background:#111;color:var(--dbgTxt);border:1px solid #2a2a2a;padding:6px 10px;cursor:pointer;letter-spacing:.02em}
   #dbg .sp button:disabled{opacity:.5;cursor:default}
-  #dbg h4{margin:0 0 6px;font-weight:400;color:#8a8a8a}
-  /* ---- HUD do motor de música (tecla m, web/music.js) — só existe/aparece com ?src=music ---- */
-  #mus{position:fixed;bottom:12px;right:12px;max-width:46vw;background:rgba(10,10,10,.86);color:#cfcfcf;
+  /* grupo Ficheiro: linhas de botões/checkboxes/mensagem, não sliders — ocupam a largura toda */
+  #dbg .dbgpop-list > .sp,
+  #dbg .dbgpop-list > .sz,
+  #dbg .dbgpop-list > .knobMsg{grid-column:1/-1}
+  #dbg .dbgpop-list > .sp label{display:inline-flex;align-items:center;gap:4px;grid-template-columns:none;height:auto}
+  /* ---- HUD do motor de música (tecla m, web/music.js) — só existe/aparece com ?src=music.
+       Sobe para cima da barra/faixa (68px) para não colidir (§ Passo 2 do brief). ---- */
+  #mus{position:fixed;bottom:68px;right:12px;max-width:46vw;background:rgba(10,10,10,.86);color:#cfcfcf;
        font:11px/1.5 ui-monospace,Consolas,monospace;padding:10px 12px;border:1px solid #2a2a2a;
        white-space:pre;z-index:9;letter-spacing:.02em;display:none}
   #mus.on{display:block}
   /* ---- ?mini=1 (Fase 6, paridade com web/index-v2.html classe `mini`): esconde HUD/painel/botões —
        o quadrado do OS só quer a bola, sem chrome de debug. ---- */
-  html.mini #hud, html.mini #dbg, html.mini #ui, html.mini #mus, html.mini #err { display: none !important; }
+  html.mini #hud, html.mini #dbg, html.mini #dbgbar, html.mini #dbgfav, html.mini #ui, html.mini #mus, html.mini #err { display: none !important; }
 </style>
 </head>
 <body>
@@ -62,6 +101,6 @@
 </script>
 <script src="../vendor/babylon.js"></script>
 <script src="config.js?v=3"></script>
-<script type="module" src="main.js?v=3"></script>
+<script type="module" src="main.js?v=4"></script>
 </body>
 </html>

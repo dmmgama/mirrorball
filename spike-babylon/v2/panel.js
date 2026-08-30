@@ -215,35 +215,112 @@ export async function initPanel(CONFIG, hooks = {}) {
   }
   for (const s of colorSliders) { sliders.push(s); PERSIST.add(s[0]); }
 
-  // ---- DOM: mesmo #dbg do web/index-v2.html, mas construído aqui (v2/index.html só tem o container) ----
+  // ---- brief ux-painel-d.md §2: 9 grupos (ordem de construção do array; nomes de slider intocáveis) ----
+  // ⏫ = slider cujo set() chama onRebuildBall() (reconstrói a malha) — ver newSliders/sliders acima.
+  const REBUILD = new Set([
+    'espelhos: filas', 'junta (seam)', 'espelhos: variação', 'espelhos: tom (0=hash/1=real)',
+    'espelhos: alinhados (0/1)', 'espelhos: junta larg. (real)', 'espelhos: junta var. (real)',
+    'corrente (0/1)', 'corrente: elo (raios)',
+  ]);
+  const spotHueNames = [];
+  for (let i = 0; i < 6; i++) spotHueNames.push('spot' + i + ': matiz°');
+  const GROUPS = [
+    ['Focos', [
+      'focos: quantos', 'focos: raio ×', 'focos: orla', 'focos: luz (lm)', 'focos: distância',
+      'spot0: az° (−=esq)', 'spot0: el°', 'spot1: az°', 'spot1: el°', 'spot2: az°', 'spot2: el°',
+      'spot3: az°', 'spot3: el°', 'focos: cor (0/1)', 'focos: saturação', ...spotHueNames,
+    ]],
+    ['Coreografia & Flashes', [
+      'focos: saltam (0/1)', 'focos: fixo min s', 'focos: fixo max s', 'origem: |az| min°',
+      'origem: |az| max°', 'origem: el min°', 'origem: el max°', 'origem: mira (raios)',
+      'flash: por s', 'flash: raio ×', 'flash: dura ms',
+    ]],
+    ['Bola & Espelhos', [
+      'bola: luz', 'bola: contraste', 'espelhos: brilho', 'luz geral (volume)', 'luz geral: az°',
+      'luz geral: el°', 'espelhos: filas', 'junta (seam)', 'espelhos: variação',
+      'espelhos: tom (0=hash/1=real)', 'espelhos: alinhados (0/1)', 'espelhos: junta (real)',
+      'espelhos: junta larg. (real)', 'espelhos: junta var. (real)', 'pbr: metallic',
+      'pbr: roughness', 'pbr: ambiente', 'pbr: glint mix', 'raio-x: osso (0/1)',
+      'raio-x: osso alpha ×', 'corrente (0/1)', 'corrente: elo (raios)',
+    ]],
+    ['Névoa & Feixes', [
+      'haze máx (motor modula)', 'feixes: fração máx (motor modula)', 'feixes: intensidade',
+      'feixes: largura°', 'feixes: dispersão', 'feixes: comprimento', 'feixes: base ×',
+      'feixes: glow z', 'feixes: glow ×', 'feixes: compr. 3D (fase 3)', 'cone incidente',
+      'cone: alcance', 'cone: largura máx', 'cone: teto (raios)', 'auréola',
+    ]],
+    ['Sala', [
+      'pontos na parede (densidade)', 'pontos: escala', 'pontos: queda', 'pontos: teto cinza',
+      'luz indireta', 'indireta: área°', 'indireta: luz ×', 'corpos (0/1)', 'corpos: escala',
+      'corpos: lente ×', 'corpos: haste (0/1)', 'fundo: claridade (dark)',
+    ]],
+    ['Pós & Skin', [
+      'bloom: força', 'bloom: limiar', 'bloom: raio px', 'grão', 'vinheta',
+      'pós: tonemap (0/1)', 'pós: exposição',
+    ]],
+    ['Motor', [
+      'feixes+haze: motor manda (0/1)', 'focos+flashes: motor manda (0/1)',
+      'opacidade: motor manda (0/1)', 'health (motor manda)', 'sphereOpacity (motor manda)',
+      'rotationRpm (motor manda)', 'strobe fundo (0/1)', 'strobe: frequência ×',
+      'strobe: força', 'strobe: dura ms',
+    ]],
+    ['Explosão', [
+      'explosão: alcance (radial)', 'explosão: deriva s', 'explosão: pausa s',
+    ]],
+    ['Ficheiro', []],
+  ];
+  // 7 favoritos (§2) — sempre visíveis na faixa acima da barra, independentemente do grupo aberto.
+  const FAVORITES = [
+    'haze máx (motor modula)', 'feixes: fração máx (motor modula)', 'feixes: intensidade',
+    'focos: quantos', 'espelhos: brilho', 'pontos na parede (densidade)', 'rotationRpm (motor manda)',
+  ];
+
+  // valida em dev que todo o slider está em exatamente 1 grupo (exceto Ficheiro, sem sliders) —
+  // não deve rebentar em produção, só avisar (risco §Riscos: nomes têm de bater certo).
+  (function validateGroups() {
+    const seen = new Map();
+    for (const [gname, names] of GROUPS) for (const n of names) {
+      seen.set(n, (seen.get(n) || 0) + 1);
+    }
+    const known = new Set(sliders.map(s => s[0]));
+    const missing = sliders.map(s => s[0]).filter(n => !seen.has(n));
+    const dup = [...seen.entries()].filter(([, c]) => c > 1).map(([n]) => n);
+    const ghost = [...seen.keys()].filter(n => !known.has(n));
+    if (missing.length) console.warn('[MB2] sliders sem grupo:', missing.join(', '));
+    if (dup.length) console.warn('[MB2] sliders em >1 grupo:', dup.join(', '));
+    if (ghost.length) console.warn('[MB2] nomes de grupo sem slider correspondente:', ghost.join(', '));
+  })();
+
+  // ---- DOM: #dbg vira o container do popover ativo; #dbgbar (separadores) e #dbgfav (favoritos)
+  // são novos, criados aqui e inseridos no body. `dbg.classList.toggle('on')` (tecla d) continua a
+  // controlar tudo — ver bloco keydown mais abaixo, que passa a alternar os três juntos. ----
   const dbg = document.getElementById('dbg');
   dbg.innerHTML = '';
+  dbg.className = 'dbgpop';
   dbg.classList.add('on'); // painel visível por omissão nesta fase (spike); tecla d alterna
 
-  let dbgSize = { cols: 1, scale: 1 };
+  let dbgSize = { cols: 1, scale: 1, compact: false };
   try { Object.assign(dbgSize, JSON.parse(localStorage.getItem('mb2.dbgSize') || '{}')); } catch (e) { /* sem storage */ }
   function applyDbgSize() {
-    dbg.style.setProperty('--dbgCols', dbgSize.cols);
-    dbg.style.setProperty('--dbgScale', dbgSize.scale);
+    // gen-knobs-default.js corre panel.js num sandbox sem `document.documentElement` (só stuba
+    // getElementById/createElement) — guarda-se para o gerador continuar a funcionar sem alterações.
+    if (document.documentElement && document.documentElement.style && document.documentElement.style.setProperty) {
+      document.documentElement.style.setProperty('--dbgScale', dbgSize.scale);
+      document.documentElement.style.setProperty('--dbgCols', dbgSize.cols);
+    }
+    dbg.classList.toggle('compact', !!dbgSize.compact);
     try { localStorage.setItem('mb2.dbgSize', JSON.stringify(dbgSize)); } catch (e) { /* */ }
   }
-  {
-    const sz = document.createElement('div'); sz.className = 'sz';
-    const mk = (t, fn) => { const b = document.createElement('button'); b.textContent = t; b.onclick = fn; sz.appendChild(b); };
-    mk('1 col', () => { dbgSize.cols = 1; applyDbgSize(); });
-    mk('2 col', () => { dbgSize.cols = 2; applyDbgSize(); });
-    mk('3 col', () => { dbgSize.cols = 3; applyDbgSize(); });
-    mk('A−', () => { dbgSize.scale = Math.max(0.7, +(dbgSize.scale - 0.1).toFixed(2)); applyDbgSize(); });
-    mk('A+', () => { dbgSize.scale = Math.min(1.5, +(dbgSize.scale + 0.1).toFixed(2)); applyDbgSize(); });
-    dbg.appendChild(sz);
-    applyDbgSize();
+
+  // #dbgbar/#dbgfav são novos (não existem em index.html) — inseridos como irmãos de #dbg, mesmo
+  // pai. Evita `document.body` (o sandbox do gerador não o stuba; `dbg.parentNode` é sempre válido
+  // porque `dbg` veio de getElementById, que o sandbox garante existir).
+  const dbgbar = document.createElement('div'); dbgbar.id = 'dbgbar';
+  const dbgfav = document.createElement('div'); dbgfav.id = 'dbgfav';
+  if (dbg.parentNode) {
+    dbg.parentNode.insertBefore(dbgfav, dbg);
+    dbg.parentNode.insertBefore(dbgbar, dbg);
   }
-
-  const h = document.createElement('h4'); h.textContent = 'MirrorBall v2 — painel d (spike Babylon)';
-  dbg.appendChild(h);
-
-  const knobsBox = document.createElement('div'); knobsBox.className = 'knobs';
-  dbg.appendChild(knobsBox);
 
   let knobFile = null; // secção `ball` do music-config.json (só em ?src=music, via setKnobFile)
 
@@ -295,35 +372,105 @@ export async function initPanel(CONFIG, hooks = {}) {
     return undefined; // fica o que o config.js já pôs
   }
 
-  const inputs = {};
-  for (const [name, mn, mx, st, set, get] of sliders) {
-    if (PERSIST.has(name)) {
-      const v0 = startValue(name);
-      if (v0 !== undefined) set(v0);
-    }
+  // risco §Riscos: `inp.previousSibling` assumia o valor colado ao slider — trocado por referências
+  // explícitas. `inputs[name]` = slider do popover (o nó "oficial", usado por knobsSet/refresh);
+  // `vals[name]` = campo de valor editável (número) do popover; `favInputs[name]`/`favVals[name]` =
+  // os duplicados da faixa de favoritos (só para os 7 nomes de FAVORITES).
+  const fmt = (v, st) => (+v).toFixed(st < 0.1 ? 2 : st < 1 ? 1 : 0);
+  // gen-knobs-default.js corre panel.js num sandbox com elementos-stub mínimos (sem setAttribute,
+  // dataset, querySelector, body/documentElement) — este helper evita rebentar o gerador.
+  function setAttr(el, name, val) { if (el && typeof el.setAttribute === 'function') el.setAttribute(name, val); }
+  const inputs = {}, vals = {}, favInputs = {}, favVals = {}, rows = {};
+  const sliderDef = {}; // name -> [mn,mx,st,set,get] para a faixa de favoritos reconstruir sem duplicar a tabela `sliders`
+  for (const s of sliders) sliderDef[s[0]] = s;
+
+  function mkRow(name, mn, mx, st, set, get, { fav } = {}) {
     const lab = document.createElement('label');
-    lab.innerHTML = `<span>${name}</span>`;
-    const val = document.createElement('b');
-    val.style.cssText = 'min-width:44px;text-align:right;font-weight:normal;color:#9a9a9a';
+    if (REBUILD.has(name)) lab.classList.add('rebuild');
+    const span = document.createElement('span'); span.textContent = name;
+    if (REBUILD.has(name)) { const rb = document.createElement('span'); rb.className = 'rb'; rb.textContent = ' ⏫'; rb.title = 'reconstrói a malha'; span.appendChild(rb); }
+    const val = document.createElement('input');
+    val.type = 'number'; val.step = st; val.min = mn; val.max = mx;
+    val.value = fmt(get(), st);
     const inp = document.createElement('input');
     inp.type = 'range'; inp.min = mn; inp.max = mx; inp.step = st; inp.value = get();
-    val.textContent = (+inp.value).toFixed(st < 0.1 ? 2 : st < 1 ? 1 : 0);
-    inp.oninput = () => {
-      set(+inp.value);
-      val.textContent = (+inp.value).toFixed(st < 0.1 ? 2 : st < 1 ? 1 : 0);
+
+    function apply(v) {
+      v = Math.min(mx, Math.max(mn, v));
+      set(v);
+      inp.value = v;
+      val.value = fmt(v, st);
+      const other = fav ? inputs[name] : favInputs[name];
+      const otherVal = fav ? vals[name] : favVals[name];
+      if (other) other.value = v;
+      if (otherVal) otherVal.value = fmt(v, st);
       if (PERSIST.has(name)) {
         touched.add(name);
         persistAll();   // grava TODOS os knobs, não só este (senão os novos perdem-se)
       }
-    };
-    lab.appendChild(val); lab.appendChild(inp);
-    knobsBox.appendChild(lab);
-    inputs[name] = inp;
+    }
+    inp.oninput = () => apply(+inp.value);
+    val.onchange = () => { const n = +val.value; if (Number.isFinite(n)) apply(n); else val.value = fmt(get(), st); };
+    val.onkeydown = (e) => { if (e.key === 'Enter') val.blur(); };
+
+    lab.appendChild(span); lab.appendChild(val); lab.appendChild(inp);
+    return { lab, inp, val };
   }
 
-  /* Normaliza o localStorage no arranque: passa a ter os 98 knobs (nenhum knob novo se perde numa
-     sessão futura) e as chaves antigas dos labels renomeados desaparecem já migradas. Só se escreve
-     quando havia mesmo algo gravado — numa primeira visita não se cria nada. */
+  // ---- popovers por grupo: um <div class=dbgpop-group> por grupo, todos filhos de #dbg, só um visível ----
+  const groupBoxes = {};
+  const groupLists = {}; // referência direta ao .dbgpop-list de cada grupo — evita querySelector
+                          // (o sandbox de gen-knobs-default.js não stuba esse método nos elementos)
+  const groupNames = GROUPS.map(g => g[0]);
+  for (const [gname, names] of GROUPS) {
+    const box = document.createElement('div'); box.className = 'dbgpop-group';
+    if (box.dataset) box.dataset.group = gname; // stub do gerador (gen-knobs-default.js) não tem `dataset`
+    box.hidden = true;
+    const head = document.createElement('div'); head.className = 'dbgpop-head';
+    const title = document.createElement('span'); title.className = 'dbgpop-title'; title.textContent = gname;
+    const search = document.createElement('input'); search.type = 'text'; search.placeholder = 'busca…'; search.className = 'dbgpop-search';
+    const reset = document.createElement('button'); reset.textContent = '↺ reset'; reset.title = 'repõe os defaults só deste grupo';
+    const close = document.createElement('button'); close.textContent = '✕'; close.className = 'dbgpop-close';
+    head.appendChild(title); head.appendChild(search); head.appendChild(reset); head.appendChild(close);
+    box.appendChild(head);
+    const list = document.createElement('div'); list.className = 'dbgpop-list';
+    box.appendChild(list);
+
+    for (const name of names) {
+      const def = sliderDef[name];
+      if (!def) continue; // validateGroups() já avisou; não rebenta a UI
+      const [, mn, mx, st, set, get] = def;
+      if (PERSIST.has(name)) { const v0 = startValue(name); if (v0 !== undefined) set(v0); }
+      const { lab, inp, val } = mkRow(name, mn, mx, st, set, get, { fav: false });
+      list.appendChild(lab);
+      inputs[name] = inp; vals[name] = val; rows[name] = lab;
+    }
+
+    // passo 3: busca por substring (filtra as linhas deste grupo; `includes`, sem acentuar sensibilidade extra)
+    search.oninput = () => {
+      const q = search.value.trim().toLowerCase();
+      for (const name of names) {
+        const row = rows[name];
+        if (row) row.hidden = q && !name.toLowerCase().includes(q);
+      }
+    };
+    // passo 3: reset por grupo — só as chaves deste grupo, a partir de KNOB_DEFAULTS
+    reset.onclick = () => {
+      const sub = {};
+      for (const name of names) if (name in KNOB_DEFAULTS) sub[name] = KNOB_DEFAULTS[name];
+      knobsSet(sub, true);
+      knobMsg.textContent = `${gname}: reposto aos defaults`;
+    };
+    close.onclick = () => closeGroup();
+
+    dbg.appendChild(box);
+    groupBoxes[gname] = box;
+    groupLists[gname] = list;
+  }
+
+  /* Normaliza o localStorage no arranque: passa a ter os mesmos knobs de sempre (nenhum knob novo se
+     perde numa sessão futura) e as chaves antigas dos labels renomeados desaparecem já migradas. Só se
+     escreve quando havia mesmo algo gravado — numa primeira visita não se cria nada. */
   if (Object.keys(knobStore).length || touched.size) persistAll();
 
   function knobsGet() {
@@ -338,8 +485,13 @@ export async function initPanel(CONFIG, hooks = {}) {
     for (const [name, , , st, set] of sliders) {
       if (!PERSIST.has(name) || !Number.isFinite(src[name])) continue;
       set(src[name]); n++;
-      const inp = inputs[name];
-      if (inp) { inp.value = src[name]; inp.previousSibling.textContent = (+src[name]).toFixed(st < 0.1 ? 2 : st < 1 ? 1 : 0); }
+      // §Riscos: já não se usa `inp.previousSibling` — referências explícitas nos mapas
+      // inputs/vals/favInputs/favVals (popover + faixa de favoritos, quando o nome é um dos 7).
+      const txt = fmt(src[name], st);
+      const inp = inputs[name]; if (inp) inp.value = src[name];
+      const val = vals[name]; if (val) val.value = txt;
+      const finp = favInputs[name]; if (finp) finp.value = src[name];
+      const fval = favVals[name]; if (fval) fval.value = txt;
       if (persist) touched.add(name);
     }
     // hooks: um ficheiro pode mudar filas/junta/corrente (rebuild) e focos/luz geral/fundo
@@ -355,6 +507,7 @@ export async function initPanel(CONFIG, hooks = {}) {
   // ---- botões (Fase 5: mesma semântica de web/index-v2.html:873-883) ----
   const sp = document.createElement('div'); sp.className = 'sp';
   const knobMsg = document.createElement('div');
+  knobMsg.className = 'knobMsg';
   knobMsg.style.cssText = 'margin-top:4px;color:#8a8a8a;font-size:11px';
 
   /* "repor ficheiro gravado":
@@ -436,7 +589,6 @@ export async function initPanel(CONFIG, hooks = {}) {
   btnLoad.onclick = () => fileInput.click();
 
   sp.appendChild(btnFile); sp.appendChild(btnDefaults); sp.appendChild(btnSave); sp.appendChild(btnLoad);
-  dbg.appendChild(sp); dbg.appendChild(fileInput); dbg.appendChild(knobMsg);
 
   /* ---- checkboxes `spot i` (web/index-v2.html:884-889) → CONFIG.spots[i].on (a SpotLight i apaga) ----
      S8: passam a persistir em localStorage['mb2.toggles'] (antes voltavam sempre a ligadas). */
@@ -452,8 +604,27 @@ export async function initPanel(CONFIG, hooks = {}) {
     l.appendChild(c); l.append(` spot ${i}`); spRow.appendChild(l);
     spotChecks.push(c);
   });
-  dbg.appendChild(spRow);
   if (savedToggles.spots) onSpotsChanged();
+
+  // ---- grupo "Ficheiro" (§2 grupo 9): sem sliders — botões gravar/carregar/repor, checkboxes spot
+  // 0-5, colunas 1/2/3 e A-/A+ (tamanho de fonte) vivem todos aqui, dentro do popover próprio. ----
+  {
+    const list = groupLists['Ficheiro'];
+    const sz = document.createElement('div'); sz.className = 'sz';
+    const mk = (t, fn) => { const b = document.createElement('button'); b.textContent = t; b.onclick = fn; sz.appendChild(b); };
+    mk('1 col', () => { dbgSize.cols = 1; applyDbgSize(); });
+    mk('2 col', () => { dbgSize.cols = 2; applyDbgSize(); });
+    mk('3 col', () => { dbgSize.cols = 3; applyDbgSize(); });
+    mk('compacto', () => { dbgSize.compact = !dbgSize.compact; applyDbgSize(); });
+    mk('A−', () => { dbgSize.scale = Math.max(0.7, +(dbgSize.scale - 0.1).toFixed(2)); applyDbgSize(); });
+    mk('A+', () => { dbgSize.scale = Math.min(1.5, +(dbgSize.scale + 0.1).toFixed(2)); applyDbgSize(); });
+    list.appendChild(sz);
+    list.appendChild(sp);
+    list.appendChild(fileInput);
+    list.appendChild(spRow);
+    list.appendChild(knobMsg);
+    applyDbgSize();
+  }
 
   /* `skin` e `explosões` vivem fora do painel (botões do #ui, teclas w/x) mas são estado do David —
      guardam-se aqui, na mesma chave. `main.js` chama `panel.togglesApply()` depois de criar os
@@ -492,22 +663,96 @@ export async function initPanel(CONFIG, hooks = {}) {
   // utilizador que manda na skin, e uma escolha dele tem de sobreviver ao reload).
   if (savedToggles.skin === 'dark' || savedToggles.skin === 'white') CONFIG.skin = savedToggles.skin;
 
+  // ---- faixa de favoritos (§2 "Sempre à mão"): duplica os 7 inputs mais usados ao vivo; oninput
+  // liga-se ao MESMO set()/get() do slider original — mkRow() já sincroniza os dois lados. ----
+  for (const name of FAVORITES) {
+    const def = sliderDef[name];
+    if (!def) { console.warn('[MB2] favorito sem slider:', name); continue; }
+    const [, mn, mx, st, set, get] = def;
+    const { lab, inp, val } = mkRow(name, mn, mx, st, set, get, { fav: true });
+    lab.title = name;
+    dbgfav.appendChild(lab);
+    favInputs[name] = inp; favVals[name] = val;
+  }
+
+  // ---- barra inferior de separadores (§2, um botão por grupo) + popover: só um grupo aberto. ----
+  let openGroup = null;
+  try { openGroup = localStorage.getItem('mb2.dbgOpen') || null; } catch (e) { /* */ }
+  const groupBtns = {};
+  const groupDots = {};
+  function closeGroup() {
+    openGroup = null;
+    for (const g of groupNames) { groupBoxes[g].hidden = true; setAttr(groupBtns[g], 'aria-expanded', 'false'); }
+    dbg.classList.remove('open');
+    try { localStorage.setItem('mb2.dbgOpen', ''); } catch (e) { /* */ }
+  }
+  function openGroupByName(gname) {
+    if (!groupBoxes[gname]) return;
+    if (openGroup === gname) { closeGroup(); return; }
+    openGroup = gname;
+    for (const g of groupNames) { groupBoxes[g].hidden = g !== gname; setAttr(groupBtns[g], 'aria-expanded', String(g === gname)); }
+    dbg.classList.add('open');
+    try { localStorage.setItem('mb2.dbgOpen', gname); } catch (e) { /* */ }
+  }
+  for (const gname of groupNames) {
+    const b = document.createElement('button');
+    b.textContent = gname;
+    setAttr(b, 'aria-expanded', 'false');
+    b.onclick = () => openGroupByName(gname);
+    if (gname === 'Motor') b.title = 'só faz efeito com ?src=music (motor de música)';
+    const dot = document.createElement('span'); dot.className = 'dot'; dot.hidden = true;
+    b.appendChild(dot);
+    dbgbar.appendChild(b);
+    groupBtns[gname] = b; groupDots[gname] = dot;
+  }
+  if (openGroup && groupBoxes[openGroup]) openGroupByName(openGroup);
+
+  // grupo Motor esmaecido sem ?src=music (passo 3 do brief): só serve quando o motor de música manda.
+  if (!(window.MUSIC)) { groupBtns['Motor'].style.opacity = '.5'; }
+
+  // passo 3: ponto "por gravar" no separador — acende quando algum knob do grupo diverge do knobFile
+  // (ou dos defaults, se não há ficheiro carregado ainda). Recalcula-se a cada oninput via persistAll.
+  function refreshDirtyDots() {
+    const baseline = (knobFile && Object.keys(knobFile).length) ? knobFile : fileDefaults;
+    for (const [gname, names] of GROUPS) {
+      let dirty = false;
+      for (const name of names) {
+        if (!PERSIST.has(name)) continue;
+        const def = sliderDef[name]; if (!def) continue;
+        const cur = def[5]();
+        const base = baseline[name];
+        if (Number.isFinite(base) && Number.isFinite(cur) && Math.abs(cur - base) > 1e-6) { dirty = true; break; }
+      }
+      if (groupDots[gname]) groupDots[gname].hidden = !dirty;
+    }
+  }
+  const _persistAll = persistAll;
+  persistAll = function () { _persistAll(); refreshDirtyDots(); };
+  refreshDirtyDots();
+
   addEventListener('keydown', (e) => {
-    if (e.key === 'd' && !isTypingTarget(e.target)) dbg.classList.toggle('on');
+    if (e.key === 'd' && !isTypingTarget(e.target)) {
+      const on = dbg.classList.toggle('on');
+      dbgbar.classList.toggle('on', on);
+      dbgfav.classList.toggle('on', on);
+      if (!on) closeGroup();
+    }
   });
   function isTypingTarget(t) { return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'); }
+  // painel visível por omissão (spike) — a faixa/barra seguem o mesmo estado inicial do `#dbg.on`.
+  dbgbar.classList.add('on'); dbgfav.classList.add('on');
 
   // bónus (brief F4 §7): sliders re-lêem CONFIG quando este é escrito pela consola/motor — chama-se
   // `get()` de cada slider e escreve-se no input, sem passar por `set()` (não reescreve o CONFIG).
   function refresh() {
     for (const [name, , , st, , get] of sliders) {
-      const inp = inputs[name];
-      if (!inp) continue;
       const v = get();
       if (!Number.isFinite(v)) continue;
-      inp.value = v;
-      const val = inp.previousSibling;
-      if (val) val.textContent = (+v).toFixed(st < 0.1 ? 2 : st < 1 ? 1 : 0);
+      const txt = fmt(v, st);
+      const inp = inputs[name]; if (inp) inp.value = v;
+      const val = vals[name]; if (val) val.value = txt;
+      const finp = favInputs[name]; if (finp) finp.value = v;
+      const fval = favVals[name]; if (fval) fval.value = txt;
     }
   }
 
@@ -519,12 +764,13 @@ export async function initPanel(CONFIG, hooks = {}) {
     knobFile = (obj && typeof obj === 'object') ? obj : null;
     btnFile.disabled = !knobFile && !Object.keys(fileDefaults).length;
     syncSaveLabel(); // com música, o botão passa a "gravar (music-config.json)"
+    refreshDirtyDots(); // a "baseline" do ponto por-gravar mudou
   }
 
   return {
     sliders, PERSIST, KNOB_DEFAULTS, knobsGet, knobsSet, knobsTouched, setKnobFile,
     get knobFile() { return knobFile; }, get fileDefaults() { return fileDefaults; },
     togglesGet, togglesSet, persistToggles, syncSaveLabel,
-    dbgSize, inputs, refresh,
+    dbgSize, inputs, vals, favInputs, favVals, GROUPS, FAVORITES, openGroupByName, closeGroup, refresh,
   };
 }
