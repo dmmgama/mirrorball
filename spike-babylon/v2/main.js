@@ -79,19 +79,25 @@ function dirFromAzEl(azDeg, elDeg) {
    só (des)ligadas com setEnabled. Posição/direção/intensidade vêm de ball.mountedSpots[i] quando o
    Opus o expuser (fonte única de verdade: S·spotDist a olhar C, I já com fade/choreo/spotFadeMix
    aplicados); enquanto não existir, cai no fallback local (dirFromAzEl, sem fade — Fase 1). */
-const MAX_SPOTS = CONFIG.spots.length;
+/* F5: os FLASHES da coreografia também entram em `ball.mountedSpots` (a seguir aos focos), por isso
+   o pool tem de cobrir `spots.length + flashSlots + 2` — as luzes extra ficam pré-criadas e
+   desligadas (`setEnabled(false)`); NUNCA se criam/destroem luzes por frame (recompilava shaders). */
+const N_SPOT_SLOTS = CONFIG.spots.length;
+const N_FLASH_SLOTS = Math.max(0, Math.round(num((CONFIG.choreo || {}).flashSlots, 4))) + 2;
+const MAX_SPOTS = N_SPOT_SLOTS + N_FLASH_SLOTS;
 const spotLights = [];
 for (let i = 0; i < MAX_SPOTS; i++) {
-  const sp = CONFIG.spots[i];
+  const sp = CONFIG.spots[i] || { az: 0, el: 0, radius: 0.15, intensity: 0 };
   const dir = dirFromAzEl(sp.az, sp.el);
   const pos = dir.scale(CONFIG.spotDist);
   const toCenter = BABYLON.Vector3.Zero().subtract(pos).normalize();
   const angle = 2 * Math.atan((sp.radius * CONFIG.spotRadiusMul) / CONFIG.spotDist) * 2.2;
   const light = new BABYLON.SpotLight('spot' + i, pos, toCenter, angle, 12, scene);
-  light.intensity = CONFIG.spotLightIntensity * sp.intensity;
+  light.intensity = CONFIG.spotLightIntensity * num(sp.intensity, 0);
   light.radius = 0.02;
   light.diffuse = new BABYLON.Color3(1, 1, 1);
   light.specular = new BABYLON.Color3(1, 1, 1);
+  if (i >= N_SPOT_SLOTS) light.setEnabled(false);
   spotLights.push(light);
 }
 
@@ -108,38 +114,61 @@ function spotColor(sp) {
 function num(v, d) { return Number.isFinite(v) ? v : d; }
 const WHITE = new BABYLON.Color3(1, 1, 1);
 
-let activeSpotCount = 0;
+let activeSpotCount = 0, activeFlashCount = 0;
 function updateSpotLights() {
-  const mounted = ball && ball.mountedSpots; // [{S,H,C,r,I,az,el}] — o Opus é a fonte de verdade quando existir
-  const n = MAX_SPOTS;
-  let active = 0;
-  for (let i = 0; i < n; i++) {
-    const sp = CONFIG.spots[i];
-    const light = spotLights[i];
-    const m = mounted && mounted[i];
-    let S, I;
-    if (m && m.S) {
-      S = new BABYLON.Vector3(m.S[0], m.S[1], m.S[2]);
-      I = num(m.I, 0);
-    } else {
-      // fallback (ball.mountedSpots ainda não existe): sem fade/choreo, só az/el/intensity estáticos
-      S = dirFromAzEl(sp.az, sp.el);
-      I = num(sp.intensity, 0);
+  /* `ball.mountedSpots` (F2) é a fonte única de verdade: já traz os focos com fade/spotFadeMix/
+     spotGain/spotsOn/spotCount aplicados e, desde a F5, os FLASHES da coreografia a seguir a eles
+     (`isFlash: true`, raio já sem `spotRadiusMul`). Percorre-se `mountedSpots` (não `CONFIG.spots`),
+     porque a lista já vem filtrada — o índice do array NÃO é o índice do `CONFIG.spots`. Os slots
+     do pool que sobram ficam `setEnabled(false)`.
+     Fallback (mountedSpots ainda não existe / ball em stub): az/el/intensity estáticos do CONFIG. */
+  const mounted = (ball && ball.mountedSpots) || null;
+  let used = 0, active = 0, flashes = 0;
+
+  if (mounted && mounted.length) {
+    for (let k = 0; k < mounted.length && used < MAX_SPOTS; k++) {
+      const m = mounted[k];
+      if (!m || !m.S || m.wide) continue;           // `wide` = luz indireta (RectAreaLight, não SpotLight)
+      const light = spotLights[used];
+      const I = num(m.I, 0);
+      const S = new BABYLON.Vector3(m.S[0], m.S[1], m.S[2]);
+      const pos = S.scale(CONFIG.spotDist);
+      light.position.copyFrom(pos);
+      light.direction = BABYLON.Vector3.Zero().subtract(pos).normalize();
+      // o raio de `mountedSpots` já tem (ou não, se for flash) o spotRadiusMul aplicado (ball.js)
+      light.angle = 2 * Math.atan(Math.max(0.01, num(m.r, 0.15)) / CONFIG.spotDist) * 2.2;
+      light.intensity = CONFIG.spotLightIntensity * I;
+      // flashes não têm entrada em CONFIG.spots (nascem da coreografia) → cor branca
+      const col = m.isFlash ? WHITE : spotColor(CONFIG.spots[k] || {});
+      light.diffuse = col;
+      light.specular = col;
+      const enabled = I >= 0.02;
+      light.setEnabled(enabled);
+      // HUD: focos e flashes contam-se em separado (`spots 2/2` continua a ser focos vs spotCount)
+      if (enabled) { if (m.isFlash) flashes++; else active++; }
+      used++;
     }
-    const pos = S.scale(CONFIG.spotDist);
-    light.position.copyFrom(pos);
-    light.direction = BABYLON.Vector3.Zero().subtract(pos).normalize();
-    light.angle = 2 * Math.atan((sp.radius * CONFIG.spotRadiusMul) / CONFIG.spotDist) * 2.2;
-    light.intensity = CONFIG.spotLightIntensity * I;
-    const col = spotColor(sp);
-    light.diffuse = col;
-    light.specular = col;
-    const on = sp.on !== false;
-    const enabled = i < CONFIG.spotCount && on && I >= 0.02;
-    light.setEnabled(enabled);
-    if (enabled) active++;
+  } else {
+    const n = Math.min(MAX_SPOTS, CONFIG.spots.length);
+    for (let i = 0; i < n; i++) {
+      const sp = CONFIG.spots[i], light = spotLights[i];
+      const S = dirFromAzEl(sp.az, sp.el);
+      const pos = S.scale(CONFIG.spotDist);
+      const I = num(sp.intensity, 0);
+      light.position.copyFrom(pos);
+      light.direction = BABYLON.Vector3.Zero().subtract(pos).normalize();
+      light.angle = 2 * Math.atan((sp.radius * CONFIG.spotRadiusMul) / CONFIG.spotDist) * 2.2;
+      light.intensity = CONFIG.spotLightIntensity * I;
+      const col = spotColor(sp);
+      light.diffuse = col; light.specular = col;
+      const enabled = i < CONFIG.spotCount && sp.on !== false && I >= 0.02;
+      light.setEnabled(enabled);
+      if (enabled) active++;
+      used++;
+    }
   }
-  activeSpotCount = active;
+  for (let i = used; i < MAX_SPOTS; i++) spotLights[i].setEnabled(false);
+  activeSpotCount = active; activeFlashCount = flashes;
 }
 
 function rebuildSpotLights() { updateSpotLights(); } // mantido por compat: knobs chamam onSpotsChanged() → isto
@@ -415,6 +444,183 @@ addEventListener('keydown', (e) => {
 });
 if (skinBtn) { skinBtn.onclick = () => setSkin(CONFIG.skin === 'white' ? 'dark' : 'white'); syncSkinBtn(); }
 
+/* ================================================================================================
+   ---- F5 choreo/API ----                                                          (bloco do OPUS)
+   Coreografia (choreo.js), health/PRESETS→effective(), estrobo de FUNDO e `window.MIRRORBALL`.
+   O bloco `// ---- F5 music ----` (Sonnet) vem depois e não toca em nada daqui.
+   ================================================================================================ */
+
+import { createChoreo } from './choreo.js';
+const choreo = createChoreo(CONFIG);
+const reducedMotion = choreo.reducedMotion;
+
+/* ---- health: PRESETS ALIVE/DEAD + effective() — index-v2.html:187-190, :301-310 ----
+   `E` deixa de ser fixo: `spotGain/rotationRpm/sphereOpacity/haze` interpolam ALIVE→DEAD por
+   `t = 1 − health`. ALIVE lê o CONFIG a cada chamada (o painel `d` escreve lá), DEAD é fixo.
+   `reducedMotion` → rpm ×0.03 (a bola quase pára; a coreografia congela no choreo.js). */
+const PRESETS = {
+  ALIVE: { spotGain: 1.0, rotationRpm: CONFIG.rotationRpm, sphereOpacity: CONFIG.sphereOpacity, haze: CONFIG.haze },
+  DEAD: { spotGain: 0.22, rotationRpm: 0.12, sphereOpacity: 0.35, haze: 0.25 },
+};
+let health = 1.0;
+function lerp(a, b, t) { return a + (b - a) * t; }
+function effective(out) {
+  const A = PRESETS.ALIVE, D = PRESETS.DEAD, t = 1 - health;
+  A.rotationRpm = num(CONFIG.rotationRpm, 1);
+  A.sphereOpacity = num(CONFIG.sphereOpacity, 1);
+  A.haze = num(CONFIG.haze, 0.65);
+  out.spotGain = lerp(A.spotGain, D.spotGain, t);
+  out.rotationRpm = clamp(lerp(A.rotationRpm, D.rotationRpm, t) * (reducedMotion ? 0.03 : 1), 0, 3); // teto 3 rpm
+  out.sphereOpacity = clamp01(lerp(A.sphereOpacity, D.sphereOpacity, t));
+  out.haze = clamp(lerp(A.haze, D.haze, t), 0, 1);
+  return out;
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+
+/* ---- estrobo de FUNDO: a SALA atrás pisca, não a bola (index-v2.html:399-403) ----
+   No Canvas 2D é um `fillRect` branco por cima do fundo, alpha = `level·(1 − age/lenMs)`. Aqui a
+   sala é geometria: multiplica-se temporariamente o `emissiveColor` do material dos 5 planos
+   (`room.material`) — a sala acende, a bola não emite luz (regra 6). Em white lê-se como um
+   escurecer, porque o tonemap/contraste do pipeline comprime o topo (mesmo efeito do original).
+   INVARIANTE: `minGapMs` (default 340 ms ≈ 2.9 Hz) é verificado aqui, não no motor — nada > 3 Hz. */
+const MIN_GAP_FLOOR_MS = 334; // 3 Hz é o teto absoluto (regra 6): nem um knob o pode baixar
+let strobeT0 = -1e9, strobeLevel = 0;
+/* ⚠ PERF (medido): ATRIBUIR `room.material.emissiveColor = new Color3(...)` por frame custou
+   **+73 ms** por render — o setter do PBRMaterial marca o material dirty e força a revalidação/
+   recompilação dos shaders dos 5 planos a cada frame. A correção é mutar a cor EXISTENTE
+   (`.set(r,g,b)`, sem setter de propriedade) e só tocar nela quando o valor muda de facto.
+   Depois disto o estrobo custa o mesmo que não o ter (ver §1.13 do PARITY). */
+const roomEmissive = room.material.emissiveColor
+  ? room.material.emissiveColor.clone() : new BABYLON.Color3(0, 0, 0);
+const roomEmissiveLive = room.material.emissiveColor || (room.material.emissiveColor = new BABYLON.Color3(0, 0, 0));
+let strobeA = 0;
+function updateStrobe(nowMs) {
+  const ST = CONFIG.strobe;
+  const lenMs = Math.max(1, num(ST && ST.lenMs, 55));
+  const age = nowMs - strobeT0;
+  let a = 0;
+  if (ST && age >= 0 && age < lenMs) a = clamp01(strobeLevel * (1 - age / lenMs));
+  if (a === strobeA) return a;             // sem mudança → não se toca no material
+  strobeA = a;
+  // a sala acende para branco proporcionalmente ao alpha (o `a` do fillRect do original)
+  roomEmissiveLive.set(
+    roomEmissive.r + (1 - roomEmissive.r) * a,
+    roomEmissive.g + (1 - roomEmissive.g) * a,
+    roomEmissive.b + (1 - roomEmissive.b) * a);
+  return a;
+}
+function fireStrobe(opts) {
+  const ST = CONFIG.strobe, o = opts || {};
+  if (!ST || !ST.enabled || reducedMotion) return false;
+  const gap = Math.max(MIN_GAP_FLOOR_MS, num(ST.minGapMs, 340));
+  const t = performance.now();
+  if (t - strobeT0 < gap) return false;
+  strobeT0 = t;
+  strobeLevel = clamp01(num(o.level, num(ST.level, 0.55)));
+  return true;
+}
+
+/* ---- disjuntores (CONFIG.beamsMotor / spotsMotor / opacityMotor) ----
+   Guarda do lado da BOLA (o `music.js` também os lê — a redundância é intencional, brief F5):
+   com o disjuntor a `false` o slider do painel manda e o motor é ignorado. Só as chamadas que se
+   identificam como vindas do motor (`{fromMotor:true}`) são filtradas; a consola do David passa. */
+function motorAllowed(kind, opts) {
+  const fromMotor = !!(opts && opts.fromMotor);
+  if (!fromMotor) return true;
+  if (kind === 'spots') return CONFIG.spotsMotor !== false;
+  if (kind === 'beams') return CONFIG.beamsMotor !== false;
+  if (kind === 'opacity') return CONFIG.opacityMotor !== false;
+  return true;
+}
+
+/* ---- `window.MIRRORBALL` — assinatura completa de index-v2.html:723-770 ----
+   Tudo menos explode/rewind/getExplode/setExplodeEnabled, que ficam STUBS para a F7.
+   Regra 7 (sem NaN): tudo o que vem do motor passa por `num(v, d)` + clamp. Tetos invioláveis
+   aplicados AQUI (não só no motor): beamIntensity ≤ 0.18, rotationRpm ≤ 3, haze ≤ 1. */
+// `skinAuto` = alvo contínuo do modo 'auto' (index-v2.html:247 arranca a 0 — `skinAutoValence` é o
+// MULTIPLICADOR da valência, não o valor inicial). Nesta fase só se GUARDA (não há modo 'auto' no
+// crossfade da F4, que trata 'auto' como 'dark') — a Regra 1 mantém-se: nenhum motor muda a skin.
+let skinAuto = 0;
+let explodeEnabled = (() => { try { return localStorage.getItem('mb.explode') !== 'off'; } catch (e) { return true; } })();
+
+/* Escritas do motor no CONFIG passam por aqui: clamp + disjuntor. O `music.js` escreve direto em
+   `MIRRORBALL.config` (:2082-2090), por isso a guarda real é uma sanitização por frame — ver
+   `sanitizeConfig()`, chamada no início de cada frame. */
+// [min, max, fallback-se-NaN]. Regra 7 (CLAUDE.md): um NaN vindo do motor apagou os feixes uma vez
+// — nenhum knob que o motor escreve pode ficar sem valor válido.
+const CFG_LIMITS = {
+  rotationRpm: [0, 3, 1], haze: [0, 1, 0.65], beamIntensity: [0, 0.18, 0.16],
+  beamFraction: [0, 1, 1], sphereOpacity: [0, 1, 1], beamMaxCount: [0, 4000, 110],
+  spotCount: [0, CONFIG.spots.length, 2], hazeMax: [0, 1, 1], beamFractionMax: [0, 1, 1],
+};
+function sanitizeConfig() {
+  for (const k in CFG_LIMITS) {
+    const lim = CFG_LIMITS[k];
+    const v = CONFIG[k];
+    if (!Number.isFinite(v)) { CONFIG[k] = lim[2]; continue; }
+    if (v < lim[0]) CONFIG[k] = lim[0]; else if (v > lim[1]) CONFIG[k] = lim[1];
+  }
+}
+
+window.MIRRORBALL = {
+  setHealth(h) { health = clamp01(num(+h, 0)); refreshPanel(); },
+  getHealth() { return health; },
+  config: CONFIG,
+  /* knobs do painel `d` (persistidos em localStorage['mb2.knobs']).
+     ⚠ prioridade `localStorage > ficheiro > defaults` (index-v2.html:730): o `set` só preenche os
+     knobs que o David NUNCA tocou — o que ele mexeu por último ganha ao ficheiro. */
+  knobs: {
+    get: () => (panelApi && panelApi.knobsGet ? panelApi.knobsGet() : {}),
+    set: (o) => {
+      if (!panelApi || !panelApi.knobsSet) return 0;
+      const obj = o || {};
+      if (panelApi.setKnobFile) panelApi.setKnobFile(obj);   // snapshot p/ 'repor ficheiro gravado'
+      const cur = panelApi.knobsGet ? panelApi.knobsGet() : {};
+      const touched = (() => { try { return JSON.parse(localStorage.getItem('mb2.knobs') || '{}') || {}; } catch (e) { return {}; } })();
+      const fill = {};
+      for (const k in obj) if (!Number.isFinite(touched[k]) && Number.isFinite(obj[k]) && k in cur) fill[k] = obj[k];
+      return panelApi.knobsSet(fill, false);
+    },
+  },
+  setSpot(i, partial) {
+    if (!motorAllowed('spots', partial)) return;
+    const s = CONFIG.spots[i]; if (!s) return;
+    const p = partial || {};
+    if (Number.isFinite(p.intensity)) s.intensity = clamp(p.intensity, 0, 4);
+    if (Number.isFinite(p.radius)) s.radius = clamp(p.radius, 0.01, 3);
+    if (Number.isFinite(p.az)) s.az = p.az;
+    if (Number.isFinite(p.el)) s.el = p.el;
+    if (Array.isArray(p.aim) && p.aim.length >= 2) s.aim = [num(p.aim[0], 0), num(p.aim[1], 0)];
+    if (typeof p.on === 'boolean') s.on = p.on;
+    if (Number.isFinite(p.hue)) s.hue = p.hue;
+    if (Number.isFinite(p.period)) s.period = Math.max(0.1, p.period);
+  },
+  // flash curto num sítio novo (motor: bombo/tarola). opts: {intensity, radius, len, az, el, aim}
+  flash(opts) { if (!motorAllowed('spots', opts)) return; choreo.flash(opts); },
+  // re-aponta um spot já (o técnico muda o pinspot de sítio); sem pose → aleatória
+  retarget(i, pose) { if (!motorAllowed('spots', pose)) return; choreo.retarget(i, pose); },
+  setChoreo(on) { choreo.setEnabled(on); },
+  // estrobo de FUNDO (sala atrás). Só dispara se CONFIG.strobe.enabled e respeita minGapMs (≤ 3 Hz).
+  strobe(opts) { if (!motorAllowed('spots', opts)) return false; return fireStrobe(opts); },
+  strobeEnabled() { return !!(CONFIG.strobe && CONFIG.strobe.enabled); },
+  setSkin(mode) { setSkin(mode); },                       // Regra 1: só o David; o motor não chama isto
+  setSkinAuto(v) { skinAuto = clamp01(num(+v, 0)); },     // só guarda o valor (sem modo 'auto' nesta fase)
+  getSkin() { return { mode: CONFIG.skin, mix: skinMix, target: skinTargetVal(), auto: skinAuto }; },
+
+  /* ---- STUBS da Fase 7 (explosão em estilhaços) — assinatura estável desde já ---- */
+  explode() { /* F7 */ },
+  rewind() { /* F7 */ },
+  getExplode() { return { phase: 'idle', s: 0, enabled: explodeEnabled }; },
+  setExplodeEnabled(v) { explodeEnabled = !!v; try { localStorage.setItem('mb.explode', explodeEnabled ? 'on' : 'off'); } catch (e) { /* sem storage */ } },
+};
+
+// o `music.js` lê `window.MIRRORBALL` no momento em que é carregado (`web/music.js:2077`) — o bloco
+// `// ---- F5 music ----` do Sonnet só o carrega depois disto.
+window.__MB2_READY = true;
+window.dispatchEvent(new Event('mb2-ready'));
+
+/* ================================ fim do bloco F5 choreo/API ==================================== */
+
 /* ---------------- loop, tempo, HUD ----------------
    getDeltaTime() mente com o tab em segundo plano (docs/babylon-reference.md §9) — mede-se o
    custo REAL de scene.render() via onBeforeRenderObservable/onAfterRenderObservable. */
@@ -435,14 +641,24 @@ scene.onAfterRenderObservable.add(() => {
    parede degradam — feixes/facetas/glint/bloom não têm degradação automática (regra do plano). */
 let frameEma = 16, dotDensityLive = num(CONFIG.dotDensity, 0.8);
 
-const E = { spotGain: 1, sphereOpacity: CONFIG.sphereOpacity, haze: CONFIG.haze, skinMix: 0 };
+/* `E` = estado efetivo do frame. Desde a F5 é `effective()` que o preenche (health ALIVE→DEAD),
+   mais `choreoGain[]`/`flashes` da coreografia — o `ball.js` consome ambos. */
+const E = { spotGain: 1, rotationRpm: CONFIG.rotationRpm, sphereOpacity: CONFIG.sphereOpacity, haze: CONFIG.haze, skinMix: 0,
+  choreoGain: [], flashes: choreo.flashes };
 scene.registerBeforeRender(() => {
   const now = performance.now();
   const dt = Math.min(0.1, (now - lastFrame) / 1000);
   lastFrame = now;
   tSec += dt;
-  E.sphereOpacity = CONFIG.sphereOpacity;
-  E.haze = CONFIG.haze;
+
+  // ---- F5: sanitiza o que o motor escreveu no CONFIG (tetos invioláveis) e resolve o health ----
+  sanitizeConfig();
+  effective(E);                       // escreve spotGain/rotationRpm/sphereOpacity/haze
+  choreo.step(dt);                    // gains por spot + flashes Poisson (congela em reducedMotion)
+  E.choreoGain.length = CONFIG.spots.length;
+  for (let i = 0; i < E.choreoGain.length; i++) E.choreoGain[i] = choreo.gainOf(i);
+  E.flashes = choreo.flashes;
+  updateStrobe(now);                  // estrobo de fundo: a sala pisca (emissive do room.material)
 
   // skin dark/white primeiro (Regra 1: só tecla/botão mexem em CONFIG.skin; isto só lê e faz o crossfade)
   const sk = updateSkin(dt);
@@ -512,6 +728,8 @@ scene.registerAfterRender(() => {
     `facetas ${tileCount()}  ·  filas ${CONFIG.facetRows}\n` +
     `spots ${activeSpotCount}/${CONFIG.spotCount}  ·  ambient ${activeAmbientCount}/${CONFIG.ambient.n}  ·  feixes ${beamCount()}\n` +
     `dots ${dotCount()}  ·  dens ${dotDensityLive.toFixed(2)}  ·  skin ${CONFIG.skin}\n` +
+    `health ${health.toFixed(2)}  ·  rpm ${E.rotationRpm.toFixed(2)}  ·  flashes ${activeFlashCount}/${choreo.flashes.length}` +
+    `  ·  estrobo ${CONFIG.strobe && CONFIG.strobe.enabled ? 'on' : 'off'}\n` +
     `[d] painel  ·  [w] skin  ·  [0] repor câmara  ·  rato: orbitar/zoom`;
 });
 
@@ -530,6 +748,69 @@ window.MB2 = {
   get skinMix() { return skinMix; },
   /* Bónus §7 do brief F4: sliders re-lêem CONFIG quando este é escrito pela consola. */
   refreshPanel,
+  /* F5 (diagnóstico): coreografia e estado efetivo do frame. A API pública é `window.MIRRORBALL`. */
+  get choreo() { return choreo; },
+  get E() { return E; },
+  get panel() { return panelApi; },
 };
 
 console.log('MB2 pronto —', engine.isWebGPU ? 'WebGPU' : 'WebGL2');
+
+// ---- F5 music ----
+// Modo música (?src=music): carrega core.js/music.js/tuner.js do sidecar SEM os tocar (brief
+// f5-sonnet.md). Só ativa quando servida como /app/spike/v2/index.html (sidecar real ou fallback
+// serve.py, ver spike-babylon/serve.py) — fora daí (`:8099/v2/index.html` sem junction/proxy) os
+// caminhos relativos não existem e o resto do spike continua igual (Fase 1-4, nada muda).
+//
+// `music.js` lê `window.MIRRORBALL` ao carregar (web/music.js:783, :2576) — por isso só se importam
+// os 3 scripts DEPOIS de `window.MIRRORBALL` existir. O Opus cria a API real e dispara `mb2-ready`
+// (bloco '---- F5 choreo/API ----'); enquanto ele não tiver terminado, um stub local mínimo (nunca
+// sobrepõe a API real — `if (!window.MIRRORBALL)`) permite testar este bloco de forma isolada.
+(function f5Music() {
+  if (qs.get('src') !== 'music') return; // core.js decide o dono via MB_SOURCE; aqui só gate de carregamento
+
+  function ensureStub() {
+    // Stub de desenvolvimento — REMOVIDO/ignorado assim que o Opus tiver window.MIRRORBALL real
+    // (guarda-se com `if (!window.MIRRORBALL)`, nunca sobrepõe).
+    if (window.MIRRORBALL) return;
+    console.warn('[F5 music] window.MIRRORBALL ainda não existe (Opus) — a usar stub local só para desenvolvimento.');
+    let stubHealth = 1;
+    window.MIRRORBALL = {
+      setHealth(v) { stubHealth = Math.max(0, Math.min(1, Number(v) || 0)); },
+      getHealth() { return stubHealth; },
+      config: CONFIG,
+      knobs: {
+        get: () => panelApi.knobsGet(),
+        set: (obj) => { const n = panelApi.knobsSet(obj, false); if (panelApi.setKnobFile) panelApi.setKnobFile(obj); return n; },
+      },
+      setSpot() {}, flash() {}, retarget() {}, setChoreo() {}, strobe() { return false; }, strobeEnabled() { return false; },
+      setSkin, setSkinAuto() {}, getSkin: () => CONFIG.skin,
+      explode() {}, rewind() {}, getExplode: () => ({ phase: 'idle', s: 0, enabled: false }), setExplodeEnabled() {},
+    };
+  }
+
+  function loadMusicScripts() {
+    console.log('[F5 music] window.MIRRORBALL pronto — a carregar core.js/music.js/tuner.js do sidecar.');
+    // Ids de DOM esperados pelos 3 scripts: só `#mus` (web/music.js:2388, HUD tecla `m`) — já existe
+    // em v2/index.html, escondido por omissão (.on liga/desliga, mesmo padrão do Canvas 2D).
+    const scripts = ['../../core.js?v=1', '../../music.js?v=58', '../../tuner.js?v=1']; // relativos a /app/spike/v2/ → /app/*.js (web/*.js)
+    let i = 0;
+    function next() {
+      if (i >= scripts.length) { console.log('[F5 music] core.js/music.js/tuner.js carregados.'); return; }
+      const s = document.createElement('script');
+      s.src = scripts[i++];
+      s.onload = next;
+      s.onerror = (e) => console.error('[F5 music] falhou a carregar', s.src, e);
+      document.body.appendChild(s);
+    }
+    next();
+  }
+
+  function start() {
+    ensureStub(); // não-op se o Opus já criou a API real
+    loadMusicScripts();
+  }
+
+  if (window.__MB2_READY || window.MIRRORBALL) start();
+  else addEventListener('mb2-ready', start, { once: true });
+})();

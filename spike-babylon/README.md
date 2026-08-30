@@ -22,6 +22,35 @@ python serve.py            # http://127.0.0.1:8099/index.html
 
 Teclas: `v` feixes on/off · `r` parar/rodar · `espaço` pausa · rato orbita e faz zoom.
 
+## Correr em modo música (`v2/`, Fase 5)
+
+O `v2/index.html?src=music` carrega `core.js`/`music.js`/`tuner.js` **sem os alterar**, do
+`web/` do produto — precisa de ser servido same-origin com o sidecar de áudio
+(`agent-os/audio-sidecar`, porta 3739, que expõe `/app-token`, `/app-config*` e o WS).
+
+1. Sidecar a correr — atalho `Mirrors-of-Emotions-Start.bat`, ou confirmar com
+   `curl http://127.0.0.1:3739/app-token`.
+2. `cd spike-babylon && python serve.py` (porta 8099).
+3. Abrir `http://127.0.0.1:8099/app/spike/v2/index.html?src=music&webgl=1`
+   (`?webgl=1` só é preciso para automação/screenshot — WebGPU real ao vivo pode omitir).
+
+**Nota sobre a junction.** O plano original era uma junction `web/spike → spike-babylon`
+(`mklink /J`) para o sidecar servir o spike diretamente em `/app/spike/*`. **O sidecar real não
+segue reparse points** (confirmado: `GET /app/spike/README.md` dá 404 mesmo sendo um ficheiro
+plano na raiz do alvo, enquanto ficheiros reais de `web/` respondem 200 — parece um
+`realpath`/containment check). Por isso o `serve.py` (porta 8099) ganhou rotas de fallback:
+`/app/spike/*` → `spike-babylon/*`, `/app/*.js` → `web/*.js`, e proxy de `/app-token` +
+`/app-config*` para `127.0.0.1:3739`. A junction pode ser recriada se um dia isto mudar
+(não está no caminho crítico, não entra no git):
+```powershell
+cmd /c mklink /J "web\spike" "spike-babylon"
+```
+(correr em PowerShell a partir da raiz do repo — `cmd /c mklink` invocado de dentro do Git Bash
+não persistiu de forma fiável nesta máquina).
+
+Detalhes completos (o que foi testado, divergências) em `v2/PARITY.md` §4/§5 e
+`v2/briefs/f5-sync.md`.
+
 ## Medido nesta máquina (não estimado)
 
 | | |

@@ -27,8 +27,15 @@
  * evitar pagar o loop duas vezes) e o setter `ball.dotDensityLive` (degradação adaptativa, o
  * `main.js` escreve). O DESENHO (thin instances de disco) é do `v2/dots.js`.
  *
+ * F5 acrescenta ao `E` de `update(tSec, spots, E)` dois campos da COREOGRAFIA (`v2/choreo.js`):
+ *   `E.choreoGain: number[]` — gain 0..1 por spot (`choreo[i].gain`), multiplica `I` (:382);
+ *   `E.flashes: [{az, el, aim, radius, intensity, life, age}]` — flashes vivos, montados como
+ *   focos extra em `mountedSpots` com o envelope de :390-391 e o raio **sem** `spotRadiusMul`
+ *   (:308). Ordem em `mountedSpots`: focos, depois flashes, depois luz indireta (`wide`).
+ * Quem faz a coreografia (Poisson, retarget, dwell) é o `choreo.js`; aqui só se consome.
+ *
  * NÃO faz: DESENHO dos feixes (beams.js), cone incidente (incident.js), DESENHO dos pontos na
- * parede (dots.js), explosão, corpos dos focos, painel.
+ * parede (dots.js), explosão, corpos dos focos, painel, coreografia (choreo.js).
  */
 
 const BJS = (typeof BABYLON !== 'undefined') ? BABYLON : (typeof globalThis !== 'undefined' ? globalThis.BABYLON : undefined);
@@ -429,7 +436,9 @@ export function createBall(scene, CONFIG) {
   const ambientPoses = [];    // vista pública da luz indireta: { az, el, I }
 
   // monta um spot no formato do original. `wide` = fonte de área (luz indireta), sem cone nem beam.
-  function pushSpot(azDeg, elDeg, I, radius, aim, wide, areaRad) {
+  // `isFlash` marca os flashes da coreografia (F5): entram em `mountedSpots` como qualquer foco,
+  // mas o raio JÁ vem sem `spotRadiusMul` (index-v2.html:308) — quem chama é que decide.
+  function pushSpot(azDeg, elDeg, I, radius, aim, wide, areaRad, isFlash) {
     const S = spotDir(azDeg, elDeg);
     const Hv = norm3([S[0], S[1], S[2] + 1]);              // half-vector spot↔câmara (:286)
     const u = norm3(cross3(S, [0, 1, 0])), v = cross3(u, S);
@@ -439,18 +448,27 @@ export function createBall(scene, CONFIG) {
     spotCache.push({
       Sx: S[0], Sy: S[1], Sz: S[2], Hx: Hv[0], Hy: Hv[1], Hz: Hv[2], I,
       r: Math.max(0.01, radius), Cx, Cy, Cz,
-      wide: !!wide, area: num(areaRad, 0.5),
+      wide: !!wide, area: num(areaRad, 0.5), isFlash: !!isFlash,
     });
-    return { az: azDeg, el: elDeg, S, H: Hv, C: [Cx, Cy, Cz], r: Math.max(0.01, radius), I };
+    return { az: azDeg, el: elDeg, S, H: Hv, C: [Cx, Cy, Cz], r: Math.max(0.01, radius), I, isFlash: !!isFlash };
   }
 
-  // spotsIn = CONFIG.spots (formato original). Devolve spotCache; preenche mountedSpots/ambientPoses.
+  /* spotsIn = CONFIG.spots (formato original). Devolve spotCache; preenche mountedSpots/ambientPoses.
+     `E` (F5) traz, além de spotGain/haze/sphereOpacity:
+       E.choreoGain : number[]  — gain 0..1 por spot da coreografia (`choreo[i].gain`, :382). Em falta = 1.
+       E.flashes    : [{az, el, aim, radius, intensity, life, age}] — flashes VIVOS da coreografia
+                      (`choreo.js`). Cada um é montado como um foco extra com o envelope de :390-391
+                      (ataque nos primeiros 25% da vida, decaimento linear depois) e com o raio
+                      **sem** `spotRadiusMul` (:308, `s.isFlash ? 1 : CONFIG.spotRadiusMul`).
+                      Entram em `mountedSpots` a seguir aos focos e ANTES da luz indireta, para que o
+                      `main.js` lhes possa dar SpotLights (slots `spots.length … spots.length+flashSlots`). */
   function makeSpots(spotsIn, tSec, E) {
     const src = (Array.isArray(spotsIn) && spotsIn.length) ? spotsIn : DEFAULT_SPOTS;
     spotCache.length = 0; mountedSpots.length = 0; ambientPoses.length = 0;
     const rmulG = num(cfg('spotRadiusMul'), 1);
     const fadeMix = clamp(num(cfg('spotFadeMix'), 1), 0, 1);
     const gain = num((E && E.spotGain), 1);
+    const cg = (E && Array.isArray(E.choreoGain)) ? E.choreoGain : null;   // F5: gain por spot
     // spotCount corta a lista: o main.js pode passar já cortado, mas quem manda é o CONFIG (:379)
     const nMax = Math.min(src.length, Math.max(0, Math.round(num(cfg('spotCount'), src.length))));
 
@@ -462,10 +480,28 @@ export function createBall(scene, CONFIG) {
       const period = Math.max(0.1, num(s.period, 13));
       const fade0 = 0.5 + 0.5 * Math.sin(TAU * tSec / period + i * 2.1);   // :380
       const fade = lerp(1, fade0, fadeMix);                                 // :381
-      const I = num(s.intensity, 1) * gain * (0.35 + 0.65 * fade);          // :382 (choreo.gain = F5)
+      const gI = cg ? clamp(num(cg[i], 1), 0, 1) : 1;                       // :382 choreo[i].gain (F5)
+      const I = num(s.intensity, 1) * gain * (0.35 + 0.65 * fade) * gI;     // :382
       if (!(I >= 0.02)) continue;                                           // :383
       const r = num(s.radius, 0.16) * rmulG;
-      mountedSpots.push(pushSpot(num(s.az, 0), num(s.el, 0), I, r, s.aim, false, 0));
+      mountedSpots.push(pushSpot(num(s.az, 0), num(s.el, 0), I, r, s.aim, false, 0, false));
+    }
+
+    /* flashes da coreografia (:389-392) — depois dos focos, antes da luz indireta.
+       envelope: ataque seco nos primeiros 25% da vida, cauda linear nos 75% restantes.
+       raio SEM `spotRadiusMul` (:308). */
+    const fl = (E && Array.isArray(E.flashes)) ? E.flashes : null;
+    if (fl) {
+      for (let k = 0; k < fl.length; k++) {
+        const f = fl[k]; if (!f) continue;
+        const life = Math.max(0.01, num(f.life, 0.15));
+        const u = clamp(num(f.age, 0) / life, 0, 1);
+        const env = u < 0.25 ? u / 0.25 : 1 - (u - 0.25) / 0.75;            // :390
+        const I = num(f.intensity, 0) * gain * env;                         // :391
+        if (!(I > 0.02)) continue;
+        mountedSpots.push(pushSpot(num(f.az, 0), num(f.el, 0), I,
+          Math.max(0.01, num(f.radius, 0.14)), f.aim, false, 0, true));
+      }
     }
 
     // luz indireta: n fontes largas a deambular (:386-388) — não são focos, são áreas da sala
@@ -863,7 +899,10 @@ export function createBall(scene, CONFIG) {
     /* FONTE DE VERDADE dos focos (F2): preenchido a cada passagem da cadeia a partir de CONFIG.spots
        com fade/spotFadeMix/spotGain/spotsOn/spotCount já aplicados. O main.js deve posicionar as
        SpotLight a partir DAQUI (não recalcular az/el/I), para a mancha CPU e a luz PBR baterem certo.
-       [{ az, el, S:[x,y,z] (bola→foco, unit), H, C:[x,y,z] (desvio de mira), r, I }] */
+       [{ az, el, S:[x,y,z] (bola→foco, unit), H, C:[x,y,z] (desvio de mira), r, I, isFlash }]
+       F5: os FLASHES da coreografia vêm a seguir aos focos (mesmo formato, `isFlash: true`, raio
+       já sem `spotRadiusMul`); o `main.js` precisa de `CONFIG.spots.length + flashSlots + 2`
+       SpotLights para os cobrir a todos. */
     mountedSpots,
     /* Luz indireta a deambular (:386): [{ az, el, I }] — o main.js coloca aqui as RectAreaLight. */
     ambientPoses,

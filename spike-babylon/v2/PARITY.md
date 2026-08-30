@@ -3,11 +3,12 @@
 Tabela de paridade, item a item, a partir de `docs/parity-canvas2d.md` §1-§7. Estado por item:
 ✅ igual · ⚠ divergência (com porquê) · ⏳ por fazer. Atualizada no fim de cada fase.
 
-Fase atual: **Fase 4** (Sonnet: pontos na parede — fonte `ball.js` bloco `// ---- F4 dots ----`,
-desenho `v2/dots.js`; auréola `halo` (`main.js`); pós-processo `DefaultRenderingPipeline` (bloom/
-grão/vinheta/tonemap/exposição); degradação adaptativa `dotDensityLive`; skin dark/white com
-crossfade + botão/tecla `w`; knobs novos sem sufixo de fase, strobe passa a `(fase 5)`). Ver
-`spike-babylon/v2/briefs/f4-sonnet.md` e `docs/plan-babylon-v2.md`.
+Fase atual: **Fase 5** (Opus: `choreo.js` — `stepChoreo`/Poisson verbatim, health/`effective()`,
+estrobo de fundo, `window.MIRRORBALL` completo, 3 disjuntores, bloco `// ---- F5 choreo/API ----`
+do `main.js`; Sonnet: `?src=music` a carregar `core.js`/`music.js`/`tuner.js` do sidecar sem os
+tocar, bloco `// ---- F5 music ----`, fallback `serve.py` para a junction, botões do painel `d`
+ligados ao ficheiro). Ver `spike-babylon/v2/briefs/f5-sonnet.md`, `f5-opus.md`, `f5-sync.md` e
+`docs/plan-babylon-v2.md`.
 
 ---
 
@@ -477,7 +478,31 @@ instance color (greyscale) — mesmo padrão da malha de facetas. Tom recalculad
 cadeia de cinza (`updateChainTone()` a seguir a `computeColors()`, que é quem monta `mountedSpots`).
 
 ### 1.13 Estrobo de fundo
-⏳ Fase 4. Knobs no painel com sufixo `(fase 4)`.
+✅ **Feito (Fase 5)** — com uma **divergência de meio deliberada**. `MIRRORBALL.strobe(opts)` → `bool`
+(`false` se `!CONFIG.strobe.enabled`, se `reducedMotion`, ou se ainda não passaram `minGapMs`);
+nível `strobeLevel·(1 − age/lenMs)`, ataque instantâneo e cauda linear, verbatim de
+`index-v2.html:399-403`.
+
+⚠ **Divergência (o meio, não o efeito)**: no Canvas 2D é um `fillRect` branco por cima do fundo. Aqui
+a sala é geometria, portanto o que pisca é o **`emissiveColor` do `room.material`** (os 5 planos),
+interpolado para branco por `a` e reposto no fim. É mais fiel ao que o efeito É (a sala atrás a
+piscar, não a bola — a bola continua a não emitir luz, regra 6): **medido** com screenshots, a bola
+lê-se em silhueta escura contra as paredes brancas, exatamente como no original. Um plano fullscreen
+aditivo atrás da bola era a outra hipótese; deu leitura pior (lavava o feixe e a auréola em vez da
+sala). Em white o tonemap/contraste do pipeline comprime o topo → lê-se como escurecer, como no
+original.
+
+**Invariante ≤ 3 Hz reforçada na bola** (`MIN_GAP_FLOOR_MS = 334`): o `minGapMs` efetivo é
+`max(334, CONFIG.strobe.minGapMs)`, por isso nem um knob nem o motor conseguem passar dos 3 Hz.
+**Medido**: com o knob a 10 ms, o loop apertado só aceitou disparos a 334/334/334/334 ms → 2.99 Hz.
+
+⚠ **Armadilha de performance encontrada e corrigida** (vale para qualquer efeito futuro que mexa num
+material por frame): a primeira versão fazia `room.material.emissiveColor = new Color3(...)` a cada
+frame. O **setter** de `emissiveColor` do `PBRMaterial` marca o material dirty e força a revalidação
+dos shaders dos 5 planos — **medido: 81.2 ms/render com o estrobo ligado contra 7.7 ms sem** (+73 ms).
+A correção é mutar a cor **existente** (`emissiveColor.set(r,g,b)`, sem passar pelo setter da
+propriedade) e só lhe tocar quando o alpha muda de facto. Depois: **4.5 ms com o estrobo a disparar**
+contra 5.6 ms sem coreografia nenhuma — ou seja, custo nulo.
 
 ### 1.14 Explosão em estilhaços
 ⏳ Fase 7 (máquina de estados idle→out→drift→hold/held→back, Rodrigues por tile).
@@ -524,15 +549,118 @@ Chaves **novas** do spike Babylon (não existem na Canvas 2D, defaults do brief 
 ---
 
 ## 3. Coreografia (`choreo`)
-⏳ `stepChoreo` verbatim fica para a Fase 5 (junto com `window.MIRRORBALL` completo). Nesta fase
-os campos de `CONFIG.choreo` existem e têm knobs no painel `d`, mas nada os lê ainda — os
-SpotLights usam só `az/el/intensity/radius` estáticos dos `spots[]`.
+
+✅ **Feita (Fase 5)**, em `v2/choreo.js` — `createChoreo(CONFIG)` → `{ step(dt), gainOf(i), flashes,
+retarget(i,pose), flash(opts), setEnabled(on), reset(), randomPose() }`. `randomPose`/`stepChoreo`/
+Poisson são um porte **verbatim** de `web/index-v2.html:253-285`; `dt` em segundos, clampado a 0.05
+(o mesmo teto do `dtMs` de `:337`).
+
+| item | estado | como se verificou |
+|---|---|---|
+| `randomPose()` — `az = rnd(azRange)·(±1)`, nunca ≈0; `el = rnd(elRange)`; `aim` em disco `sqrt(rand)·aimMax` com y ×0.6 | ✅ verbatim | leitura + poses sorteadas sempre com `|az| ≥ 35` |
+| **Retarget**: ciclo `mt` 0→2 (apaga `gain=1−mt` → **salta** em `mt=1` → acende `gain=mt−1`), novo `dwell` no fim | ✅ verbatim | **medido**: gain 1→0 no az antigo (−52), az salta de golpe para −68.3 com gain≈0, gain 0→1 no az novo. **Nunca varre** |
+| Flashes Poisson `flashAcc += dt·flashRate`, máx `flashSlots` vivos | ✅ verbatim | **medido**: `flashRate=2` → 20 flashes em 10 s simulados |
+| Envelope do flash (ataque nos primeiros 25%, decaimento linear depois, `:390`) | ✅ verbatim | aplicado no `ball.js` (`makeSpots`), como no original |
+| Flash com raio **sem** `spotRadiusMul` (`:308`) | ✅ | **medido**: flash com `radius:0.22` montou com `r=0.22`; focos com `r=0.15/0.16` |
+| `reducedMotion` congela `step()` | ✅ verbatim | `choreo.reducedMotion` (retorna logo, como `:261`) |
+
+**Onde vive cada peça** (divergência de arquitetura, não de comportamento — no Canvas 2D era tudo uma
+função no ficheiro único): a coreografia é `choreo.js` (só produz números); o `main.js` chama
+`choreo.step(dt)` uma vez por frame e passa o resultado ao `ball.js` por `E.choreoGain[]` (gain por
+spot, multiplica `I` em `:382`) e `E.flashes` (lista viva). O `ball.js` monta os flashes em
+`mountedSpots` a seguir aos focos, com `isFlash: true`. O `main.js` dá-lhes SpotLights a partir de
+`mountedSpots` — o pool passou de `spots.length` para **`spots.length + flashSlots + 2`** (12 luzes),
+as extra pré-criadas e `setEnabled(false)`; nunca se cria/destrói uma luz por frame.
+
+**Robustez (regra 7)**: `pair()` defende `dwell`/`azRange`/`elRange`/`flashLen`/`flashRadius`/
+`flashIntensity` de knobs em falta ou escalares, e o acumulador de Poisson tem teto (`flashAcc ≤ 20`)
+para que um `dt` gigante — tab que volta do segundo plano — não gere uma rajada de flashes.
 
 ---
 
 ## 4. API `window.MIRRORBALL`
-⏳ Fase 5. Nesta fase existe só `window.MB2 = { scene, engine, camera, cfg, __perf }`, conforme o
-brief F1 (não é a mesma API — é o equivalente de diagnóstico do spike v1, `window.SPIKE`).
+
+✅ **Superfície completa (Fase 5, Opus — bloco `// ---- F5 choreo/API ----` do `main.js`)**, com a
+assinatura de `web/index-v2.html:723-770`:
+
+`setHealth/getHealth` · `config` · `knobs.get/set` · `setSpot(i,partial)` · `flash(opts)` ·
+`retarget(i,pose)` · `setChoreo(on)` · `strobe(opts)`→bool · `strobeEnabled()` · `setSkin(mode)` ·
+`setSkinAuto(v)` · `getSkin()` — todos **implementados**;
+`explode(opts)` · `rewind()` · `getExplode()` · `setExplodeEnabled(v)` — **stubs da Fase 7**
+(`getExplode()` devolve `{phase:'idle', s:0, enabled}`; `setExplodeEnabled` já persiste em
+`localStorage['mb.explode']`, como o original).
+
+- **`health` + `effective()`** (`:187-190`, `:301-310`): `PRESETS.ALIVE/DEAD` interpolados por
+  `t = 1 − health`; ALIVE relê o `CONFIG` a cada frame (o painel `d` escreve lá), DEAD é fixo
+  (`spotGain 0.22`, `rpm 0.12`, `sphereOpacity 0.35`, `haze 0.25`). `reducedMotion` → rpm ×0.03.
+  Substitui o `E` fixo que o `main.js` tinha desde a F1. **Medido**: `setHealth(0)` → rpm 0.12,
+  haze 0.25, opacidade 0.35, spotGain 0.22; `setHealth(0.5)` → 0.56/0.45/0.675/0.61; `setHealth(1)`
+  volta ao ALIVE. O slider `health (motor manda)` do painel e a API vêem-se nos dois sentidos.
+- **`knobs.get/set`** ligados a `panelApi.knobsGet/knobsSet` (+ `setKnobFile`, do Sonnet), com a
+  prioridade de `:730` — **`localStorage > ficheiro > defaults`**: o `set` só preenche os knobs que
+  o David nunca tocou. **Medido**: `get()` → 91 knobs; `set({'haze máx…':0.5, 'inexistente':1})`
+  aplicou 1.
+- **3 disjuntores respeitados na BOLA, não só no `music.js`** (guarda dupla, pedida pelo brief):
+  `spotsMotor` filtra `setSpot`/`flash`/`retarget`/`strobe`, `beamsMotor` e `opacityMotor` filtram
+  as escritas correspondentes. Só as chamadas marcadas `{fromMotor:true}` são filtradas — a consola
+  do David passa sempre. **Medido**: com `spotsMotor=false`, `flash({fromMotor:true})` e
+  `strobe({fromMotor:true})` não fazem nada; `flash({})` da consola faz.
+- **Sem NaN (regra 7)**: `sanitizeConfig()` corre no início de cada frame sobre tudo o que o motor
+  escreve — `[min, max, fallback-se-NaN]` por chave, com os **tetos invioláveis** aplicados aqui e
+  não só no motor: `beamIntensity ≤ 0.18`, `rotationRpm ≤ 3`, `haze ≤ 1`. **Medido**: escrever
+  `NaN` em `rotationRpm/haze/beamIntensity/sphereOpacity/beamFraction` e `9` em `beamIntensity`
+  devolve-os a 1 / 0.65 / 0.16 / 1 / 1 e a 0.18, sem um único frame partido.
+- **`mb2-ready`**: assim que `window.MIRRORBALL` existe, `window.__MB2_READY = true` e
+  `dispatchEvent(new Event('mb2-ready'))` — é o gate que o bloco do Sonnet usa para carregar o
+  `music.js` (que lê `window.MIRRORBALL` no momento em que é avaliado).
+- ⚠ **`setSkin('auto')`**: a API aceita `'dark'`/`'white'` (o `setSkin` da F4 rejeita `'auto'`, que
+  continua a ler-se como dark — ver §1.15). `setSkinAuto(v)` **só guarda** o valor (`skinAuto`,
+  devolvido por `getSkin().auto`), como o brief pediu; o crossfade em modo `'auto'` fica para quando
+  o motor de emoções entrar. Regra 1 intacta: nenhum motor chama `setSkin`.
+
+**Medido, `MB2.__perf()`** (WebGL2 forçado, 2938 tiles, 2 focos + 3 ambient + feixes), mediana de
+`scene.render()` — teto do brief: 8 ms:
+
+| cenário | mediana |
+|---|---|
+| coreografia desligada (equivalente à F4) | **5.6 ms** |
+| coreografia ligada, `retarget` + flashes a 3/s | **6.8 ms** |
+| + estrobo a disparar (após a correção do §1.13) | **4.5 ms** |
+| a seguir, tudo de volta ao normal | **4.7 ms** |
+
+A F5 não custa nada de mensurável (a variação está dentro do ruído entre corridas). Consola limpa
+em todos os cenários; nenhum `NaN` chegou ao render.
+
+---
+
+✅ **Carregamento/posse (Fase 5, Sonnet — bloco `// ---- F5 music ----` do `main.js`).** Com
+`?src=music`, os 3 scripts `core.js`/`music.js`/`tuner.js` carregam-se **sem alterações**
+(`web/*.js` intocado) do sidecar, **só depois** do evento `mb2-ready` (disparado pelo Opus quando
+`window.MIRRORBALL` — bloco `// ---- F5 choreo/API ----` — fica completo; guarda-se com
+`if (window.__MB2_READY || window.MIRRORBALL) start(); else addEventListener('mb2-ready', start,
+{once:true})`). Caminhos relativos a `/app/spike/v2/`: `../../core.js?v=1`, `../../music.js?v=58`,
+`../../tuner.js?v=1` → resolvem para `/app/core.js`, `/app/music.js`, `/app/tuner.js` (servidos a
+partir de `web/`, ver §"Servir do sidecar" abaixo). `music.js` lê `window.MIRRORBALL` ao carregar
+(`web/music.js:783,:2576`) — a ordem é garantida pelo gate do `mb2-ready`.
+
+✅ **`window.MB_SOURCE.owner === 'music'`** confirmado em runtime (`core.js` lê `?src=music`).
+`window.MUSIC` só existe com `?src=music`; sem o query param nada muda (Fase 1-4 intactas,
+`window.MIRRORBALL` continua a existir por conta do Opus, mas `core.js`/`music.js`/`tuner.js`
+nunca carregam).
+
+✅ **Sem `git commit`, sem tocar em `ball.js`/`choreo.js`/`web/*.js`.** Um `if (!window.MIRRORBALL)`
+protege um stub de desenvolvimento que nunca chegou a disparar nos testes (o `mb2-ready` do Opus
+já estava a postos antes do meu bloco correr) — fica no ficheiro só como rede de segurança caso as
+duas fases voltem a divergir no tempo; não interfere com a API real.
+
+✅ **Assinatura completa** (`setHealth/getHealth/config/knobs.get/set/setSpot/flash/retarget/
+setChoreo/strobe/strobeEnabled/setSkin/setSkinAuto/getSkin/explode/rewind/getExplode/
+setExplodeEnabled`) — implementada pelo Opus no bloco `// ---- F5 choreo/API ----`; ver
+`docs/parity-canvas2d.md` §4 e o handoff dele. Testado em conjunto (ver "Feito quando" abaixo):
+`getHealth()` muda ao vivo com o motor ligado (`0.84 → 0.96 → 0.91` observado em 3 leituras
+espaçadas), `strobeEnabled()` reflete `CONFIG.strobe.enabled`.
+
+⏳ `explode/rewind/getExplode/setExplodeEnabled` ficam stubs (Fase 7), como previsto.
 
 ---
 
@@ -606,6 +734,27 @@ vivo — `ball.js` lê em `syncMaterial()` todos os frames, sem rebuild), `espel
 (real)` (`CONFIG.seamInsetRealMul`, 0-1, rebuild), `espelhos: junta var. (real)`
 (`CONFIG.seamVarRealMul`, 0-1, rebuild). Testado no browser: os 5 sliders aparecem no painel,
 valores refletem `config.js`, `rebuild()`/render sem exceções.
+
+✅ **Fase 5 (Sonnet) — correção de nomes + botões ligados.** Dois sliders tinham sufixo ` (fase 5)`
+que não existe na bola Canvas 2D (`web/index-v2.html:827,830`); corrigidos para ficarem
+**idênticos**: `focos+flashes: motor manda (0/1)` e `health (motor manda)`. Os outros 4 do bloco
+"motor manda"/`rotationRpm`/`haze máx`/`sphereOpacity` já batiam certo desde a Fase 1.
+- **`health (motor manda)`** liga-se a `window.MIRRORBALL.setHealth(v)`/`getHealth()` quando a API
+  existe (pedido do Opus via `f5-sync.md`), com fallback a uma variável local antes disso — nunca
+  quebra se a ordem de carregamento inverter.
+- **Botão "repor ficheiro gravado"** — deixa de estar permanentemente desativado: `panel.js` expõe
+  `setKnobFile(obj)`, chamado pelo `window.MIRRORBALL.knobs.set()` do Opus sempre que `music.js`
+  carrega a secção `ball` do `music-config.json` (`web/music.js:783`). **Testado end-to-end**: com
+  o motor ligado, o botão ficou habilitado e o clique devolveu "46 knobs repostos do ficheiro".
+- **Botão "gravar (music-config.json)"** — mesma semântica de `web/index-v2.html:878-882`:
+  chama `window.MUSIC.tune.save()` (existe só em `?src=music`), mostra "a gravar…" e depois
+  "gravado em …"/"não gravou: …"; sem motor mostra "sem motor de música (só localStorage)". Não
+  gravei de facto durante o teste (o brief pede só quando o David carregar) — confirmei que
+  `window.MUSIC.tune.save` é uma função e que o botão está ligado, sem disparar o POST.
+- `knobsGet()`/`knobsSet(obj, persist)`/`KNOB_DEFAULTS` — nomes e assinatura inalterados (o Opus
+  usa-os diretamente, ver `f5-sync.md`). `window.MIRRORBALL.knobs.get()` devolvido em runtime:
+  91 chaves (os 54 originais + os novos do spike, todos em `PERSIST`), confirmando que `rotationRpm`/
+  `sphereOpacity`/`health` continuam **fora** (motor manda, nunca persistem em ficheiro).
 
 ---
 
@@ -715,3 +864,108 @@ sem foco — abaixo do teto de 8 ms pedido).
 - `RectAreaLight`: intensidade tem escala própria (~0.1-2); a fórmula `spotLightIntensity·I·mul` (≈38) lavava a cena a branco. Agora `intensity = ambient.intensity·I·ambientLightMul` (default 5 → ≈0.35). Knob `indireta: luz ×` 0-20.
 - `attachProbe(room.planes)` não estava a ser chamado — `reflectionTexture` era null e `envIntensity` não fazia nada. Ligado em `main.js`.
 - Osso do raio-X: em Babylon 9 `LinesMesh.alpha` não blenda sozinho; aplica-se também `material.alpha` + `needAlphaBlending`. Knobs `raio-x: osso (0/1)` e `raio-x: osso alpha ×` (default 0.35 — a 1.0 lia demasiado forte).
+
+---
+
+## Servir do sidecar (Fase 5, Sonnet)
+
+O sidecar (`agent-os/audio-sidecar`, porta 3739) serve `web/` em `/app/*` do disco, mas **não
+segue** a junction `web/spike → spike-babylon` — `GET /app/spike/README.md` (ficheiro plano na
+raiz do alvo) devolve 404 mesmo com a junction criada e válida (`Get-Item` confirma
+`LinkType Junction`, `Target` correto), enquanto `GET /app/music-config.json` (ficheiro real em
+`web/`) responde 200. Conclusão: o servidor do sidecar faz algum `realpath`/containment check que
+rejeita reparse points fora de `web/`.
+
+**Fallback implementado** (documentado no brief, ponto 1): `spike-babylon/serve.py` (o mesmo
+servidor `no-store` da Fase 1, porta 8099) ganhou:
+- `translate_path`: `/app/spike/*` → `spike-babylon/*` (o próprio spike); `/app/*.js` (e outros
+  ficheiros planos) → `web/*` **só se o ficheiro existir e sem `..` no caminho** — nunca sai de
+  `web/`.
+- `do_GET`/`do_POST` interceta `/app-token` e `/app-config*` e faz proxy para
+  `http://127.0.0.1:3739` (via `urllib.request`, preserva `content-type`/`x-audio-token`/corpo).
+  `j.ws` devolvido por `/app-token` já é um URL absoluto (`ws://127.0.0.1:3739`) — o WebSocket
+  liga-se lá diretamente, sem proxy aqui.
+
+**Testado com `curl`** (sidecar real a correr): `/app/spike/v2/index.html` → 200,
+`/app/core.js`/`/app/music.js`/`/app/tuner.js` → 200, `/app-token` → mesmo token do sidecar,
+`/app-config/locations?token=…` → devolve a localização real
+(`web/music-config.json`, `exists:true`). **Testado no browser** (Chrome dedicado, tab própria):
+`http://127.0.0.1:8099/app/spike/v2/index.html?src=music&webgl=1` carrega sem erros de consola,
+`window.MB_SOURCE.owner === 'music'`, HUD `m` mostra o motor completo (BOMBO/agudos/tarola/
+grelha/gesto/perfil/saída/dono) com o gerador sintético a produzir features reais (sem música a
+tocar fisicamente no momento do teste — silêncio real teria dado a linha "silêncio").
+
+A junction fica no disco (`mklink /J web\spike spike-babylon`, criada via PowerShell porque o
+`cmd /c mklink` chamado de dentro do Bash tool não persistiu — ver nota abaixo) como preparação
+para o dia em que o sidecar passar a seguir reparse points, mas **não está no caminho crítico**:
+o `serve.py` funciona sem ela. Não entra no git (`.gitignore` do repo já ignora `web/spike` por
+regra geral, ou o David pode adicionar `web/spike` explicitamente se quiser).
+
+**Como recriar a junction** (opcional, não necessária para o fluxo acima):
+```powershell
+cmd /c mklink /J "web\spike" "spike-babylon"
+```
+Correr a partir da raiz do repo, em PowerShell (o `mklink` invocado via `cmd /c` a partir do Git
+Bash não criou o link de forma fiável nesta máquina — usar PowerShell diretamente).
+
+**Como arrancar em modo música:**
+1. Sidecar a correr (`Mirrors-of-Emotions-Start.bat`, ou confirmar com
+   `curl http://127.0.0.1:3739/app-token`).
+2. `cd spike-babylon && python serve.py` (porta 8099 por omissão).
+3. Abrir `http://127.0.0.1:8099/app/spike/v2/index.html?src=music&webgl=1`.
+
+`?webgl=1` continua a ser necessário para automação/screenshots (WebGPU `initAsync` pendura com o
+tab em segundo plano); ao vivo o David pode omitir para WebGPU real.
+
+---
+
+## Feito quando (critério do brief F5-Sonnet)
+
+- `http://127.0.0.1:8099/app/spike/v2/index.html?src=music&webgl=1` abre sem erros de consola.
+  ✅ **Testado**: só os logs esperados (`ball.js carregado`, `beams.js carregado`,
+  `incident.js carregado`, `dots.js carregado`, `MB2 pronto`, `[F5 music] …carregados`), zero
+  erros/exceções (`read_console_messages` com `onlyErrors:true` limpo).
+- `window.MB_SOURCE.owner === 'music'`. ✅ **Testado** via `javascript_tool`.
+- HUD `m` mostra features a chegar (silêncio marcado se não houver música). ✅ **Testado**:
+  captura de ecrã mostra BOMBO/agudos/tarola/grelha/gesto/perfil/saída/dono com valores a mudar
+  entre leituras (`health` 0.84→0.96→0.91 em 3 amostras); o motor estava a correr com o gerador
+  sintético em vez de silêncio real no momento do teste, mas o mecanismo (`hud.classList.toggle`
+  em `m`) é o mesmo que marcaria silêncio sem áudio.
+- `window.MIRRORBALL.knobs.get()` devolve os nomes da secção `ball` do `music-config.json`. ✅
+  **Testado**: 91 chaves devolvidas, incluindo `focos: quantos`, `focos: raio ×`, etc. — os
+  mesmos nomes usados por `web/index-v2.html`.
+- "Repor ficheiro gravado" aplica. ✅ **Testado**: botão habilitado (não `disabled`), clique
+  devolveu "46 knobs repostos do ficheiro".
+- Em `:8099` sem `?src=music`, tudo continua como na F4. ✅ **Testado**: `window.MUSIC` ausente,
+  `window.MIRRORBALL` continua a existir (API do Opus, independente do modo música), consola
+  limpa, painel/HUD normais (`health 1.00`, `rpm 1.00`, defaults mecânicos).
+
+### Ficheiros alterados (Sonnet, Fase 5)
+- `spike-babylon/v2/panel.js` — nomes de 2 sliders corrigidos (sem sufixo `(fase 5)`); botões
+  "repor ficheiro gravado"/"gravar (music-config.json)" ligados; `setKnobFile()` exportado;
+  `health (motor manda)` liga a `window.MIRRORBALL.setHealth/getHealth` quando existe.
+- `spike-babylon/v2/index.html` — `#mus` (HUD do motor, escondido por omissão, `.on` liga/desliga
+  como no Canvas 2D) + CSS correspondente.
+- `spike-babylon/v2/main.js` — bloco `// ---- F5 music ----` no fim do ficheiro: gate por
+  `?src=music` + `mb2-ready`, carrega `core.js`/`music.js`/`tuner.js` do sidecar, stub de
+  desenvolvimento guardado (nunca disparou nos testes finais).
+- `spike-babylon/serve.py` — fallback de proxy/roteamento (`/app/spike/*`, `/app/*.js`,
+  proxy de `/app-token`+`/app-config*`) para contornar a junction não seguida pelo sidecar.
+- `spike-babylon/v2/briefs/f5-sync.md` — criado; coordenação com o Opus.
+- `spike-babylon/v2/PARITY.md` — este ficheiro, §4 e §5.
+- Junction `web/spike → spike-babylon` criada no disco (não gita).
+
+### Divergências / o que ficou por fazer
+- O sidecar real (porta 3739, servidor de produção) **não segue a junction** — documentado acima
+  como divergência de infraestrutura, não do spike. Se um dia o sidecar mudar para seguir reparse
+  points, a junction já está pronta e o `serve.py` deixa de ser necessário para este fluxo (mas
+  pode continuar a existir como atalho de desenvolvimento).
+- Não gravei de facto no `music-config.json` durante o teste (o botão "gravar" dispara um `POST`
+  real para o sidecar — evitei escrever no ficheiro partilhado com a bola Canvas 2D sem pedido
+  explícito do David; confirmei só que a função existe e está ligada).
+- Não testei com música real a tocar (sem fonte de áudio disponível nesta sessão) — o HUD `m`
+  mostrou o motor a reagir ao gerador sintético/estado interno, não a áudio ao vivo; o mecanismo
+  de troca "silêncio" é o mesmo, não haveria motivo para divergir, mas fica por confirmar com
+  áudio real.
+- Knobs de estrobo (`strobe fundo (0/1) (fase 5)` etc.) mantêm o sufixo — são território do Opus
+  (bloco `// ---- F5 choreo/API ----`), não mexi.

@@ -17,7 +17,10 @@ export function initPanel(CONFIG, hooks = {}) {
   const onBgGreyChanged = hooks.onBgGreyChanged || noop;
 
   const CH = CONFIG.choreo, AMB = CONFIG.ambient;
-  let health = 1; // placeholder local (não há motor de música nesta fase — knob 'health' fica mecânico)
+  // 'health' é mecânico (placeholder local) até o Opus criar window.MIRRORBALL.setHealth/getHealth
+  // (bloco '---- F5 choreo/API ----' do main.js); o slider abaixo liga-se à API real quando existir,
+  // sem quebrar antes disso (f5-sync.md, pedido do Opus).
+  let health = 1;
 
   // ---- os 54 sliders da bola Canvas 2D, verbatim (nomes/ordem/ranges/steps de web/index-v2.html:774-830) ----
   const sliders = [
@@ -42,9 +45,9 @@ export function initPanel(CONFIG, hooks = {}) {
     ['spot2: el°', -30, 80, 1, v => { CONFIG.spots[2].el = v; onSpotsChanged(); }, () => CONFIG.spots[2].el],
     ['spot3: az°', -175, 175, 1, v => { CONFIG.spots[3].az = v; onSpotsChanged(); }, () => CONFIG.spots[3].az],
     ['spot3: el°', -30, 80, 1, v => { CONFIG.spots[3].el = v; onSpotsChanged(); }, () => CONFIG.spots[3].el],
-    ['flash: por s (só manual)', 0, 6, 0.1, v => CH.flashRate = v, () => CH.flashRate],
+    ['flash: por s', 0, 6, 0.1, v => CH.flashRate = v, () => CH.flashRate],
     ['flash: raio ×', 0.2, 3, 0.05, v => { const b = 0.14; CH.flashRadius[0] = b * 0.7 * v; CH.flashRadius[1] = b * 1.3 * v; }, () => CH.flashRadius[1] / (0.14 * 1.3)],
-    ['flash: dura ms (só manual)', 40, 600, 10, v => { CH.flashLen[0] = v * 0.6 / 1000; CH.flashLen[1] = v * 1.4 / 1000; }, () => CH.flashLen[1] * 1000 / 1.4],
+    ['flash: dura ms', 40, 600, 10, v => { CH.flashLen[0] = v * 0.6 / 1000; CH.flashLen[1] = v * 1.4 / 1000; }, () => CH.flashLen[1] * 1000 / 1.4],
     ['bola: luz', 0, 1, 0.02, v => CONFIG.ballLight = v, () => CONFIG.ballLight],
     ['bola: contraste', 0.5, 2.5, 0.05, v => CONFIG.ballContrast = v, () => CONFIG.ballContrast],
     ['luz geral (volume)', 0, 1, 0.05, v => { CONFIG.shade.key = v; onShadeChanged(); }, () => CONFIG.shade.key],
@@ -52,11 +55,11 @@ export function initPanel(CONFIG, hooks = {}) {
     ['luz geral: el°', -60, 90, 5, v => { CONFIG.shade.el = v; onShadeChanged(); }, () => CONFIG.shade.el],
     ['auréola', 0, 1, 0.05, v => CONFIG.halo = v, () => CONFIG.halo],
     ['fundo: claridade (dark)', 0, 60, 1, v => { CONFIG.bgGrey = v; onBgGreyChanged(); }, () => CONFIG.bgGrey],
-    ['strobe fundo (0/1) (fase 5)', 0, 1, 1, v => CONFIG.strobe.enabled = v >= 1, () => CONFIG.strobe.enabled ? 1 : 0],
-    ['strobe: frequência × (fase 5)', 0, 3, 0.1, v => CONFIG.strobeRate = v, () => CONFIG.strobeRate],
+    ['strobe fundo (0/1)', 0, 1, 1, v => CONFIG.strobe.enabled = v >= 1, () => CONFIG.strobe.enabled ? 1 : 0],
+    ['strobe: frequência ×', 0, 3, 0.1, v => CONFIG.strobeRate = v, () => CONFIG.strobeRate],
     ['pontos na parede (densidade)', 0, 3, 0.05, v => CONFIG.dotDensity = v, () => CONFIG.dotDensity],
-    ['strobe: força (fase 5)', 0, 1, 0.05, v => CONFIG.strobe.level = v, () => CONFIG.strobe.level],
-    ['strobe: dura ms (fase 5)', 20, 200, 5, v => CONFIG.strobe.lenMs = v, () => CONFIG.strobe.lenMs],
+    ['strobe: força', 0, 1, 0.05, v => CONFIG.strobe.level = v, () => CONFIG.strobe.level],
+    ['strobe: dura ms', 20, 200, 5, v => CONFIG.strobe.lenMs = v, () => CONFIG.strobe.lenMs],
     ['luz indireta', 0, 0.4, 0.01, v => AMB.intensity = v, () => AMB.intensity],
     ['indireta: área°', 8, 70, 1, v => AMB.areaDeg = v, () => AMB.areaDeg],
     ['cone incidente', 0, 0.3, 0.005, v => CONFIG.incidentAlpha = v, () => CONFIG.incidentAlpha],
@@ -74,10 +77,12 @@ export function initPanel(CONFIG, hooks = {}) {
     ['rotationRpm (motor manda)', 0, 3, 0.05, v => CONFIG.rotationRpm = v, () => CONFIG.rotationRpm],
     ['haze máx (motor modula)', 0, 1, 0.01, v => { CONFIG.hazeMax = v; CONFIG.haze = v; }, () => CONFIG.hazeMax],
     ['feixes+haze: motor manda (0/1)', 0, 1, 1, v => CONFIG.beamsMotor = !!v, () => CONFIG.beamsMotor ? 1 : 0],
-    ['focos+flashes: motor manda (0/1) (fase 5)', 0, 1, 1, v => CONFIG.spotsMotor = !!v, () => CONFIG.spotsMotor ? 1 : 0],
+    ['focos+flashes: motor manda (0/1)', 0, 1, 1, v => CONFIG.spotsMotor = !!v, () => CONFIG.spotsMotor ? 1 : 0],
     ['opacidade: motor manda (0/1)', 0, 1, 1, v => CONFIG.opacityMotor = !!v, () => CONFIG.opacityMotor ? 1 : 0],
     ['sphereOpacity (motor manda)', 0, 1, 0.01, v => CONFIG.sphereOpacity = v, () => CONFIG.sphereOpacity],
-    ['health (motor manda) (fase 5)', 0, 1, 0.01, v => health = v, () => health],
+    ['health (motor manda)', 0, 1, 0.01,
+      v => { health = v; if (window.MIRRORBALL && window.MIRRORBALL.setHealth) window.MIRRORBALL.setHealth(v); },
+      () => (window.MIRRORBALL && window.MIRRORBALL.getHealth) ? window.MIRRORBALL.getHealth() : health],
   ];
 
   // índice onde termina o bloco "focos" original (antes de 'rotationRpm') — usado para o PERSIST,
@@ -87,7 +92,7 @@ export function initPanel(CONFIG, hooks = {}) {
     sliders.slice(0, rotationIdx).map(x => x[0]).concat([
       'haze máx (motor modula)',
       'feixes+haze: motor manda (0/1)',
-      'focos+flashes: motor manda (0/1) (fase 5)',
+      'focos+flashes: motor manda (0/1)',
       'opacidade: motor manda (0/1)',
     ])
   );
@@ -222,12 +227,19 @@ export function initPanel(CONFIG, hooks = {}) {
     return n;
   }
 
-  // ---- botões ----
+  // ---- botões (Fase 5: mesma semântica de web/index-v2.html:873-883) ----
   const sp = document.createElement('div'); sp.className = 'sp';
+  const knobMsg = document.createElement('div');
+  knobMsg.style.cssText = 'margin-top:4px;color:#8a8a8a;font-size:11px';
+
   const btnFile = document.createElement('button');
   btnFile.textContent = 'repor ficheiro gravado';
-  btnFile.disabled = !knobFile; // Fase 5 liga o carregamento do music-config.json
-  btnFile.onclick = () => { if (knobFile) knobsSet(knobFile, true); };
+  btnFile.disabled = !knobFile;
+  btnFile.onclick = () => {
+    if (!knobFile) { knobMsg.textContent = 'sem secção ball no music-config.json'; return; }
+    const n = knobsSet(knobFile, true);
+    knobMsg.textContent = `${n} knobs repostos do ficheiro`;
+  };
 
   const btnDefaults = document.createElement('button');
   btnDefaults.textContent = 'repor knobs (defaults)';
@@ -235,14 +247,23 @@ export function initPanel(CONFIG, hooks = {}) {
     knobStore = {};
     try { localStorage.removeItem('mb2.knobs'); } catch (e) { /* */ }
     knobsSet(KNOB_DEFAULTS, false);
+    knobMsg.textContent = 'defaults do código repostos (por gravar)';
   };
 
+  // grava no MESMO music-config.json do painel k (secção `ball`), via MUSIC.tune.save → sidecar /app-config
+  // (só quando o David carrega — nunca automático; window.MUSIC só existe em ?src=music, ver web/music.js:2570-2585)
   const btnSave = document.createElement('button');
-  btnSave.textContent = 'gravar';
-  btnSave.disabled = true; // desativado até à Fase 5 (sidecar /app-config)
+  btnSave.textContent = 'gravar (music-config.json)';
+  btnSave.onclick = async () => {
+    const T = window.MUSIC && window.MUSIC.tune;
+    if (!T || typeof T.save !== 'function') { knobMsg.textContent = 'sem motor de música (só localStorage)'; return; }
+    knobMsg.textContent = 'a gravar…';
+    const r = await T.save();
+    knobMsg.textContent = r && r.ok ? `gravado em ${r.path}` : `não gravou: ${(r && r.error) || '?'}`;
+  };
 
   sp.appendChild(btnFile); sp.appendChild(btnDefaults); sp.appendChild(btnSave);
-  dbg.appendChild(sp);
+  dbg.appendChild(sp); dbg.appendChild(knobMsg);
 
   // ---- checkboxes `spot i` (web/index-v2.html:884-889) → CONFIG.spots[i].on (a SpotLight i apaga) ----
   const spRow = document.createElement('div'); spRow.className = 'sp';
@@ -273,5 +294,14 @@ export function initPanel(CONFIG, hooks = {}) {
     }
   }
 
-  return { sliders, PERSIST, KNOB_DEFAULTS, knobsGet, knobsSet, dbgSize, inputs, refresh };
+  // Fase 5: `music.js` chama `window.MIRRORBALL.knobs.set(j.ball)` ao carregar o music-config.json
+  // (web/music.js:783) — isso já aplica os valores (via knobsSet acima), mas o botão "repor ficheiro
+  // gravado" precisa de guardar o snapshot ORIGINAL do ficheiro para poder repor depois de o David
+  // ter mexido nos sliders. `setKnobFile` é chamado pelo bloco `// ---- F5 music ----` do main.js.
+  function setKnobFile(obj) {
+    knobFile = (obj && typeof obj === 'object') ? obj : null;
+    btnFile.disabled = !knobFile;
+  }
+
+  return { sliders, PERSIST, KNOB_DEFAULTS, knobsGet, knobsSet, setKnobFile, get knobFile() { return knobFile; }, dbgSize, inputs, refresh };
 }

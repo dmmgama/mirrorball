@@ -1,2 +1,6 @@
 node_modules/
 *.log
+
+# junction web/spike -> spike-babylon (spike-babylon/README.md "Correr em modo música"); local
+# só, não gita — recriar com `cmd /c mklink /J web\spike spike-babylon` (PowerShell) se preciso.
+web/spike

@@ -31,6 +31,11 @@
   #dbg .sp button{font:inherit;background:#111;color:#cfcfcf;border:1px solid #2a2a2a;padding:6px 10px;cursor:pointer;letter-spacing:.02em}
   #dbg .sp button:disabled{opacity:.5;cursor:default}
   #dbg h4{margin:0 0 6px;font-weight:400;color:#8a8a8a}
+  /* ---- HUD do motor de música (tecla m, web/music.js) — só existe/aparece com ?src=music ---- */
+  #mus{position:fixed;bottom:12px;right:12px;max-width:46vw;background:rgba(10,10,10,.86);color:#cfcfcf;
+       font:11px/1.5 ui-monospace,Consolas,monospace;padding:10px 12px;border:1px solid #2a2a2a;
+       white-space:pre;z-index:9;letter-spacing:.02em;display:none}
+  #mus.on{display:block}
 </style>
 </head>
 <body>
@@ -38,6 +43,7 @@
 <div id="hud">a carregar…</div>
 <div id="err"></div>
 <div id="dbg"></div>
+<div id="mus"></div>
 <div id="ui"><button id="skin">skin: dark</button></div>
 <script>
   // erros visíveis no ecrã — sem depender da consola (mesmo padrão do spike v1 index.html)
