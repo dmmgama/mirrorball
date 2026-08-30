@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="pt"><head><meta charset="utf-8"><title>Spike v2 Babylon — manual dos knobs e ligação de tudo</title>
+<style>
+body{font:14px/1.5 system-ui,Segoe UI,sans-serif;background:#111;color:#ddd;max-width:1100px;margin:0 auto;padding:24px}
+h1{font-size:22px;color:#fff}h2{font-size:18px;color:#fff;margin-top:36px;border-bottom:1px solid #333;padding-bottom:4px}
+h3{font-size:15px;color:#9cf;margin-top:24px}
+table{border-collapse:collapse;width:100%;margin:8px 0 16px}th,td{border:1px solid #333;padding:5px 8px;vertical-align:top;text-align:left}
+th{background:#1b1b1b;color:#fff}td:first-child{white-space:nowrap;font-family:Consolas,monospace;color:#fc9}
+td:nth-child(2){white-space:nowrap;color:#999;font-family:Consolas,monospace}
+code{font-family:Consolas,monospace;background:#222;padding:1px 4px;border-radius:3px;color:#9f9}
+pre{background:#181818;border:1px solid #333;padding:12px;overflow-x:auto;font-size:12.5px;line-height:1.4}
+.note{background:#1c1a12;border-left:3px solid #fc9;padding:8px 12px;margin:10px 0}
+.warn{background:#1e1212;border-left:3px solid #f66;padding:8px 12px;margin:10px 0}
+.key{display:inline-block;border:1px solid #555;border-radius:4px;padding:0 6px;font-family:Consolas,monospace;background:#222}
+nav a{color:#9cf;margin-right:14px}
+</style></head><body>
+<h1>Spike v2 Babylon.js — o que faz cada knob e como tudo se liga</h1>
+<p>Estado a 2026-08-30 (commit <code>c905f8b</code>, F1-F7 feitas). Bola Canvas 2D de referência: <code>web/index-v2.html</code>. Os nomes dos knobs são os mesmos da bola Canvas (a secção <code>ball</code> do <code>music-config.json</code> é partilhada); os novos do spike estão marcados <b>[novo]</b>.</p>
+<nav><a href="#ligacao">1. Ligação de tudo</a><a href="#arrancar">2. Arrancar / URLs / teclas</a><a href="#knobs">3. Knobs do painel d</a><a href="#api">4. API e motor de música</a><a href="#perf">5. Perf e armadilhas</a></nav>
+
+<h2 id="ligacao">1. Ligação de tudo — quem calcula, quem desenha</h2>
+<p>Princípio do plano: <b>a física é CPU, o Babylon só desenha.</b> O <code>ball.js</code> corre por tile a mesma cadeia de cinza da bola Canvas e, no mesmo loop, decide que tiles emitem feixe e que tiles projetam ponto na parede. Os outros módulos só consomem listas.</p>
+<pre>
+config.js  ── window.CONFIG (verbatim da Canvas :69-165 + chaves novas)
+   │
+main.js ─────────────────────────────────────────────────────────────────────────────────────
+   │  engine (WebGPU → WebGL2 com ?webgl=1), ArcRotateCamera (orbitável), sala (room.js, 5 planos PBR)
+   │  loop por frame:
+   │    choreo.step(dt)      → gain[i] por spot + flashes vivos          (choreo.js, F5)
+   │    exp.step(dt)         → s, floatT, angle0                          (explode.js, F7)
+   │    E = effective(health) ∪ {haze, sphereOpacity, choreoGain, flashes, exS, exFloat, angle0}
+   │    ball.update(t, CONFIG.spots, E)                                   (ball.js — o coração)
+   │        ├─ mountedSpots  = focos montados {S,H,C,r,I}  (+flashes isFlash, +indireta wide)
+   │        ├─ cadeia de cinza por tile (20 Hz) → vertex color × albedo PBR
+   │        ├─ ball.beams    = {P,R,I} tiles que emitem (inCone>0.3, beamHash<beamFraction)
+   │        ├─ ball.dots     = {X,N,R,I,size} interseção P+t·R com as 5 paredes
+   │        └─ explosão: se exS>0, reescreve os 4 vértices/tile (Rodrigues) a 60 Hz
+   │    updateSpotLights(mountedSpots)   → 6 SpotLight (bola+sala) + 3 RectAreaLight (indireta)
+   │    beams.update(E)                  → 3 cones thin-instanced + disco glow      (beams.js, F3)
+   │    incident.update(mountedSpots)    → cone de névoa fonte→limbo por spot       (incident.js, F3)
+   │    dots.update(E)                   → discos thin-instanced colados às paredes (dots.js, F4)
+   │    fixtures.update(mountedSpots)    → corpos PAR36 em S·spotDist               (fixtures.js, F6)
+   │    halo (billboard), estrobo (emissive da sala), pipeline pós (bloom/grão/vinheta/ACES), skin
+   │    window.MIRRORBALL  (mesma API da Canvas; o music.js fala só com isto)
+   │
+panel.js ── painel d: escreve em CONFIG; persistência localStorage['mb2.knobs'] > ficheiro > defaults
+</pre>
+<div class="note"><b>Fonte única dos focos:</b> <code>ball.mountedSpots</code>. A SpotLight, o cone incidente e o corpo PAR36 nascem todos do mesmo ponto <code>C + S·spotDist</code>. Se mexeres num, mexem os três.</div>
+<div class="note"><b>Skin é do utilizador</b> (regra 1): só a tecla <span class="key">w</span>/botão mudam dark/white. O motor nunca lhe toca.</div>
+
+<h3>Com música (F5)</h3>
+<pre>
+audio-sidecar :3739  (WASAPI loopback, 50 Hz {rms,bass,mid,high,sub,hat,...})
+      │ WS (token de /app-token, same-origin)
+spike-babylon/serve.py :8099   — proxy de /app-token e /app-config* → :3739; serve /app/spike/* e /app/*.js
+      │
+/app/spike/v2/index.html?src=music
+      main.js cria window.MIRRORBALL → dispara 'mb2-ready'
+      → carrega core.js (MB_SOURCE: dono = music), music.js (motor, HUD m), tuner.js — SEM os alterar
+      music.js escreve: rotationRpm · haze(×hazeMax) · beamFraction/beamIntensity · sphereOpacity ·
+                        setSpot(i,{intensity}) · flash · strobe · explode/rewind
+      guardado pelos 3 disjuntores "motor manda (0/1)" e por sanitizeConfig (NaN → default, tetos)
+</pre>
+
+<h2 id="arrancar">2. Arrancar, URLs, teclas</h2>
+<table><tr><th>o quê</th><th>como</th></tr>
+<tr><td>manual</td><td><code>cd spike-babylon &amp;&amp; python serve.py</code> → <code>http://127.0.0.1:8099/v2/index.html</code> (<code>?webgl=1</code> força WebGL2 — o WebGPU pendura em tab escondido)</td></tr>
+<tr><td>música</td><td>sidecar a correr (<code>Mirrors-of-Emotions-Start.bat</code>) + serve.py → <code>http://127.0.0.1:8099/app/spike/v2/index.html?src=music&amp;webgl=1</code></td></tr>
+<tr><td>mini / OS</td><td><code>?mini=1</code> (0.66 vh, sem HUD/painel), <code>?mini=1&amp;light=1</code> (white), <code>?scale=0.5</code></td></tr>
+<tr><td>consola</td><td><code>MB2 = {scene, engine, camera, cfg, ball, setSkin, refreshPanel, __perf}</code>; <code>MB2.__perf()</code> = ms mediano de <code>scene.render()</code></td></tr>
+</table>
+<p><span class="key">d</span> painel · <span class="key">w</span> skin dark/white · <span class="key">x</span> explosão (ciclo completo) · <span class="key">X</span> explode e fica; 2.º <span class="key">X</span> volta · <span class="key">m</span> HUD do motor · <span class="key">p</span> perfil · <span class="key">g</span> gerador sintético · <span class="key">n</span> próxima fase (as 4 últimas só com <code>?src=music</code>). Rato: orbitar/zoom.</p>
+<p>Botões do painel: <b>repor ficheiro gravado</b> (aplica a secção <code>ball</code> do <code>music-config.json</code>) · <b>repor knobs (defaults)</b> (limpa <code>mb2.knobs</code>) · <b>gravar (music-config.json)</b> (só em modo música, POST ao sidecar — nunca automático) · checkboxes <b>spot i</b> (apaga a SpotLight i) · <b>explosões on/off</b> (bloqueia só as vindas do motor; a tecla continua).</p>
+<div class="note"><b>Prioridade:</b> o que tocaste por último no painel (localStorage) ganha; o ficheiro só preenche o que nunca mexeste; defaults por fim. Se algo "não obedece", carrega em <i>repor knobs (defaults)</i>.</div>
+
+<h2 id="knobs">3. Knobs do painel <span class="key">d</span></h2>
+<p>Coluna "vai para" = chave em <code>CONFIG</code> (CH = <code>CONFIG.choreo</code>). ⏫ = obriga a reconstruir a malha.</p>
+
+<h3>Focos (pinspots)</h3>
+<table><tr><th>knob</th><th>range</th><th>vai para</th><th>o que faz</th></tr>
+<tr><td>focos: quantos</td><td>0-6</td><td>spotCount</td><td>Nº de pinspots montados (dos <code>spots[]</code>). 0 = só indireta + flashes.</td></tr>
+<tr><td>focos: raio ×</td><td>0.2-3</td><td>spotRadiusMul</td><td>Diâmetro da mancha na bola (em raios). Fixo — não pulsa com a intensidade (pinspot real). Flashes ignoram-no.</td></tr>
+<tr><td>focos: orla</td><td>0-0.9</td><td>spotEdge</td><td>Suavidade da borda da mancha (0 = dura).</td></tr>
+<tr><td>espelhos: brilho</td><td>0-2.5</td><td>mirrorGain</td><td>Quanto cada espelho dentro da mancha acende (base uniforme + glint). Sobe = mais tiles brancos.</td></tr>
+<tr><td>focos: saltam (0/1)</td><td>0/1</td><td>CH.retarget</td><td>Coreografia: o foco apaga → salta de posição → acende. <b>Nunca varre</b> a superfície.</td></tr>
+<tr><td>focos: fixo min/max s</td><td>0.3-30</td><td>CH.dwell</td><td>Tempo que um foco fica no sítio antes de saltar.</td></tr>
+<tr><td>origem: |az| min/max°</td><td>0-175</td><td>CH.azRange</td><td>Azimutes sorteados nos saltos (|az|, sinal aleatório). az=0 = atrás da câmara/público — nunca de frente.</td></tr>
+<tr><td>origem: el min/max°</td><td>-40-85</td><td>CH.elRange</td><td>Elevações sorteadas nos saltos.</td></tr>
+<tr><td>origem: mira (raios)</td><td>0-0.9</td><td>CH.aimMax</td><td>Quanto o foco pode mirar fora do centro da bola (disco de desvio).</td></tr>
+<tr><td>spot0-3: az° / el°</td><td>±175 / -30-80</td><td>spots[i].az/el</td><td>Posição fixa de cada pinspot (az −=esquerda). Move a SpotLight, o cone incidente e o corpo PAR36.</td></tr>
+<tr><td>focos: luz (lm) [novo]</td><td>100-2500</td><td>spotLightIntensity</td><td>Intensidade da SpotLight Babylon (ilumina bola e sala). Não altera a mancha CPU.</td></tr>
+<tr><td>focos: distância [novo]</td><td>2-12</td><td>spotDist</td><td>Distância (raios) da fonte à bola: onde nasce a SpotLight, o cone incidente e o corpo.</td></tr>
+<tr><td>focos: cor (0/1) [novo]</td><td>0/1</td><td>spotColorOn</td><td>Opt-in: tinge as SpotLights (só as luzes; a bola continua greyscale).</td></tr>
+<tr><td>focos: saturação [novo]</td><td>0-1</td><td>spotSat</td><td>Saturação da cor dos focos quando ligada (+ <code>spot{i}: matiz°</code>).</td></tr>
+</table>
+
+<h3>Flashes (motor: bombo/tarola)</h3>
+<table><tr><th>knob</th><th>range</th><th>vai para</th><th>o que faz</th></tr>
+<tr><td>flash: por s</td><td>0-6</td><td>CH.flashRate</td><td>Flashes aleatórios por segundo (Poisson) sem motor; com motor, o <code>music.js</code> chama <code>flash()</code>.</td></tr>
+<tr><td>flash: raio ×</td><td>0.2-3</td><td>CH.flashRadius</td><td>Tamanho da mancha do flash.</td></tr>
+<tr><td>flash: dura ms</td><td>40-600</td><td>CH.flashLen</td><td>Vida do flash (ataque 25%, cauda 75%).</td></tr>
+</table>
+
+<h3>Bola / cadeia de cinza</h3>
+<table><tr><th>knob</th><th>range</th><th>vai para</th><th>o que faz</th></tr>
+<tr><td>bola: luz</td><td>0-1</td><td>ballLight</td><td>Levanta o cinza base de todos os tiles (ver a bola no escuro) sem perder o volume.</td></tr>
+<tr><td>bola: contraste</td><td>0.5-2.5</td><td>ballContrast</td><td>Espalha a cadeia de cinza (mais diferença entre tile claro e escuro).</td></tr>
+<tr><td>luz geral (volume)</td><td>0-1</td><td>shade.amount</td><td>Sombreado global (lado iluminado vs. sombra) — dá tridimensionalidade.</td></tr>
+<tr><td>luz geral: az° / el°</td><td></td><td>shade.az/el</td><td>Direção dessa luz geral.</td></tr>
+<tr><td>espelhos: filas ⏫</td><td>16-96</td><td>facetRows</td><td>Nº de filas de latitude (48 ≈ 2938 tiles). Mais = espelhos mais pequenos, mais custo CPU.</td></tr>
+<tr><td>junta (seam) ⏫</td><td>0-0.4</td><td>seamInset</td><td>Largura da junta escura entre espelhos.</td></tr>
+<tr><td>espelhos: variação ⏫ [novo]</td><td>0-1</td><td>tileSizeVar</td><td>Jitter determinístico do tamanho de cada espelho (só encolhe; nunca sobrepõe).</td></tr>
+<tr><td>espelhos: tom (0=hash/1=real) ⏫ [novo]</td><td>0/1</td><td>tileTone</td><td><b>hash</b>: cinza-base por tile + cadeia completa (como a Canvas). <b>real</b>: espelhos iguais, o tom vem do PBR + sala refletida.</td></tr>
+<tr><td>espelhos: alinhados (0/1) ⏫ [novo]</td><td>0/1</td><td>tileLayout</td><td>Colunas alinhadas entre filas vs. desfasadas.</td></tr>
+<tr><td>espelhos: junta / junta larg. / junta var. (real) [novo]</td><td>0-1</td><td>seamGreyReal, seamInsetRealMul, seamVarRealMul</td><td>Só no modo <i>real</i>: cinza da junta, largura relativa e variação — corrige o "outline preto" de cada espelho.</td></tr>
+<tr><td>pbr: metallic / roughness [novo]</td><td></td><td>mirrorMetallic / mirrorRoughness</td><td>Material dos espelhos: 1/0.02 = espelho perfeito; roughness ↑ = reflexo baço.</td></tr>
+<tr><td>pbr: ambiente [novo]</td><td>0-6</td><td>envIntensity</td><td>Força do reflexo da sala (ReflectionProbe) nos espelhos.</td></tr>
+<tr><td>pbr: glint mix [novo]</td><td>0-1</td><td>glintPbrMix</td><td>0 = brilho especular calculado em CPU como a Canvas (<code>pow(N·H,k)</code>); 1 = só o reflexo PBR.</td></tr>
+<tr><td>sphereOpacity (motor manda)</td><td>0-1</td><td>sphereOpacity</td><td>Raio-X: &lt;1 só os tiles acesos persistem. O motor escreve-o se "opacidade: motor manda" = 1.</td></tr>
+<tr><td>raio-x: osso (0/1), osso alpha × [novo]</td><td></td><td>boneMesh, boneAlphaMul</td><td>Malha de linhas que aparece em raio-X (1 draw call; desliga-se com a explosão).</td></tr>
+<tr><td>corrente (0/1), corrente: elo (raios) [novo]</td><td></td><td>chainOn, chainLink</td><td>Corrente 3D no topo da bola; tom segue o lado iluminado.</td></tr>
+<tr><td>rotationRpm (motor manda)</td><td>0-3</td><td>rotationRpm</td><td>Rotação. Com motor: segue o bombo (piso 2.6, teto 3.0), pára sem bombo. Sem motor: fixo.</td></tr>
+</table>
+
+<h3>Luz indireta</h3>
+<table><tr><th>knob</th><th>range</th><th>vai para</th><th>o que faz</th></tr>
+<tr><td>luz indireta</td><td>0-0.4</td><td>ambient.intensity</td><td>Áreas largas da sala refletidas nos espelhos (3 fontes a deambular) — cintilação de fundo, não focos.</td></tr>
+<tr><td>indireta: área°</td><td>8-70</td><td>ambient.areaDeg</td><td>Largura angular dessa área refletida.</td></tr>
+<tr><td>indireta: luz × [novo]</td><td>0-20</td><td>ambientLightMul</td><td>Intensidade das 3 RectAreaLight Babylon que iluminam a sala (a cintilação CPU não depende disto).</td></tr>
+</table>
+
+<h3>Névoa: cone incidente, feixes refletidos, auréola</h3>
+<table><tr><th>knob</th><th>range</th><th>vai para</th><th>o que faz</th></tr>
+<tr><td>haze máx (motor modula)</td><td>0-1</td><td>hazeMax</td><td>Teto do haze; o motor modula 60-100% disto. Sem motor é o haze efetivo. 0 = sem feixes nem cones.</td></tr>
+<tr><td>cone incidente</td><td>0-0.3</td><td>incidentAlpha</td><td>Alpha do eixo de névoa que chega à bola (fonte→limbo). Morre no limbo.</td></tr>
+<tr><td>cone: alcance</td><td>1-8</td><td>incidentLen</td><td>Comprimento do cone incidente (raios).</td></tr>
+<tr><td>cone: largura máx / teto (raios)</td><td></td><td>incidentMaxWidth / incidentMaxPx</td><td>Dois tetos à largura do cone (× diâmetro da mancha; absoluto).</td></tr>
+<tr><td>feixes: fração máx (motor modula)</td><td>0-1</td><td>beamFractionMax</td><td>Fração dos tiles elegíveis que emitem feixe (teto; o motor modula com a densidade espectral/agudos). Máx 110 feixes.</td></tr>
+<tr><td>feixes: intensidade [novo]</td><td>0-0.18</td><td>beamIntensity</td><td>Alpha dos feixes. <b>Teto inviolável 0.18.</b></td></tr>
+<tr><td>feixes: largura°</td><td>0.1-4</td><td>beamWidthDeg</td><td>Abertura do cone de cada feixe.</td></tr>
+<tr><td>feixes: dispersão</td><td>0-1</td><td>beamSoft</td><td>0 = laser (núcleo fino, orla dura); 1 = difuso (halo largo, núcleo fraco).</td></tr>
+<tr><td>feixes: comprimento [novo]</td><td>2-12</td><td>beamLen</td><td>Comprimento dos feixes em raios (a Canvas usava px).</td></tr>
+<tr><td>feixes: compr. 3D</td><td>0.5-8</td><td>beamLen3D</td><td>Herdado da Canvas; no spike só o <code>?mini</code> o usa.</td></tr>
+<tr><td>feixes: base × [novo]</td><td>0.1-2</td><td>beamBaseMul</td><td>Largura da base do cone no tile (correção do David: ×0.5).</td></tr>
+<tr><td>feixes: glow z [novo]</td><td>0-1</td><td>beamGlowZ</td><td>A partir de que "frontalidade" (R·câmara) um feixe ganha o disco de brilho.</td></tr>
+<tr><td>feixes: glow × [novo]</td><td>0-1</td><td>beamGlowMul</td><td>Força desse disco aditivo. Baixa (0.1) se o centro saturar de frente.</td></tr>
+<tr><td>auréola</td><td>0-1</td><td>halo</td><td>Névoa radial à volta da bola (× haze × spotGain; pesa menos em white; some na explosão).</td></tr>
+</table>
+
+<h3>Pontos na parede</h3>
+<table><tr><th>knob</th><th>range</th><th>vai para</th><th>o que faz</th></tr>
+<tr><td>pontos na parede (densidade)</td><td>0-3</td><td>dotDensity</td><td>≤1: fração dos tiles que projetam. &gt;1: alarga o cone elegível (a coroa fraca do foco também dá pontos). Degrada sozinho se o frame passar <code>perf.targetMs</code>.</td></tr>
+<tr><td>pontos: escala [novo]</td><td>0.05-1</td><td>dotScale</td><td>Tamanho de cada mancha. Alongam-se sozinhas nos ângulos rasantes (até 4.5×).</td></tr>
+<tr><td>pontos: queda [novo]</td><td>0-0.2</td><td>dotFalloff</td><td>Atenuação com a distância² tile→parede.</td></tr>
+<tr><td>pontos: teto cinza [novo]</td><td>0-255</td><td>dotMaxGrey</td><td>Brilho máximo de um ponto (216 default). Invariante da bola.</td></tr>
+</table>
+
+<h3>Fundo, estrobo, pós-processo, skin</h3>
+<table><tr><th>knob</th><th>range</th><th>vai para</th><th>o que faz</th></tr>
+<tr><td>fundo: claridade (dark)</td><td>0-60</td><td>bgGrey</td><td>Cinza do fundo em dark (quanto "escuro" é o escuro).</td></tr>
+<tr><td>strobe fundo (0/1)</td><td>0/1</td><td>strobe.enabled</td><td>Autoriza o motor a piscar <b>a sala</b> (não a bola) nos builds/drops. Off = <code>strobe()</code> devolve false.</td></tr>
+<tr><td>strobe: frequência ×</td><td>0-3</td><td>strobeRate</td><td>Multiplica a cadência que o motor pede (a bola impõe sempre ≥ 334 ms entre disparos = 3 Hz).</td></tr>
+<tr><td>strobe: força / dura ms</td><td></td><td>strobe.level / lenMs</td><td>Brilho e duração de cada disparo (ataque instantâneo, cauda linear).</td></tr>
+<tr><td>bloom: força / limiar / raio px [novo]</td><td></td><td>bloomStrength / bloomThreshold / bloomBlurPx</td><td>Bloom a meia resolução só no que está quase branco (limiar alto = só tiles a brilhar).</td></tr>
+<tr><td>grão / vinheta</td><td></td><td>grain / vignette</td><td>Grão de filme e vinheta — só pesam em dark (× dk). Grão estático (nada &gt;3 Hz).</td></tr>
+<tr><td>pós: tonemap (0/1) [novo]</td><td>0/1</td><td>postTonemap</td><td>ACES: comprime os brancos somados (feixes de frente + glow + PBR). Resolve o "disco branco" ao olhar de frente.</td></tr>
+<tr><td>pós: exposição [novo]</td><td>0.3-2</td><td>postExposure</td><td>Ganho antes do tonemap. Baixa se ainda saturar.</td></tr>
+</table>
+
+<h3>Corpos PAR36 e explosão [novo]</h3>
+<table><tr><th>knob</th><th>range</th><th>vai para</th><th>o que faz</th></tr>
+<tr><td>corpos (0/1)</td><td>0/1</td><td>fixturesOn</td><td>Mostra os pinspots físicos (lata + aro + lente) na sala, em <code>S·spotDist</code>, apontados à bola. Flashes e indireta não têm corpo.</td></tr>
+<tr><td>corpos: escala</td><td>0.2-3</td><td>fixtureScale</td><td>Tamanho da lata.</td></tr>
+<tr><td>corpos: lente ×</td><td>0-6</td><td>lensGain</td><td>Emissão da lente = intensidade do foco × isto ("a lente segue o dimmer"). Só emissiva, não ilumina.</td></tr>
+<tr><td>corpos: haste (0/1)</td><td>0/1</td><td>fixtureStemOn</td><td>Haste até ao teto (el&gt;45°) ou parede mais próxima. Corpo fora da sala → clampa à parede.</td></tr>
+<tr><td>explosão: alcance (radial)</td><td>0.5-4</td><td>explode.radial</td><td>Até onde os estilhaços saem (raios). Ao vivo a meio da explosão funciona.</td></tr>
+<tr><td>explosão: deriva s</td><td>1-14</td><td>explode.driftSec</td><td>Duração da câmara lenta após o estoiro seco (0.16 s).</td></tr>
+<tr><td>explosão: pausa s</td><td>0-6</td><td>explode.hold</td><td>Suspensão antes da sucção de volta. <code>maxHold</code> 14 s força sempre a volta.</td></tr>
+</table>
+
+<h3>Disjuntores (só fazem sentido com <code>?src=music</code>)</h3>
+<table><tr><th>knob</th><th>o que faz</th></tr>
+<tr><td>feixes+haze: motor manda (0/1)</td><td>1 = o motor escreve haze/beamFraction/beamIntensity. 0 = os sliders fixam.</td></tr>
+<tr><td>focos+flashes: motor manda (0/1)</td><td>1 = o motor escreve intensidade dos spots, flashes, estrobo, explosões. 0 = só coreografia local.</td></tr>
+<tr><td>opacidade: motor manda (0/1)</td><td>1 = o motor escreve sphereOpacity (tique dos agudos). Diagnóstico: "é a opacidade que pisca?"</td></tr>
+<tr><td>health (motor manda)</td><td>0-1: interpola ALIVE→DEAD (rpm 0.12, haze 0.25, opacidade 0.35, focos 22%). O motor escreve-o.</td></tr>
+</table>
+
+<h2 id="api">4. API <code>window.MIRRORBALL</code> (igual à Canvas — é por aqui que o <code>music.js</code> entra)</h2>
+<table><tr><th>método</th><th>faz</th></tr>
+<tr><td>config</td><td>o <code>CONFIG</code> vivo (o motor escreve <code>rotationRpm</code>, <code>haze</code>, <code>beamFraction</code>, <code>beamIntensity</code>, <code>sphereOpacity</code> aqui).</td></tr>
+<tr><td>setHealth(h) / getHealth()</td><td>vida da bola (ver tabela acima).</td></tr>
+<tr><td>knobs.get() / knobs.set(obj)</td><td>91 knobs persistidos ↔ secção <code>ball</code> do <code>music-config.json</code>. <code>set</code> só preenche os nunca tocados.</td></tr>
+<tr><td>setSpot(i, {intensity,…})</td><td>o motor dima os pinspots (dominante 1.0, outros 0.85…).</td></tr>
+<tr><td>flash(opts) · retarget(i, pose) · setChoreo(on)</td><td>flash num sítio novo · salto de um foco · liga/desliga coreografia.</td></tr>
+<tr><td>strobe({level}) → bool · strobeEnabled()</td><td>pisca a sala; false se knob off ou dentro dos 334 ms.</td></tr>
+<tr><td>setSkin('dark'|'white') · setSkinAuto(v) · getSkin()</td><td>skin (o motor <b>não</b> chama isto; só o utilizador).</td></tr>
+<tr><td>explode({autoHold, fromMotor,…}) · rewind() · getExplode() · setExplodeEnabled(v)</td><td>estilhaços; <code>fromMotor</code> respeita o botão "explosões".</td></tr>
+</table>
+<p>Evento <code>mb2-ready</code> (e <code>window.__MB2_READY</code>) dispara quando a API existe — o <code>music.js</code> só é carregado depois. <code>MB_SOURCE.owner</code> (core.js) diz quem manda: <code>manual | camera | music</code>; só o dono escreve no CONFIG.</p>
+
+<h2 id="perf">5. Perf e armadilhas</h2>
+<ul>
+<li>Medir <b>só</b> com <code>MB2.__perf()</code> com o tab visível e o rAF real. <code>scene.render()</code> à mão num tab escondido dá valores 10× falsos.</li>
+<li>Medido (WebGL2, 2938 tiles): idle 2.7 ms · coreografia+flashes 6.8 ms · 110 feixes+72 pontos 5.7 ms · explosão 6.7 ms. Teto 8 ms.</li>
+<li>Draw calls ~22 independentemente do nº de feixes/pontos (thin instances).</li>
+<li>Já apanhados: <code>material.emissiveColor = new Color3()</code> por frame (+73 ms, marca o PBR dirty → usar <code>.set()</code>); <code>maxSimultaneousLights: 12</code> em materiais pequenos recompila shaders quando o nº de luzes muda (+7-17 ms).</li>
+<li>Pendente de gosto: rig extremo (4 focos à câmara) ainda satura 16% do centro mesmo com tonemap — ideia (a) do S7: atenuar a base dos feixes frontais por <code>(1−Rz)^k</code> em <code>beams.js</code>.</li>
+<li>Divergências assumidas (PARITY.md): estrobo = emissive da sala; grão estático; white = aproximação por contrast; <code>depth</code> da explosão ao longo do eixo bola→câmara; osso desliga na explosão; corpos não reagem ao estoiro.</li>
+</ul>
+<p style="color:#666;margin-top:40px">Ficheiro: <code>spike-babylon/v2/MANUAL.html</code> — servido em <code>http://127.0.0.1:8099/v2/MANUAL.html</code>. Detalhe de cada divergência: <code>spike-babylon/v2/PARITY.md</code>.</p>
+</body></html>
