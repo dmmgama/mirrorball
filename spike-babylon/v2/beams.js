@@ -138,6 +138,9 @@ function makeFogMat(name, scene, ramp) {
   // pelo `needAlphaBlending()`. Com `opacityTexture` já responde true, mas força-se para não
   // depender de heurística.
   m.needAlphaBlending = () => true;
+  // WebGPU chegou a ignorar este override no haloMat (main.js) e desenhou o mesh opaco — o
+  // transparencyMode explícito é o único caminho determinístico nos dois backends.
+  m.transparencyMode = BJS.Material.MATERIAL_ALPHABLEND;
   return m;
 }
 
@@ -206,14 +209,19 @@ export function createBeams(scene, CONFIG, ball) {
      e cospe `VERTEX SHADER ERROR: 'instanceColor': undeclared identifier` na consola. O efeito
      acaba por compilar no frame seguinte (o render sai certo), mas o erro fica lá: registar já
      evita-o de todo. */
+  /* ⚠ WebGPU: `thinInstanceCount = 0` NÃO esconde a mesh — desenha a mesh BASE (cone/disco unitário
+     na origem, do tamanho da bola, aditivo saturado = polígono branco gigante; visto 2026-08-31 com
+     `focos: quantos = 0`). O count 0 tem de vir SEMPRE acompanhado de `setEnabled(false)`. */
   for (let i = 0; i < LAYERS; i++) {
     layers[i].thinInstanceSetBuffer('matrix', mBuf[i], 16, false);
     layers[i].thinInstanceSetBuffer('instanceColor', cBuf[i], 4, false);
     layers[i].thinInstanceCount = 0;
+    layers[i].setEnabled(false);
   }
   glow.thinInstanceSetBuffer('matrix', gMat, 16, false);
   glow.thinInstanceSetBuffer('instanceColor', gCol, 4, false);
   glow.thinInstanceCount = 0;
+  glow.setEnabled(false);
 
   /* ---- objetos reutilizados no loop (contrato: nunca alocar por feixe) ---- */
   const vP = new BJS.Vector3();       // posição do feixe (mundo)
@@ -249,8 +257,8 @@ export function createBeams(scene, CONFIG, ball) {
     // teto do alpha por feixe (regra 6) — clamp na LEITURA, o CONFIG não pode furá-lo
     const bInt = clamp(num(cfg('beamIntensity', 0.16), 0.16), 0, BEAM_INTENSITY_MAX);
     if (n0 <= 0 || bInt <= 0) {
-      if (lastCount) { for (const m of layers) m.thinInstanceCount = 0; lastCount = 0; }
-      if (lastGlow) { glow.thinInstanceCount = 0; lastGlow = 0; }
+      if (lastCount) { for (const m of layers) { m.thinInstanceCount = 0; m.setEnabled(false); } lastCount = 0; }
+      if (lastGlow) { glow.thinInstanceCount = 0; glow.setEnabled(false); lastGlow = 0; }
       return;
     }
     ensureCap(n0);
@@ -358,16 +366,18 @@ export function createBeams(scene, CONFIG, ball) {
        valores do primeiro frame (alpha cheio → tudo branco). Foi exatamente o sintoma medido. */
     for (let w = 0; w < LAYERS; w++) {
       const m = layers[w];
-      if (nCone === 0) { m.thinInstanceCount = 0; continue; }
+      if (nCone === 0) { m.thinInstanceCount = 0; m.setEnabled(false); continue; }
       m.thinInstanceSetBuffer('matrix', mBuf[w], 16, false);
       m.thinInstanceSetBuffer('instanceColor', cBuf[w], 4, false);
       m.thinInstanceCount = nCone;
+      m.setEnabled(true);
     }
-    if (nGlow === 0) glow.thinInstanceCount = 0;
+    if (nGlow === 0) { glow.thinInstanceCount = 0; glow.setEnabled(false); }
     else {
       glow.thinInstanceSetBuffer('matrix', gMat, 16, false);
       glow.thinInstanceSetBuffer('instanceColor', gCol, 4, false);
       glow.thinInstanceCount = nGlow;
+      glow.setEnabled(true);
     }
     lastCount = nCone; lastGlow = nGlow;
   }

@@ -92,6 +92,7 @@ function makeIncidentMaterial(scene) {
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
   mat.alpha = 1; // o alpha real vem do vertex color × ALPHA_ADD
   mat.alphaMode = BABYLON.Engine.ALPHA_ADD;
+  mat.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND; // WebGPU ignorou needAlphaBlending no haloMat
   mat.backFaceCulling = false;
   mat.needDepthPrewarm = false;
   mat.disableDepthWrite = true; // não escreve profundidade — não pode tapar a bola nem outros cones

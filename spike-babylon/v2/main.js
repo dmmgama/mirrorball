@@ -116,6 +116,10 @@ for (let i = 0; i < MAX_SPOTS; i++) {
   light.diffuse = new BABYLON.Color3(1, 1, 1);
   light.specular = new BABYLON.Color3(1, 1, 1);
   if (i >= N_SPOT_SLOTS) light.setEnabled(false);
+  // o cone do pinspot continua para lá da bola e torrava a parede oposta ("parede de luz",
+  // I até 2000 × albedo da sala = branco puro — visto a 2026-08-31). O pinspot real ilumina a
+  // bola; a sala vê os REFLEXOS (dots.js) e as manchas, não o jato direto.
+  light.excludedMeshes.push(...room.planes);
   spotLights.push(light);
 }
 
@@ -281,6 +285,9 @@ haloMat.diffuseColor = new BABYLON.Color3(0, 0, 0);
 haloMat.specularColor = new BABYLON.Color3(0, 0, 0);
 haloMat.opacityTexture = haloTex;
 haloMat.alphaMode = BABYLON.Engine.ALPHA_ADD;
+// WebGPU ignorava o override `needAlphaBlending` e desenhava o halo OPACO (disco branco gigante
+// dentro da bola — regressão vista a 2026-08-31); o transparencyMode explícito tira-o da heurística.
+haloMat.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND;
 haloMat.disableDepthWrite = true;
 haloMat.backFaceCulling = false;
 haloMat.needAlphaBlending = () => true;
@@ -299,7 +306,11 @@ function updateHalo(E) {
     for (let i = 0; i < mounted.length; i++) sum += num(mounted[i].I, 0);
     return sum / mounted.length;
   })();
-  const spotGain = Number.isFinite(E.spotGain) ? E.spotGain : spotGainDefault;
+  // com 0 focos montados não há luz nenhuma a devolver — o E.spotGain da coreografia fica em 1
+  // mesmo sem spots, e a auréola sobrevivia a `focos: quantos = 0` (nenhum knob a tirava).
+  const mountedCount = (ball && ball.mountedSpots) ? ball.mountedSpots.length : 0;
+  const spotGain = mountedCount === 0 ? 0
+    : (Number.isFinite(E.spotGain) ? E.spotGain : spotGainDefault);
   const dk = 1 - (Number.isFinite(E.skinMix) ? E.skinMix : 0);
   const haze = num(E.haze, CONFIG.haze);
   // F7 (:407): com a bola em estilhaços já não há uma esfera a devolver luz difusa — a auréola

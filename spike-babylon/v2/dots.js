@@ -39,6 +39,7 @@ export function createDots(scene, CONFIG, ball) {
   mat.disableDepthWrite = true;   // pontos não tapam pontos de trás (são névoa/luz, não sólidos)
   mat.backFaceCulling = false;
   mat.needAlphaBlending = () => true; // mesma cautela do beams.js: não depender de heurística
+  mat.transparencyMode = BJS.Material.MATERIAL_ALPHABLEND; // WebGPU ignorou o override no haloMat
 
   const mesh = BJS.MeshBuilder.CreateDisc('dots', { radius: 1, tessellation: SIDES }, scene);
   mesh.material = mat;
@@ -60,6 +61,8 @@ export function createDots(scene, CONFIG, ball) {
   }
   ensureCap(64);
   mesh.thinInstanceCount = 0;
+  // WebGPU: count 0 nao esconde a mesh base (ver beams.js) - desligar sempre em conjunto
+  mesh.setEnabled(false);
 
   /* ---- objetos reutilizados no loop (contrato: nunca alocar por ponto) ---- */
   const vN = new BJS.Vector3();
@@ -96,7 +99,7 @@ export function createDots(scene, CONFIG, ball) {
     const src = ball && ball.dots;
     const n0 = (src && Number.isFinite(src.count)) ? src.count : 0;
     if (n0 <= 0) {
-      if (lastCount) { mesh.thinInstanceCount = 0; lastCount = 0; }
+      if (lastCount) { mesh.thinInstanceCount = 0; mesh.setEnabled(false); lastCount = 0; }
       return;
     }
     ensureCap(n0);
@@ -166,12 +169,13 @@ export function createDots(scene, CONFIG, ball) {
     }
 
     if (ni === 0) {
-      if (lastCount) { mesh.thinInstanceCount = 0; lastCount = 0; }
+      if (lastCount) { mesh.thinInstanceCount = 0; mesh.setEnabled(false); lastCount = 0; }
       return;
     }
     mesh.thinInstanceSetBuffer('matrix', mBuf, 16, false);
     mesh.thinInstanceSetBuffer('instanceColor', cBuf, 4, false);
     mesh.thinInstanceCount = ni;
+    mesh.setEnabled(true);
     lastCount = ni;
   }
 

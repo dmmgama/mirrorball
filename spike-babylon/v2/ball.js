@@ -165,6 +165,22 @@ export function createBall(scene, CONFIG) {
      para ler como um relevo fino — a estrutura por trás dos espelhos, não um vão. */
   const coreMat = new BJS.PBRMaterial('ballCore', scene);
   coreMat.maxSimultaneousLights = 12;
+  /* mesma regressão da sala (ver v2/room.js): PBR sem `reflectionTexture` própria cai no
+     `scene.environmentTexture` = o cubo do ReflectionProbe → ciclo ler/escrever no mesmo passo em
+     WebGPU e o osso rendia BRANCO SÓLIDO (polígono gigante dentro da bola, visto 2026-08-31).
+     Cubo 1×1 quase preto próprio — a "sala" que o osso reflete é escura, como a real. */
+  {
+    const px = new Uint8Array([10, 10, 10, 255]);
+    try {
+      coreMat.reflectionTexture = new BJS.RawCubeTexture(
+        scene, [px, px, px, px, px, px], 1,
+        BJS.Engine.TEXTUREFORMAT_RGBA, BJS.Engine.TEXTURETYPE_UNSIGNED_BYTE,
+        false, false, BJS.Texture.NEAREST_SAMPLINGMODE);
+    } catch (e) {
+      console.error('[MB2] ball.js: RawCubeTexture do osso falhou — vai cair no scene.environmentTexture ' +
+        'e em WebGPU o osso rende branco/preto errado (ver comentário):', e);
+    }
+  }
   function syncCoreMat() {
     if (cfg('tileTone') === 'real') {
       const g = clamp(num(cfg('seamGreyReal'), BALL_DEFAULTS.seamGreyReal), 0, 1);
