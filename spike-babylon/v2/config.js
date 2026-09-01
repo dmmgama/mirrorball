@@ -108,11 +108,17 @@ window.CONFIG = {
         Babylon X = doc_Y - 5.0   → X ∈ [-5.0, +5.0]  (largura 10 m)
         Babylon Y = altura_física - 3.5 (centro da bola a 3,5 m do chão)
 
-     Largura (X) 10 m → halfW 5.0. Pé-direito 5,5 m: floor -3.5 (chão), ceil +2.0 → 5,5 m de altura.
+     Pé-direito 5,5 m: floor -3.5 (chão), ceil +2.0 → 5,5 m de altura.
      Comprimento (Z) 15 m: a sala é SIMÉTRICA em Z (room.js: roomD = |back|·2 e os planos chão/teto/
      laterais centram-se em z=0), portanto back -7.5 → 15 m com a bola exatamente ao meio.
+
+     ---- F8-b (David, 2026-09-01): filas de pilares +1 m (5→6 m entre eixos) ----
+     O vão entre as 2 filas abriu 1 m, e a sala ALARGA com ele — os corredores laterais NÃO
+     encolhem. Cadeia de dependências (largura X): pilares a ±3.0 (era ±2.5) + 2,5 m de corredor
+     até à parede → halfW 5.5 (largura 11 m, era 10); chapéus continuam a 1 m da parede → |X| 4.5
+     (era 4.0). Ver `pillars.halfX` e `hats.lineX` abaixo — os três números movem-se juntos.
      `roomWidthM/roomDepthM/roomHeightM` são os knobs do painel `d` (grupo Sala) — mudar exige reload. */
-  room: { halfW: 5.0, ceil: 2.0, floor: -3.5, back: -7.5 },
+  room: { halfW: 5.5, ceil: 2.0, floor: -3.5, back: -7.5 },
   dotFalloff: 0.028,         // atenuação dos pontos com a distância (1/(1+k·t²))
   grain: 0.032,              // grão de filme (alpha)
   vignette: 0.55,            // força da vinheta
@@ -179,7 +185,13 @@ window.CONFIG = {
   // ---- novidade da Fase 6 (Sonnet): corpos PAR36 visíveis (v2/fixtures.js) — SEM paridade na
   // Canvas 2D, tudo novo (ver docs/lighting-design-research.md + PARITY.md "Corpos PAR36 (F6)") ----
   fixturesOn: true,          // corpos ligados — knob 'corpos (0/1)'
-  fixtureScale: 1.0,         // escala global do corpo (lata Ø0.12·isto, comprimento 0.18·isto) — knob 'corpos: escala'
+  /* escala global do corpo (lata Ø0.12·isto, comprimento 0.18·isto) — knob 'corpos: escala'.
+     F9 (2026-09-01): 1.0 → 2.6. Diagnóstico do "não vejo os focos que apontam para a bola": com a
+     escala física da F8 (1 unidade = 1 METRO), a lata ficava com Ø 12 cm × 18 cm a ~6 m do centro,
+     em material quase preto (albedo 0.05) contra paredes quase pretas — meia dúzia de pixéis, na
+     prática invisível. 2.6 dá uma lata de ~31 × 47 cm: a dimensão de um PAR real montado em treliça,
+     que já se lê à distância da câmara sem parecer um objeto gigante. */
+  fixtureScale: 2.6,
   lensGain: 1.0,             // × intensidade do spot → emissiveColor da lente ("a lente segue o dimmer") — knob 'corpos: lente ×'
   fixtureStemOn: true,       // haste/yoke até ao teto/parede — knob 'corpos: haste (0/1)'
 
@@ -188,7 +200,7 @@ window.CONFIG = {
   // `CONFIG.room` em metros (knobs legíveis no painel `d`); mudar qualquer um exige RELOAD da página
   // (a sala/pilares/chapéus só se constroem uma vez no arranque — não há rebuild ao vivo da
   // geometria da sala, ao contrário de `espelhos: filas` que só reconstrói a BOLA). ----
-  roomWidthM: 10.0,          // largura X da sala (m) — knob 'sala: largura (m)' (RELOAD)
+  roomWidthM: 11.0,          // largura X da sala (m) — knob 'sala: largura (m)' (RELOAD). F8-b: 10→11 (filas +1 m)
   roomDepthM: 15.0,          // comprimento Z da sala (m) — knob 'sala: comprimento (m)' (RELOAD)
   roomHeightM: 5.5,          // pé-direito (m) — knob 'sala: pé-direito (m)' (RELOAD)
 
@@ -200,11 +212,21 @@ window.CONFIG = {
                              // greyscale, regra 6 do CLAUDE.md; isto só afeta luzes/materiais da SALA).
 
   /* pilares (F8 autoritativo, David 2026-09-01): **6** = 2 filas × **3**, secção **0,5 × 0,5 m**,
-     chão-teto. Doc: filas a 2,5 m das paredes laterais → doc_Y = 2,5 e 7,5 → Babylon X = ∓2.5
-     (halfX 2.5); 5 m entre eixos → doc_X = 2,5 / 7,5 / 12,5 → Babylon Z = -5 / 0 / +5 (spacingZ 5,
-     3 filas centradas em z=0 → o pilar do MEIO de cada fila fica ao nível da bola, como na planta). */
+     chão-teto. 5 m entre eixos em Z → doc_X = 2,5 / 7,5 / 12,5 → Babylon Z = -5 / 0 / +5 (spacingZ 5,
+     3 filas centradas em z=0 → o pilar do MEIO de cada fila fica ao nível da bola, como na planta).
+
+     F8-b (David, 2026-09-01): distância ENTRE AS 2 FILAS +1 m → 6 m entre eixos → halfX 2.5→3.0.
+     A sala alargou com elas (room.halfW 5.0→5.5): os pilares continuam a 2,5 m das paredes
+     (5.5 - 3.0 = 2.5 ✓), ou seja os corredores laterais mantêm a largura — foi a sala que abriu.
+
+     `off` = índices (0-5) DESLIGADOS individualmente — knobs 'pilar N (0/1)' do grupo "Pilares"
+     (David: "tapar e ligar" cada um). Ordem dos índices = ordem de criação em room.js:
+       0,1,2 = fila X negativo (Z -5/0/+5) · 3,4,5 = fila X positivo (Z -5/0/+5).
+     Um pilar desligado fica `setEnabled(false)` MAS permanece na renderList do probe (o probe só
+     desenha o que está enabled — ver room.js/main.js), portanto o toggle atua ao vivo, sem reload. */
   pillars: {
-    on: true, halfX: 2.5, section: 0.5, rows: 3, spacingZ: 5.0, albedo: [0.05, 0.05, 0.05],
+    on: true, halfX: 3.0, section: 0.5, rows: 3, spacingZ: 5.0, albedo: [0.05, 0.05, 0.05],
+    off: [],
   },
   floorWoodColor: [0.10, 0.075, 0.055], // tom de madeira escura do chão — knob 'sala: chão madeira' (RGB fixo, sem knob de cor individual; sujeito a colorOn)
 
@@ -234,10 +256,17 @@ window.CONFIG = {
     glow: 0.35,                // knob 'chapéus: brilho' (emissivo contínuo, dourado quente ~#d9a640)
     flashPerMin: 8,            // knob 'chapéus: flash /min' (0 = nunca; Poisson no CONJUNTO TODO, não por chapéu)
     heightM: 2.5,              // knob 'chapéus: altura (m)' — altura da BASE (boca) ao chão
-    lineX: 4.0,                // |X| das 2 linhas (1 m de cada parede lateral, halfW 5.0)
+    lineX: 4.5,                // |X| das 2 linhas (1 m de cada parede; F8-b: halfW 5.5 → 4.0→4.5)
     spacingZ: 2.5,             // passo entre chapéus ao longo de Z (15 m / 6 = 2,5 m)
     lampDiameter: 1.0,         // Ø da lâmpada/refletor (m)
-    tiltDeg: 25,               // inclinação a apontar para dentro/baixo (para a pista)
+    /* inclinação do plano de CORTE da casca (graus) — é o que faz a PALA (David, 2026-09-01:
+       anotação em "Λ" + foto lux-chapeu1.webp). O chapéu é uma esfera cortada por um plano oblíquo:
+       a vertente comprida de cima desce sobre a boca e projeta-se para a frente = a pala. 0 daria
+       uma meia esfera (corte a direito, sem pala). Knob 'chapéus: corte da pala°' (⟳ reload). */
+    cutDeg: 34,
+    // graus a partir da VERTICAL. F8-b (ref. lux-chapeu1.webp): 25° era demais — a boca está quase
+    // vertical na foto. 15° = meio da faixa pedida (10-20°). Knob 'chapéus: inclinação°'.
+    tiltDeg: 15,
   },
 
   /* robots de teto (F8, David 2026-09-01 — confirmados nos screenshots 010406/010437/010531):
@@ -251,7 +280,9 @@ window.CONFIG = {
     intensity: 0.45,           // knob 'robots: luz' (intensidade de cada SpotLight)
     hue: 0,                    // matiz default VERMELHO (0°) — obedece ao toggle 'cor (0/1)'
     halfX: 3.5, halfZ: 3.5,    // posição dos 4 corpos (±halfX, ±halfZ)
-    tiltDeg: 25,               // inclinação da vertical, a apontar para dentro (20-30°)
+    // F8-b (David, 2026-09-01): "robots a apontar para BAIXO" — default passa de 25° para 3°
+    // (praticamente vertical). Knob 'robots: inclinação°' (0-30) para afinar ao vivo.
+    tiltDeg: 3,                // graus a partir da VERTICAL, a apontar para dentro
     coneDeg: 12,               // meia-abertura do cone (estreito, "beam" e não wash)
     dropM: 0.35,               // quanto o corpo desce do teto (lente fica a ≤0,5 m do teto)
   },

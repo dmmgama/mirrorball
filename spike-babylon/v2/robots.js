@@ -121,7 +121,8 @@ export function createRobots(scene, CONFIG) {
     const drop = clamp(num(cfg.dropM, 0.35), 0.05, 1.5); // lente a ≤ 0,5 m do teto
     const y = ceilY - drop;
     const x = sx * hx, z = sz * hz;
-    const tilt = clamp(num(cfg.tiltDeg, 25), 0, 60) * Math.PI / 180;
+    // F8-b: default 3° (quase a prumo, "a apontar para baixo" — David). Knob 'robots: inclinação°'.
+    const tilt = clamp(num(cfg.tiltDeg, 3), 0, 60) * Math.PI / 180;
     const fall = Math.max(0.5, y - floorY);
     const inward = Math.tan(tilt) * fall;
     // alvo no CHÃO, deslocado para dentro (na direção do eixo central) em X e Z

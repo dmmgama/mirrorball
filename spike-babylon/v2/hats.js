@@ -75,29 +75,92 @@ const BRASS_DARK = [0.06, 0.05, 0.03]; // exterior latão escuro (quase preto, s
    A calote é uma esfera de raio GRANDE (raio ligeiro = pouca curvatura) da qual se toma só a
    caloteta que cabe na boca, empurrada para dentro da concha — nunca ultrapassa z=0, logo nunca
    sobressai para fora do vidro. */
-function buildHat(scene, idx, mats, lampD) {
+function buildHat(scene, idx, mats, lampD, cutDeg) {
   const root = new BABYLON.TransformNode('hatRoot' + idx, scene);
   const r = lampD / 2;
 
-  // ---- 1. casca: MEIA esfera de latão escuro, boca virada para -Z local ----
-  const shell = BABYLON.MeshBuilder.CreateSphere('hatShell' + idx, {
-    diameter: lampD, slice: 0.5, segments: 16, sideOrientation: BABYLON.Mesh.DOUBLESIDE,
-  }, scene);
-  /* `slice: 0.5` deixa o hemisfério em +Y, com o plano de corte em y=0 e a boca aberta para -Y.
-     CONVENÇÃO deste módulo: a BOCA abre para +Z local (é o eixo que o `lookAt()` do update alinha
-     com o alvo, sem yaw nenhum) e a CÚPULA recua para -Z, atrás do vidro.
-     `rotation.x = -PI/2` faz isso — verificado na cena: shell z ∈ [-0.5, 0], todo atrás do plano
-     do vidro (z=0), nada a sobressair pela boca. */
-  shell.rotation.x = -Math.PI / 2;
+  /* ---- 1. casca: esfera cortada por um plano OBLÍQUO — a casca É a pala ----
+     (David, 2026-09-01: anotação a vermelho em "Λ" sobre o chapéu + foto lux-chapeu1.webp.)
+
+     LEITURA DA FOTO (chapéu dourado central): o chapéu NÃO é uma meia esfera com uma aba colada.
+     É uma esfera cortada por um plano INCLINADO: por isso a casca é COMPRIDA do lado de cima/trás
+     e CURTA do lado de baixo/frente. Essa vertente comprida de cima É a pala — desce do cume sobre
+     a boca e projeta-se para a frente, exatamente o "Λ" que o David desenhou (duas vertentes a
+     encontrarem-se no cume, a da frente mais comprida). Não é um anel plano nem uma aba horizontal.
+
+     ⚠ O QUE ESTAVA ERRADO: corte HORIZONTAL (hemisfério) + um cilindro `arc:0.5` como "pala" — dava
+     exatamente o anel/saia que o David marcou como errado.
+
+     CONSTRUÇÃO: malha própria (não há corte oblíquo no MeshBuilder). Para cada meridiano `u`, o
+     plano de corte cruza a esfera a uma latitude diferente; parametriza-se a superfície entre esse
+     bordo e o polo. O plano passa pelo centro e tem normal inclinada `cutDeg` do eixo da boca:
+       normal = (0, sin(cut), cos(cut))   → boca em +Z, vertente comprida em +Y (cima).
+     `keep(p) = dot(p, normal) <= 0` fica com a metade da cúpula; o bordo é a elipse do corte.
+     Com cutDeg=0 volta a ser a meia esfera de antes; a foto pede ~30-38°. */
+  // inclinação do plano de corte (graus) — vem de `createHats` (lida do CONFIG uma vez; a casca
+  // constrói-se aqui e não se refaz por frame, por isso o knob exige reload como `lampDiameter`).
+  const CUT_DEG = cutDeg;
+  const cut = CUT_DEG * Math.PI / 180;
+  /* Construção: esfera QUASE fechada (vai do polo de trás até `tOpen`, deixando só a boca aberta) e,
+     a partir do bordo dessa boca, uma ABA CÓNICA que continua para fora e para a frente — a PALA.
+     A aba é MAIS COMPRIDA em cima do que em baixo (fator `k`, que varia com o meridiano): visto de
+     perfil dá exatamente o "Λ" do David — duas vertentes a encontrarem-se sobre o cume, a da frente
+     mais longa —, e de frente dá o lábio escuro em volta do ouro, como na foto.
+
+     ⚠ TENTATIVA ANTERIOR (errada, vista ao vivo): cortar a esfera por um plano OBLÍQUO. Parecia
+     certo no papel, mas cada meridiano terminava a uma latitude diferente e do lado curto o bordo
+     passava do polo — a malha colapsava num BICO em baixo (uma gota/cone), nada parecido com a foto.
+     Aqui o bordo da boca é um CÍRCULO (constante em `tOpen`), e a assimetria vive só no comprimento
+     da aba: sem bicos, e continua a ser a casca a fazer de pala (não há peça colada).
+     `cutDeg` controla a assimetria: 0 = aba simétrica (sem pala), maior = pala mais pronunciada. */
+  const T_OPEN = Math.PI * 0.5;             // meia esfera: bordo da boca no equador
+  const PALA_LEN = r * 0.62;                // comprimento da aba no lado COMPRIDO (cima)
+  const shell = (() => {
+    const RINGS = 16, FLARE = 6, SEG = 36;
+    const pos = [], nor = [], idxs = [];
+    const rows = RINGS + 1 + FLARE;         // cúpula + aba
+    for (let i = 0; i <= SEG; i++) {
+      const u = (i / SEG) * Math.PI * 2;
+      const cu = Math.cos(u), su = Math.sin(u);
+      // assimetria: 1 em cima (cu=+1), ~0 em baixo (cu=-1). `cut` dita a força.
+      const k = 0.5 * (1 + cu) * (CUT_DEG / 45) + 0.12;
+      for (let j = 0; j <= RINGS; j++) {    // ---- cúpula: polo de trás (t=0) até à boca ----
+        const t = (j / RINGS) * T_OPEN;
+        const st = Math.sin(t), ct = Math.cos(t);
+        pos.push(r * su * st, r * cu * st, -r * ct);
+        nor.push(su * st, cu * st, -ct);
+      }
+      for (let j = 1; j <= FLARE; j++) {    // ---- aba/pala: continua para fora e para a frente ----
+        const a = j / FLARE;
+        const grow = 1 + 0.16 * a;          // abre ligeiramente (tronco de cone)
+        pos.push(r * su * grow, r * cu * grow, PALA_LEN * k * a);
+        nor.push(su, cu, 0.35);             // normal aproximada (aba quase cilíndrica)
+      }
+    }
+    for (let i = 0; i < SEG; i++) {
+      for (let j = 0; j < rows - 1; j++) {
+        const a = i * rows + j, b = a + rows;
+        idxs.push(a, b, a + 1, b, b + 1, a + 1);
+      }
+    }
+    const m = new BABYLON.Mesh('hatShell' + idx, scene);
+    const vd = new BABYLON.VertexData();
+    vd.positions = pos; vd.normals = nor; vd.indices = idxs;
+    vd.applyToMesh(m, false);
+    return m;
+  })();
   shell.parent = root;
-  shell.material = mats.shellMat;
+  shell.material = mats.shellMat;   // `backFaceCulling=false` está no próprio material (partilhado)
   shell.isPickable = false;
 
-  // ---- 2. VIDRO no plano de corte (z=0) ----
-  // disco transparente com um ligeiro brilho especular — fecha a semiesfera sem esconder a lâmpada.
+  /* ---- 2. VIDRO — no plano de corte OBLÍQUO (o disco do corte) ----
+     O corte passa pelo centro, logo o vidro é um disco de raio r cujo plano tem a normal inclinada
+     `cut` do eixo da boca. Basta rodar o disco `cut` em torno de X (a normal do disco nasce em +Z,
+     que é o eixo da boca; rodar leva-a à normal do corte). Fica a preencher exatamente o bordo. */
   const glass = BABYLON.MeshBuilder.CreateDisc('hatGlass' + idx,
-    { radius: r * 0.985, tessellation: 24, sideOrientation: BABYLON.Mesh.DOUBLESIDE }, scene);
-  // DOUBLESIDE: vê-se de ambos os lados, não precisa de rotação (fica no plano de corte, z=0).
+    { radius: r * 0.985, tessellation: 32, sideOrientation: BABYLON.Mesh.DOUBLESIDE }, scene);
+  // o bordo da boca voltou a ser um CÍRCULO no plano z=0 (a assimetria vive na aba, não no corte),
+  // por isso o vidro é um disco a direito, sem rotação.
   glass.parent = root;
   glass.material = mats.glassMat;
   glass.isPickable = false;
@@ -113,13 +176,14 @@ function buildHat(scene, idx, mats, lampD) {
     diameter: capR * 2, slice: halfAng / Math.PI, segments: 16,
     sideOrientation: BABYLON.Mesh.DOUBLESIDE,
   }, scene);
-  // `slice` deixa a caloteta no TOPO (+Y), centro da esfera na origem: baixa-se (bake) para a boca
-  // da calote ficar na origem e roda-se -90° em X para a concavidade olhar para +Z (para o vidro,
-  // i.e. para a pista). Recua-se depois em -Z, para a calote ficar ATRÁS do vidro, dentro da concha.
+  /* `slice` deixa a caloteta no TOPO (+Y), centro da esfera na origem: baixa-se (bake) para a boca
+     da calote ficar na origem e roda-se para a concavidade olhar na direção da BOCA.
+     Com o corte oblíquo, a lâmpada acompanha o vidro: roda -90°+cut em X (fica paralela ao plano do
+     corte) e recua ao longo da NORMAL do corte, não de -Z — senão saía pelo lado curto da casca. */
   cap.position.y = -(capR - sag);
   cap.bakeCurrentTransformIntoVertices();
   cap.rotation.x = -Math.PI / 2;
-  cap.position.z = -(0.012 + sag);
+  cap.position.set(0, 0, -(0.012 + sag));      // recuada ao longo do eixo da boca (-Z)
   cap.parent = root;
   cap.isPickable = false;
 
@@ -132,6 +196,45 @@ function buildHat(scene, idx, mats, lampD) {
   innerMat.maxSimultaneousLights = 4;
   innerMat.reflectionTexture = mats.darkCube;
   cap.material = innerMat;
+
+  /* ---- 4. (A PALA JÁ NÃO É UMA PEÇA) ----
+     Com o corte oblíquo do ponto 1, a PALA é a própria vertente comprida da casca: ela desce do
+     cume sobre a boca e projeta-se para a frente, sem peça adicional — que é o que a foto mostra
+     (a casca continua, não há aba colada) e o que o "Λ" do David desenha.
+     Fica aqui o registo de duas tentativas ERRADAS, para não se repetirem:
+       (a) `CreateSphere({slice:0.30})` esticada em Z — nascia ATRÁS da cúpula, nunca passava do
+           vidro; o `slice` corta em latitude, não dá aba.
+       (b) meia parede de cilindro (`CreateCylinder({arc:0.5})`) à frente do vidro — dava um ANEL/
+           saia à volta da boca, precisamente o que o David marcou a vermelho como errado.
+     `pala` mantém-se como nome exportado por compatibilidade, apontando para a casca (a pala é ela).
+
+     ---- 5. ARO de suspensão (David: "vê-se o arco por cima do chapéu") ----
+     Arco por onde pega a haste. Na foto é um estribo/yoke que passa POR CIMA da cúpula, no plano
+     vertical que contém o eixo do chapéu.
+
+     ⚠ 1ª tentativa (falhou, medida na cena): um TORUS inteiro dava um anel fechado a rodear o
+     chapéu de lado (y ±0.48, z ±0.48) — metade dele atravessava a boca.
+     Correto: `CreateTorus` não tem `arc`, mas `CreateTube` desenha um tubo ao longo de um caminho —
+     usa-se meia circunferência (só a metade de CIMA), num raio ligeiramente maior que a concha. */
+  /* O arco é um ESTRIBO: passa de um lado ao outro POR CIMA da cúpula, como o yoke de um PAR — os
+     dois pés agarram o chapéu nos flancos (±X) e o vértice fica no topo (+Y). Fica portanto no
+     plano XY local, recuado em Z para o meio da concha (senão cruzava a boca — medido na 1ª
+     tentativa, que o pôs no plano YZ e dava z ∈ [-0.58, +0.58], a atravessar o vidro). */
+  const AR_R = lampD * 0.56;                     // raio do arco (um pouco fora da casca)
+  // recuo para o corpo da cúpula. Com o corte oblíquo o lado curto fica em -Y, por isso o arco
+  // assenta um pouco mais atrás para não roçar o bordo do vidro do lado de baixo.
+  const AR_Z = -lampD * 0.30;
+  const arcPath = [];
+  for (let a = 0; a <= 24; a++) {
+    const t = Math.PI * (a / 24);                // 0..PI = meia volta, de -X a +X passando por +Y
+    arcPath.push(new BABYLON.Vector3(-Math.cos(t) * AR_R, Math.sin(t) * AR_R, AR_Z));
+  }
+  const aro = BABYLON.MeshBuilder.CreateTube('hatAro' + idx, {
+    path: arcPath, radius: lampD * 0.022, tessellation: 8, cap: BABYLON.Mesh.CAP_ALL,
+  }, scene);
+  aro.parent = root;
+  aro.material = mats.shellMat;
+  aro.isPickable = false;
   const inner = cap; // `inner` = a superfície que brilha (agora a calote côncava, não um disco)
 
   /* haste/cabo até ao teto — "pendurados do teto" (David, F8). NÃO é filho do `root`: o root está
@@ -146,7 +249,9 @@ function buildHat(scene, idx, mats, lampD) {
   stem.setEnabled(false);
 
   root.setEnabled(false);
-  return { root, shell, glass, inner, innerMat, stem };
+  // `pala: shell` — a pala É a vertente comprida da casca (ver ponto 4). Mantém-se a chave para o
+  // resto do módulo (flatMeshes) não precisar de saber disso.
+  return { root, shell, glass, inner, innerMat, stem, pala: shell, aro };
 }
 
 export function createHats(scene, CONFIG) {
@@ -157,6 +262,9 @@ export function createHats(scene, CONFIG) {
   shellMat.metallic = 0.75;
   shellMat.roughness = 0.45;
   shellMat.maxSimultaneousLights = 4;
+  // a casca é uma superfície ABERTA (esfera cortada em plano oblíquo, sem tampa) — vê-se por dentro
+  // quando se olha para a boca, por isso não se pode fazer culling das faces de trás.
+  shellMat.backFaceCulling = false;
   // REGRA (probe/reflectionTexture própria — regressão S8 "tudo preto", mesmo padrão de room.js):
   // um cubo 1x1 quase preto, criado UMA vez e partilhado pelos materiais novos deste módulo.
   let darkCube = null;
@@ -193,8 +301,10 @@ export function createHats(scene, CONFIG) {
   // Ø da lâmpada lido UMA vez (a geometria da concha constrói-se aqui e não se refaz por frame —
   // como os corpos de fixtures.js). Mudar `lampDiameter` exige reload, como as dimensões da sala.
   const LAMP_D = Math.max(0.05, num((CONFIG.hats || {}).lampDiameter, 1.0));
+  // ângulo do corte oblíquo que faz a pala (ver buildHat). Como a geometria, só muda com reload.
+  const CUT_DEG = clamp(num((CONFIG.hats || {}).cutDeg, 34), 0, 60);
   const hats = [];
-  for (let i = 0; i < N; i++) hats.push(buildHat(scene, i, mats, LAMP_D));
+  for (let i = 0; i < N; i++) hats.push(buildHat(scene, i, mats, LAMP_D, CUT_DEG));
 
   // pool de PointLight de flash — 1 por hat (só as ativas ligam), nunca criadas/destruídas por frame.
   const flashLights = [];
@@ -286,10 +396,13 @@ export function createHats(scene, CONFIG) {
       fx.root.position.set(p.x, p.y, p.z);
       /* MIRA — os chapéus são FLOODS para BAIXO (para a pista), ligeiramente inclinados para dentro:
          a boca aponta ao chão, num ponto deslocado `tan(tilt)·queda` na direção da pista (para o eixo
-         central da sala, ou seja -sign(x) em X). Com tilt=25° e queda ~5 m dá um alvo a ~2,3 m para
-         dentro — cai no corredor/borda da pista, como nas fotos (010711). O alvo é SEMPRE abaixo do
-         chapéu (nunca aponta para cima) e sempre determinístico (posição fixa, regra do David). */
-      const tilt = num(cfg.tiltDeg, 25) * Math.PI / 180;
+         central da sala, ou seja -sign(x) em X). O alvo é SEMPRE abaixo do chapéu (nunca aponta para
+         cima) e sempre determinístico (posição fixa, regra do David).
+         `tiltDeg` = graus a partir da VERTICAL (0 = boca a apagar direto para o chão).
+         F8-b (David, 2026-09-01, ref. lux-chapeu1.webp): 25° era demais — na foto a boca está quase
+         na vertical, só ligeiramente inclinada. Default passou a 15° (faixa pedida: 10-20°), com
+         knob 'chapéus: inclinação°' para o David afinar ao vivo. */
+      const tilt = num(cfg.tiltDeg, 15) * Math.PI / 180;
       const drop = Math.max(0.5, p.y - floorYOf());  // queda do chapéu até ao chão
       const inward = Math.tan(tilt) * drop;
       const lookTarget = new BABYLON.Vector3(p.x - Math.sign(p.x) * inward, p.y - drop, p.z);
@@ -302,8 +415,10 @@ export function createHats(scene, CONFIG) {
       fx.root.lookAt(lookTarget);
       fx.root.setEnabled(true);
 
-      /* haste/cabo VERTICAL do topo da concha até ao teto (não é filha do root inclinado — ver
-         buildHat). Altura = ceil - (y + lampD/2); se o chapéu estiver colado ao teto, esconde-se. */
+      /* haste/cabo VERTICAL do topo do ARO até ao teto (não é filha do root inclinado — ver
+         buildHat). O aro tem Ø 0.92·lampD, logo o seu ponto mais alto está ~0.46·lampD acima do
+         centro; usa-se lampD/2 (o raio da concha), que é praticamente o mesmo e mantém a haste a
+         nascer do arco de suspensão, como na foto. Se o chapéu estiver colado ao teto, esconde-se. */
       const topY = p.y + LAMP_D / 2, ceilY = ceilYOf();
       const stemH = ceilY - topY;
       if (stemH > 0.02) {
@@ -343,10 +458,11 @@ export function createHats(scene, CONFIG) {
   // ⚠ o ReflectionProbe.renderList espera MESHES reais (com material/subMeshes) — um TransformNode
   // (o `root` de cada chapéu, usado só para posição/orientação) faz `_prepareRenderingManager`
   // rebentar em `_currentLOD` de undefined (visto ao vivo: ecrã preto + exceção no rAF). Expõe-se a
-  // lista ACHATADA de meshes reais (casca + vidro + calote da lâmpada + haste); `root.setEnabled()`
-  // continua a controlar a visibilidade dos três primeiros (filhos do TransformNode); a haste tem o seu.
+  // lista ACHATADA de meshes reais (casca + vidro + calote + pala + aro + haste); `root.setEnabled()`
+  // controla a visibilidade dos filhos do TransformNode; a haste é solta e tem o seu setEnabled.
+  // `h.pala === h.shell` (a pala é a vertente comprida da casca) — não se repete na lista.
   const flatMeshes = [];
-  for (const h of hats) { flatMeshes.push(h.shell, h.glass, h.inner, h.stem); }
+  for (const h of hats) { flatMeshes.push(h.shell, h.glass, h.inner, h.aro, h.stem); }
 
   return {
     meshes: flatMeshes,

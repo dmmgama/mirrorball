@@ -12,12 +12,13 @@ Referencial: canto da sala = (0,0); X ao longo do comprimento (15 m), Y ao longo
 
 | Parâmetro | Valor |
 |---|---|
-| Planta | **15 × 10 m** |
+| Planta | **15 × 11 m** (era 15×10; David alargou +1 m em 2026-09-01 ao subir o vão entre filas de pilares para 6 m, corredores mantidos) |
 | Pé-direito | **5,5 m** |
-| Pilares | **6** (2 filas × 3), secção **~0,5 × 0,5 m**: a 2,5 m das paredes laterais → filas Y=2,5 e Y=7,5; **5 m entre eixos** → X = 2,5 / 7,5 / 12,5 |
+| Pilares | **6** (2 filas × 3), secção **~0,5 × 0,5 m**: a 2,5 m das paredes laterais → filas Y=2,5 e Y=8,5; **6 m entre filas** (era 5; +1 m David 2026-09-01), 5 m entre eixos na fila → X = 2,5 / 7,5 / 12,5 |
 | Bola | ao **centro** (7,5, 5,0); Ø 2,0 m; centro a 3,5 m do piso (fundo a 2,5 m) |
 | Chapéus | pendurados no **teto**; lâmpada **Ø 1,0 m**; **6 por corredor lateral** (12 total), igualmente espaçados, **1 m da parede** (linhas Y=1 e Y=9), **base a 2,5 m** de altura → X ≈ 1,25 / 3,75 / 6,25 / 8,75 / 11,25 / 13,75 |
 | Forma do chapéu (David, 2026-09-01) | **meia esfera** cujo corte é um **vidro**; por dentro do vidro há uma **superfície côncava de raio ligeiro virada para dentro — é essa o foco/lâmpada**. O chapéu fica por cima e a luz **sai para a frente da semiesfera** (pelo vidro), não são óvulos/lóbulos a sair para fora do chapéu. |
+| Chapéu — detalhes (David, 2026-09-01, ref. lux-chapeu1.webp) | Falta a **pala**: aba curva de metal que continua a casca sobre a parte de cima da boca (como pala de boné sobre o vidro). Tem um **aro** (arco/anel de suspensão por cima da cúpula, onde pega a haste). **Inclinação menor** do que os 25° implementados (boca quase na horizontal-baixa, ~10–20°). |
 | Focos que incidem na bola | **H = 3,5 m** (à altura do equador — incidência horizontal) |
 | Rig adicional | **robots no teto** (lente a ≤ 0,5 m do teto, ~5,0–5,2 m) a iluminar a **pista** |
 
@@ -92,6 +93,28 @@ greyscale passa a existir como **toggle** (tem de estar sempre disponível e fun
    (Coerente com a regra antiga: nunca iluminar a bola diretamente por baixo.)
 6. **Bar retroiluminado** (topo norte, mancha quente) · **cortina vermelha + palco/DJ** (topo sul).
 7. **Colunas de som suspensas** nos cantos da pista — massas escuras que ocluem (realismo).
+
+## Estado da implementação — 3º incremento + F9 (Opus, 2026-09-01, por commitar)
+
+Correções do David aplicadas (119 knobs):
+- **Sala alargada +1 m**: vão entre filas de pilares 5→**6 m** (eixos X=±3.0), largura 10→**11 m**
+  (halfW 5.5); pilar→parede mantém 2,5 m; chapéus movem para |X|=4.5 (mantêm 1 m à parede).
+- **Chapéus**: pala (meia parede cilíndrica sobre o vidro, avança 0,30 m), aro de suspensão (meio
+  torus sobre a cúpula), inclinação 25→**15°** + knob. (3 armadilhas Babylon documentadas: slice
+  corta em latitude; Euler compõe YXZ → rotationQuaternion explícito.)
+- **Grupo "Pilares"**: 6 knobs `pilar N (0/1)` individuais (setEnabled ao vivo; probe respeita).
+- **Robots**: inclinação 25→**3°** (a prumo) + knob `robots: inclinação°` (0-30).
+- **HUD**: botão + tecla `h`, persistido (mb2.hudOn).
+- **Focos da bola invisíveis — diagnóstico**: causa principal era TAMANHO (lata PAR36 Ø12 cm quase
+  preta a 6 m = meia dúzia de píxeis) → `corpos: escala` default 1.0→**2.6** (~PAR de treliça);
+  causa secundária: spots az ±82° com spotDist 6 caíam ATRÁS da parede (|x|=5.85 > 5.5) →
+  clampToRoom encosta à face interior com margem 0,20 m.
+- **F9 — motor de música ligado**: o canal MIRRORBALL já existia (F5); o bug era o caminho dos
+  scripts (core.js só resolvia em /app/) → base deriva do pathname com fallback. Testado com
+  sidecar: owner=music, beamIntensity ≤0.18, NaN-safe; sem sidecar degrada com warn, sem erros.
+- Perf: 8,4–11,9 ms com janela em foco.
+- ⚠ localStorage antigo ganha aos defaults novos: se a sala aparecer com 10 m ou os corpos pequenos,
+  usar "repor knobs (defaults)" do grupo.
 
 ## Estado da implementação — 2º incremento (Opus, 2026-09-01, por commitar)
 

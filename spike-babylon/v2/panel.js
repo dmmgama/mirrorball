@@ -77,6 +77,7 @@ export async function initPanel(CONFIG, hooks = {}) {
   const onWashChanged = hooks.onWashChanged || noop;
   const onColorToggleChanged = hooks.onColorToggleChanged || noop;
   const onRoomDimChanged = hooks.onRoomDimChanged || noop;
+  const onPillarsChanged = hooks.onPillarsChanged || noop; // F8-b: toggle por pilar (setEnabled ao vivo)
 
   const CH = CONFIG.choreo, AMB = CONFIG.ambient;
   // 'health' é mecânico (placeholder local) até o Opus criar window.MIRRORBALL.setHealth/getHealth
@@ -228,11 +229,39 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['chapéus: flash /min', 0, 30, 0.5, v => CONFIG.hats.flashPerMin = v, () => CONFIG.hats.flashPerMin],
     // altura da BASE (boca) do chapéu ao chão — F8 autoritativo: 2,5 m (o doc mede a base).
     ['chapéus: altura (m)', 1.5, 5, 0.05, v => CONFIG.hats.heightM = v, () => CONFIG.hats.heightM],
+    // F8-b: graus a partir da VERTICAL (0 = a apagar direto para o chão). Faixa pedida 10-20°.
+    ['chapéus: inclinação°', 0, 45, 1, v => CONFIG.hats.tiltDeg = v, () => CONFIG.hats.tiltDeg],
+    // corte oblíquo que forma a pala — geometria, só se aplica com RELOAD (marcado com ⟳).
+    ['chapéus: corte da pala°', 0, 60, 1,
+      v => { CONFIG.hats.cutDeg = v; onRoomDimChanged(); }, () => CONFIG.hats.cutDeg],
     // robots de teto (F8, 2026-09-01): 4 corpos à face do teto, cone estreito vermelho para a pista.
     ['robots (0/1)', 0, 1, 1, v => { CONFIG.robots.on = v >= 0.5; }, () => (CONFIG.robots.on === false ? 0 : 1)],
     ['robots: luz', 0, 1.5, 0.02, v => CONFIG.robots.intensity = v, () => CONFIG.robots.intensity],
+    // F8-b: graus a partir da VERTICAL; default 3 = praticamente a prumo (pedido do David).
+    ['robots: inclinação°', 0, 30, 1, v => CONFIG.robots.tiltDeg = v, () => CONFIG.robots.tiltDeg],
   ];
   for (const s of newSliders) { sliders.push(s); PERSIST.add(s[0]); }
+
+  /* ---- F8-b: grupo "Pilares" — um toggle 0/1 POR PILAR (David: "tapar e ligar" individualmente).
+     `CONFIG.pillars.off` guarda os índices DESLIGADOS (array); cada knob escreve/retira o seu índice
+     e chama `onPillarsChanged()`, que faz `room.applyPillarToggles()` (setEnabled ao vivo, o pilar
+     fica na renderList do probe). Índices: 0-2 = fila X negativo (Z -5/0/+5), 3-5 = fila X positivo. */
+  const PILLAR_NAMES = [];
+  for (let i = 0; i < 6; i++) {
+    const idx = i;
+    const nome = 'pilar ' + (idx + 1) + ' (0/1)';
+    PILLAR_NAMES.push(nome);
+    const s = [nome, 0, 1, 1,
+      (v) => {
+        if (!Array.isArray(CONFIG.pillars.off)) CONFIG.pillars.off = [];
+        const off = CONFIG.pillars.off, at = off.indexOf(idx);
+        if (v >= 0.5) { if (at !== -1) off.splice(at, 1); }   // 1 = ligado → sai da lista de "off"
+        else if (at === -1) off.push(idx);                     // 0 = desligado → entra na lista
+        onPillarsChanged();
+      },
+      () => (Array.isArray(CONFIG.pillars.off) && CONFIG.pillars.off.indexOf(idx) !== -1 ? 0 : 1)];
+    sliders.push(s); PERSIST.add(nome);
+  }
 
   // ---- pedido extra do David: cor RGB nos focos (não existe na bola Canvas 2D; só afeta as SpotLight,
   // a cadeia de cinza CPU do Opus fica greyscale sempre) ----
@@ -255,7 +284,7 @@ export async function initPanel(CONFIG, hooks = {}) {
   // ⟳ = slider que exige RELOAD da página (F8: dimensões da sala — a geometria só se constrói uma
   // vez no arranque, não há rebuild ao vivo). Marcado à parte de REBUILD (⏫, que só reconstrói a
   // malha da bola) para não prometer um efeito imediato que o slider não dá.
-  const RELOAD = new Set(['sala: largura (m)', 'sala: comprimento (m)', 'sala: pé-direito (m)']);
+  const RELOAD = new Set(['sala: largura (m)', 'sala: comprimento (m)', 'sala: pé-direito (m)', 'chapéus: corte da pala°']);
   const spotHueNames = [];
   for (let i = 0; i < 6; i++) spotHueNames.push('spot' + i + ': matiz°');
   const GROUPS = [
@@ -291,8 +320,11 @@ export async function initPanel(CONFIG, hooks = {}) {
       'sala: largura (m)', 'sala: comprimento (m)', 'sala: pé-direito (m)', 'cor (0/1)',
       'sala: wash (0-1)', 'sala: wash matiz',
       'chapéus (0/1)', 'chapéus: quantos', 'chapéus: brilho', 'chapéus: flash /min', 'chapéus: altura (m)',
-      'robots (0/1)', 'robots: luz',
+      'chapéus: inclinação°', 'chapéus: corte da pala°',
+      'robots (0/1)', 'robots: luz', 'robots: inclinação°',
     ]],
+    // F8-b: grupo próprio para os 6 pilares individuais ("tapar e ligar" — David).
+    ['Pilares', PILLAR_NAMES],
     ['Pós & Skin', [
       'bloom: força', 'bloom: limiar', 'bloom: raio px', 'grão', 'vinheta',
       'pós: tonemap (0/1)', 'pós: exposição',

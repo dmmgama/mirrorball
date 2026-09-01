@@ -11,6 +11,16 @@
   #hud{position:fixed;top:12px;left:12px;background:rgba(10,10,10,.86);color:#cfcfcf;
        font:11px/1.6 ui-monospace,Consolas,monospace;padding:10px 12px;border:1px solid #2a2a2a;
        white-space:pre;z-index:9;letter-spacing:.02em}
+  /* ---- F8-b (David): botão mostrar/esconder o HUD (também tecla `h`). A escolha persiste em
+       localStorage['mb2.hudOn']. Com o HUD escondido fica só o botão, pequeno e discreto, no
+       mesmo canto — senão não havia como o trazer de volta sem saber a tecla. ---- */
+  #hud.off{display:none}
+  #hudbtn{position:fixed;top:12px;left:12px;z-index:11;background:rgba(10,10,10,.86);color:#8f8f8f;
+       border:1px solid #2a2a2a;font:11px ui-monospace,Consolas,monospace;padding:3px 7px;cursor:pointer;
+       letter-spacing:.02em;line-height:1.4}
+  #hudbtn:hover{color:#e8e8e8}
+  /* com o HUD visível o botão encosta ao canto superior DIREITO do HUD, para não tapar texto */
+  body:not(.hudoff) #hudbtn{left:auto;right:12px}
   #err{position:fixed;left:12px;bottom:12px;right:12px;background:rgba(40,10,10,.94);color:#ffb4b4;
        font:11px/1.5 ui-monospace,Consolas,monospace;padding:10px 12px;border:1px solid #642;
        white-space:pre-wrap;z-index:10;display:none;max-height:40vh;overflow:auto}
@@ -77,12 +87,14 @@
   #mus.on{display:block}
   /* ---- ?mini=1 (Fase 6, paridade com web/index-v2.html classe `mini`): esconde HUD/painel/botões —
        o quadrado do OS só quer a bola, sem chrome de debug. ---- */
-  html.mini #hud, html.mini #dbg, html.mini #dbgbar, html.mini #dbgfav, html.mini #ui, html.mini #mus, html.mini #err { display: none !important; }
+  html.mini #hud, html.mini #dbg, html.mini #dbgbar, html.mini #dbgfav, html.mini #ui, html.mini #mus, html.mini #err,
+  html.mini #hudbtn { display: none !important; }
 </style>
 </head>
 <body>
 <canvas id="rc"></canvas>
 <div id="hud">a carregar…</div>
+<button id="hudbtn" title="mostrar/esconder o HUD (tecla h)">HUD</button>
 <div id="err"></div>
 <div id="dbg"></div>
 <div id="mus"></div>
@@ -100,7 +112,7 @@
     showErr('promise: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason)));
 </script>
 <script src="../vendor/babylon.js"></script>
-<script src="config.js?v=5"></script>
-<script type="module" src="main.js?v=10"></script>
+<script src="config.js?v=7"></script>
+<script type="module" src="main.js?v=18"></script>
 </body>
 </html>

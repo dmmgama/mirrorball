@@ -1,7 +1,7 @@
 // v2/main.js — esqueleto do spike v2 (Fase 1): engine, sala, câmara, luzes mínimas, loop/HUD, painel `d`.
 // A malha da bola é responsabilidade do Opus (v2/ball.js); aqui só se importa dinamicamente com stub de recurso.
-import { buildRoom } from './room.js?v=2';
-import { initPanel } from './panel.js?v=4';
+import { buildRoom } from './room.js?v=3';
+import { initPanel } from './panel.js?v=6';
 import { applyColorToggle, hueToRgb } from './colorutil.js?v=1';
 
 const CONFIG = window.CONFIG;
@@ -11,6 +11,36 @@ const D2R = Math.PI / 180;
 
 const qs = new URLSearchParams(location.search);
 const forceWebGL = qs.get('webgl') === '1';
+
+/* ---- F8-b (David): mostrar/esconder o HUD — botão #hudbtn + tecla `h`, escolha PERSISTIDA ----
+   localStorage['mb2.hudOn'] ('0'/'1'); default visível. O botão fica sempre no ecrã (mesmo com o
+   HUD escondido) para haver sempre como o trazer de volta sem saber a tecla. A classe `hudoff` no
+   <body> é o que move o botão para o canto (ver CSS em index.html). */
+const hudBtn = document.getElementById('hudbtn');
+let hudOn = true;
+try { hudOn = localStorage.getItem('mb2.hudOn') !== '0'; } catch (e) { /* modo privado */ }
+function applyHudVisible() {
+  if (hud) hud.classList.toggle('off', !hudOn);
+  document.body.classList.toggle('hudoff', !hudOn);
+  if (hudBtn) hudBtn.setAttribute('aria-pressed', hudOn ? 'true' : 'false');
+}
+function setHudVisible(v) {
+  hudOn = !!v;
+  try { localStorage.setItem('mb2.hudOn', hudOn ? '1' : '0'); } catch (e) { /* modo privado */ }
+  applyHudVisible();
+}
+applyHudVisible();
+if (hudBtn) hudBtn.addEventListener('click', () => setHudVisible(!hudOn));
+/* tecla `h`: ligada em `document` na fase de CAPTURA. Com o listener em `window` (bolha) a tecla
+   não chegava cá quando o foco estava no <canvas> — o Babylon trata os eventos de teclado do canvas
+   e a bolha não subia até nós (verificado ao vivo: o botão alternava, o `h` não). A captura corre
+   antes de qualquer handler do canvas, por isso funciona com o foco onde estiver. */
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = e.target && e.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (e.key === 'h' || e.key === 'H') setHudVisible(!hudOn);
+}, true);
 
 /* ---- REGRESSÃO S8: os imports dinâmicos abaixo estavam a engolir falhas em `console.warn`
    (`ball.js indisponível, a usar stub`) — se o `ball.js` falhasse a importar, a cena ficava
@@ -89,7 +119,7 @@ const room = buildRoom(scene, CONFIG);
    entrarem na renderList do ReflectionProbe — é o coração da F8: a bola TEM de os espelhar. */
 let hats = null;
 try {
-  const mod = await import('./hats.js?v=5');
+  const mod = await import('./hats.js?v=12');
   hats = mod.createHats(scene, CONFIG);
   console.log('hats.js carregado.');
 } catch (err) {
@@ -101,7 +131,7 @@ try {
    ReflectionProbe (a bola espelha o rig do teto). Ver o cabeçalho de robots.js para as regras. */
 let robots = null;
 try {
-  const mod = await import('./robots.js?v=2');
+  const mod = await import('./robots.js?v=3');
   robots = mod.createRobots(scene, CONFIG);
   console.log('robots.js carregado.');
   /* fix S9 "parede de luz" aplicado aos robots: um cone estreito e intenso a bater no chão/parede
@@ -479,7 +509,7 @@ try {
    ================================================================================================ */
 let fixtures = null;
 try {
-  const mod = await import('./fixtures.js');
+  const mod = await import('./fixtures.js?v=2');
   fixtures = mod.createFixtures(scene, CONFIG, room);
   console.log('fixtures.js carregado.');
 } catch (err) {
@@ -582,6 +612,9 @@ const panelApi = await initPanel(CONFIG, {
   // F8: wash/cor atuam AO VIVO (sem rebuild) — 'cor (0/1)' também recolapsa o chão de madeira.
   onWashChanged: () => { updateWash(); },
   onColorToggleChanged: () => { updateWash(); },
+  // F8-b: toggle por pilar — setEnabled ao vivo (o pilar fica na renderList do probe; o probe só
+  // desenha o que está enabled, por isso não se mexe na lista, que é fixada em attachProbe).
+  onPillarsChanged: () => { try { room.applyPillarToggles(); } catch (e) { console.error(e); } },
   // F8: dimensões da sala (largura/comprimento/pé-direito) só se aplicam num RELOAD — a geometria
   // da sala/pilares/chapéus só se constrói uma vez no arranque (sem rebuild ao vivo, ver comentário
   // em config.js). Avisa alto no #err (mesmo padrão do moduleFail) em vez de silenciosamente não
@@ -1118,18 +1151,41 @@ console.log('MB2 pronto —', engine.isWebGPU ? 'WebGPU' : 'WebGL2');
     };
   }
 
+  /* F9 (2026-09-01): o spike serve-se por DOIS caminhos e os 3 scripts do motor vivem em `web/`:
+       /app/spike/v2/index.html  (modo música "oficial")  → web/ está em  ../../      = /app/*.js
+       /v2/index.html            (URL do dia-a-dia)       → web/ está em  /app/*.js  (serve.py
+                                 roteia /app/*.js → ../web/*.js, ver spike-babylon/serve.py)
+     Antes só o 1º caminho funcionava: em `/v2/index.html?src=music` os `../../*.js` resolviam para
+     `/core.js`, que não existe → 404 e o motor nunca arrancava (silenciosamente, só com um erro
+     por script na consola). Agora deriva-se a base do próprio pathname e há FALLBACK: se o 1º
+     candidato falhar, tenta o outro antes de desistir. */
+  const MUSIC_BASES = location.pathname.includes('/app/spike/')
+    ? ['../../', '/app/']     // servido como /app/spike/v2/… (relativo primeiro, same-origin garantido)
+    : ['/app/', '../../'];    // servido como /v2/… (o serve.py roteia /app/*.js → web/*.js)
+
   function loadMusicScripts() {
-    console.log('[F5 music] window.MIRRORBALL pronto — a carregar core.js/music.js/tuner.js do sidecar.');
+    console.log('[F5 music] window.MIRRORBALL pronto — a carregar core.js/music.js/tuner.js (base ' +
+      MUSIC_BASES[0] + ').');
     // Ids de DOM esperados pelos 3 scripts: só `#mus` (web/music.js:2388, HUD tecla `m`) — já existe
     // em v2/index.html, escondido por omissão (.on liga/desliga, mesmo padrão do Canvas 2D).
-    const scripts = ['../../core.js?v=1', '../../music.js?v=58', '../../tuner.js?v=1']; // relativos a /app/spike/v2/ → /app/*.js (web/*.js)
+    const files = ['core.js?v=1', 'music.js?v=58', 'tuner.js?v=1'];
     let i = 0;
     function next() {
-      if (i >= scripts.length) { console.log('[F5 music] core.js/music.js/tuner.js carregados.'); return; }
+      if (i >= files.length) { console.log('[F5 music] core.js/music.js/tuner.js carregados.'); return; }
+      loadOne(files[i++], 0);
+    }
+    function loadOne(file, baseIdx) {
+      if (baseIdx >= MUSIC_BASES.length) {
+        // Sem sidecar/rota, os scripts não existem — o spike TEM de continuar a funcionar sem erros
+        // visíveis (requisito do brief F9: "degrada sem erros"). Avisa na consola e segue.
+        console.warn('[F5 music] ' + file + ' não encontrado em nenhuma base (' +
+          MUSIC_BASES.join(', ') + ') — modo música indisponível, o resto do spike continua igual.');
+        return next();
+      }
       const s = document.createElement('script');
-      s.src = scripts[i++];
+      s.src = MUSIC_BASES[baseIdx] + file;
       s.onload = next;
-      s.onerror = (e) => console.error('[F5 music] falhou a carregar', s.src, e);
+      s.onerror = () => { s.remove(); loadOne(file, baseIdx + 1); }; // tenta a base seguinte
       document.body.appendChild(s);
     }
     next();

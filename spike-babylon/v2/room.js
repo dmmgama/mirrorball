@@ -130,5 +130,20 @@ export function buildRoom(scene, CONFIG) {
 
   function num(v, d) { return Number.isFinite(v) ? v : d; }
 
-  return { planes, pillars, material: roomMat, floorMaterial: floorMat, applyFloorColor };
+  /* ---- F8-b: liga/desliga cada pilar individualmente (David: "tapar e ligar") ----
+     `CONFIG.pillars.off` é a lista de índices desligados, escrita pelos knobs 'pilar N (0/1)' do
+     grupo "Pilares". Atua AO VIVO: o pilar fica `setEnabled(false)` mas CONTINUA na renderList do
+     ReflectionProbe — em WebGPU o probe só desenha o que está enabled no refresh, por isso não é
+     preciso (nem desejável) mexer na renderList, que é fixada uma vez em `ball.attachProbe`.
+     Chamada uma vez aqui (para o estado inicial do CONFIG valer) e pelo painel a cada mudança. */
+  function applyPillarToggles() {
+    const off = (CONFIG.pillars && Array.isArray(CONFIG.pillars.off)) ? CONFIG.pillars.off : [];
+    const groupOn = !(CONFIG.pillars && CONFIG.pillars.on === false);
+    for (let i = 0; i < pillars.length; i++) {
+      pillars[i].setEnabled(groupOn && off.indexOf(i) === -1);
+    }
+  }
+  applyPillarToggles();
+
+  return { planes, pillars, material: roomMat, floorMaterial: floorMat, applyFloorColor, applyPillarToggles };
 }

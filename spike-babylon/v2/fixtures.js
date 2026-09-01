@@ -144,13 +144,17 @@ export function createFixtures(scene, CONFIG, room) {
   const tmpQuat = new BABYLON.Quaternion();
   const AXIS_Z = new BABYLON.Vector3(0, 0, 1);
 
-  // clampa um ponto (array [x,y,z]) ao volume da sala (halfW/ceil/floor; sem clamp em z=back porque a
-  // frente fica aberta — câmara desse lado, um pinspot nunca fica ali) — devolve [x,y,z] novo +
-  // flag `clamped` (para o PARITY / debug, não usado por agora).
+  /* clampa um ponto (array [x,y,z]) ao INTERIOR da sala. F9 (2026-09-01, diagnóstico do "não vejo os
+     focos"): com a sala real em metros, `S·spotDist` (6 m do centro) põe alguns corpos FORA — medido:
+     spot2/spot3 (az ±82°, el 10°) caem em |x| = 5.85 com a parede a 5.5, ou seja ATRÁS da parede, de
+     onde nunca se veem. Agora encosta-se o corpo à face INTERIOR da parede/teto (margem `M`), em vez
+     de o deixar ao raio nominal — o foco continua a apontar à bola, só deixa de estar enterrado.
+     Sem clamp em -z: a frente da sala é aberta (é de lá que a câmara olha) e nenhum foco fica ali. */
+  const M = 0.20; // margem à face interior (m) — o corpo não fica embutido no plano
   function clampToRoom(p) {
-    const x = clamp(p[0], -R.halfW, R.halfW);
-    const y = clamp(p[1], R.floor, R.ceil);
-    const z = Math.max(p[2], R.back); // não deixa o corpo "atravessar" a parede de trás
+    const x = clamp(p[0], -R.halfW + M, R.halfW - M);
+    const y = clamp(p[1], R.floor + M, R.ceil - M);
+    const z = Math.max(p[2], R.back + M); // não deixa o corpo "atravessar" a parede de trás
     return [x, y, z];
   }
 
