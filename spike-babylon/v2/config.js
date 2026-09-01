@@ -488,6 +488,45 @@ window.CONFIG = {
     autoPerMin: 4,             // knob 'mikado: auto /min' — rajadas sem motor (0 = só com música)
   },
 
+  /* ---- F15 — VULTOS: pessoas a dançar na pista (v2/crowd.js) ----
+     Spec do David: "adicionar vultos na sala como se fossem pessoas a dançar", com diversidade
+     (altura, cabelo, estatura física, género), menu próprio, densidade, luminosidade, opacidade,
+     e um BOTÃO para a luz poder atravessar ou não os vultos (oclusão).
+     Ver docs/f15-vultos.md para as decisões de desenho e o compromisso da oclusão.
+     Silhuetas escuras low-poly (NUNCA bonecos: sem caras, sem detalhe que a penumbra não daria),
+     sorteadas com RNG SEEDED — a multidão é estável entre reloads, senão não há como afinar.
+     O MOTOR nunca liga/desliga vultos (`on` é knob do David); o estrelato pode, no máximo, modular
+     a LUMINOSIDADE (`starGain()` em crowd.js). Nada aqui passa dos 3 Hz: o balanço é um ciclo por
+     DOIS tempos, ou seja `bpm/120` Hz (1,45 Hz a 174 BPM). */
+  crowd: {
+    on: true,                    // knob 'vultos (0/1)' — SÓ o David
+    densityPerM2: 0.30,          // knob 'vultos: densidade (p/m²)' — 0,30 × ~103 m² ≈ 31 pessoas
+    lum: 1.0,                    // knob 'vultos: luminosidade' — quanto a luz da sala os revela
+    opacity: 1.0,                // knob 'vultos: opacidade' — 1 = opacos (alpha do material)
+    occlude: 1,                  // knob 'vultos: oclusão (0/1)' — 1 = a luz NÃO os atravessa
+    occRadMul: 1.05,             // knob 'vultos: oclusão raio ×' — inflação do cilindro de oclusão
+    seed: 11,                    // knob 'vultos: semente' — disposição estável e reproduzível
+    // ---- diversidade (spec: altura, estatura física, género, cabelo) ----
+    heightMidM: 1.72,            // knob 'vultos: altura média (m)'
+    /* `heightVarM` 0,26 é o valor MEDIDO que dá a faixa da spec (1,50-1,95 m), não um palpite: a
+       distribuição é TRIANGULAR (soma de duas uniformes), portanto raramente toca as caudas. Medido
+       com 41 pessoas: 0,16 → 1,61-1,84 (curto de mais); 0,26 → 1,55-1,91; 0,30 → 1,52-1,94. Ficou
+       0,26, e o clamp duro (1,42-2,02) apanha os raros extremos. */
+    heightVarM: 0.26,            // knob 'vultos: altura variação (m)' — faixa medida ~1,55-1,91
+    buildVar: 0.22,              // knob 'vultos: estatura variação' — magro ↔ corpulento
+    // ---- colocação ----
+    wallMarginM: 0.6,            // knob 'vultos: folga paredes (m)'
+    ballClearM: 0.6,             // knob 'vultos: folga bola (m)' — além do raio; ninguém sob a bola
+    minGapM: 0.55,               // knob 'vultos: espaço pessoal (m)' — eixo a eixo
+    faceBias: 0.45,              // knob 'vultos: virados à bola' — 0 uniforme, 1 todos a olhar
+    // ---- dança ----
+    danceAmp: 1.0,               // knob 'vultos: dança amplitude' (0 = pista parada)
+    autoBpm: 104,                // knob 'vultos: bpm sem motor' — ritmo próprio sem window.MUSIC
+    // DERIVADOS (escritos por crowd.js, lidos por ball.js — ver §Oclusão em docs/f15-vultos.md):
+    occ: null,                   // Float32Array plano [x, z, raio, yTop] por pessoa
+    occN: 0,                     // quantas pessoas há na tabela acima (0 = oclusão desligada)
+  },
+
   /* ---- F12 §5: ESTRELATO (v2/stardom.js) ----
      Em cada momento UMA peça conta a história (bola · mikado · chapéus) ou nenhuma (smooth), e as
      outras servem-na. A EXCLUSÃO MÚTUA mikado↔chapéus é estrutural: só há uma estrela de cada vez.

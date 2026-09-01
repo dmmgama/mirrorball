@@ -1,7 +1,7 @@
 // v2/main.js — esqueleto do spike v2 (Fase 1): engine, sala, câmara, luzes mínimas, loop/HUD, painel `d`.
 // A malha da bola é responsabilidade do Opus (v2/ball.js); aqui só se importa dinamicamente com stub de recurso.
 import { buildRoom } from './room.js?v=4';
-import { initPanel } from './panel.js?v=14';
+import { initPanel } from './panel.js?v=16';
 import { applyColorToggle, hueToRgb } from './colorutil.js?v=1';
 
 const CONFIG = window.CONFIG;
@@ -288,6 +288,47 @@ canvas.addEventListener('wheel', () => { camAnim.on = false; }, { passive: true 
   if (fin(stored['bola: posição Z (m)'])) CONFIG.ballPosZM = stored['bola: posição Z (m)'];
   CONFIG.ballXEffective = num(CONFIG.ballPosXM, 0);
   CONFIG.ballZEffective = num(CONFIG.ballPosZM, 0);
+  /* ---- F15: os VULTOS pela QUINTA aplicação deste mesmo padrão ----
+     O `createCrowd` corre ANTES do `ball.js` (tem de correr antes do `attachProbe`, para a bola
+     espelhar a pista) e a geração da multidão lê TRÊS coisas que o painel só escreve depois: os
+     knobs do próprio grupo "Vultos" (densidade, semente, diversidade, colocação), o estado da bola
+     (já tratado acima) e a lista de PILARES desligados. Sem este pré-passo, quem tivesse a pista
+     afinada em localStorage via, no arranque, uma multidão com os DEFAULTS do código até tocar num
+     knob — e pessoas dentro de um pilar que ele tinha ligado.
+     Copiam-se os knobs `vultos: *` um a um em vez de um `Object.assign` sobre `stored`: o
+     localStorage é dados do disco e não pode escrever chaves arbitrárias no CONFIG. */
+  {
+    const CC = CONFIG.crowd || (CONFIG.crowd = {});
+    const put = (knob, key) => { if (fin(stored[knob])) CC[key] = stored[knob]; };
+    if (fin(stored['vultos (0/1)'])) CC.on = stored['vultos (0/1)'] >= 0.5;
+    if (fin(stored['vultos: oclusão (0/1)'])) CC.occlude = stored['vultos: oclusão (0/1)'] >= 0.5 ? 1 : 0;
+    put('vultos: densidade (p/m²)', 'densityPerM2');
+    put('vultos: luminosidade', 'lum');
+    put('vultos: opacidade', 'opacity');
+    put('vultos: oclusão raio ×', 'occRadMul');
+    put('vultos: semente', 'seed');
+    put('vultos: altura média (m)', 'heightMidM');
+    put('vultos: altura variação (m)', 'heightVarM');
+    put('vultos: estatura variação', 'buildVar');
+    put('vultos: folga paredes (m)', 'wallMarginM');
+    put('vultos: folga bola (m)', 'ballClearM');
+    put('vultos: espaço pessoal (m)', 'minGapM');
+    put('vultos: virados à bola', 'faceBias');
+    put('vultos: dança amplitude', 'danceAmp');
+    put('vultos: bpm sem motor', 'autoBpm');
+  }
+  /* Os 6 toggles `pilar N (0/1)`: um pilar DESLIGADO não é obstáculo para a multidão (regra F13 §1).
+     O `room.js` já os aplicava no arranque a partir de `CONFIG.pillars.off`, mas essa lista só era
+     preenchida pelo painel — ou seja, DEPOIS do `createCrowd`. Preenche-se aqui, e o `room.js`
+     continua a lê-la exatamente como antes (nada muda para ele). */
+  {
+    const off = [];
+    for (let i = 0; i < 6; i++) {
+      const v = stored['pilar ' + (i + 1) + ' (0/1)'];
+      if (fin(v) && v < 0.5) off.push(i);
+    }
+    if (off.length) CONFIG.pillars.off = off;
+  }
 })();
 
 /* ---------------- F13 §4: o banner "dimensões da sala mudaram" foi ELIMINADO ------------------------
@@ -378,6 +419,24 @@ try {
   moduleFail('mikado.js', err);
 }
 
+/* ---------------- F15: VULTOS (pessoas a dançar) — import dinâmico (v2/crowd.js) ----------------
+   Como chapéus/robots/mikado, carregado ANTES do ball.js/attachProbe para os corpos entrarem na
+   renderList do ReflectionProbe — a bola TEM de espelhar a PISTA CHEIA (é uma sala com gente, e é
+   isso que se vê nas fotos do Lux: a bola devolve a multidão, não uma sala vazia).
+
+   ⚠ ORDEM (a mesma armadilha do mikado): `createCrowd` gera a multidão no construtor e a geração LÊ
+   `CONFIG.ballOn`/`ballR`/`ballXEffective`/`ballZEffective` — ninguém dança debaixo da bola. Por
+   isso o `preApplyReloadKnobs` acima já tem de ter escrito esses valores (tem: F11/F12/F13/F14). O
+   `createBall`, mais abaixo, compara o estimado com o CLAMPADO e regenera uma vez se diferirem. */
+let crowd = null;
+try {
+  const mod = await import('./crowd.js?v=4');
+  crowd = mod.createCrowd(scene, CONFIG);
+  console.log('crowd.js carregado —', crowd.count, 'vultos.');
+} catch (err) {
+  moduleFail('crowd.js', err);
+}
+
 /* ---------------- F12 §5: ESTRELATO — import dinâmico (v2/stardom.js) ----------------
    Decide, em fronteiras musicais, QUAL a peça que conta a história (bola · mikado · chapéus) ou se
    é tudo smooth, e publica multiplicadores em `CONFIG.stardom.gain` que os módulos leem. A
@@ -433,6 +492,20 @@ for (let i = 0; i < MAX_SPOTS; i++) {
   // I até 2000 × albedo da sala = branco puro — visto a 2026-08-31). O pinspot real ilumina a
   // bola; a sala vê os REFLEXOS (dots.js) e as manchas, não o jato direto.
   light.excludedMeshes.push(...room.planes);
+  /* ---- F15: os VULTOS entram na MESMA exclusão, e pela MESMA razão ----
+     Medido na verificação (e é a "parede de luz" do S9 outra vez, em roupa nova): `spot0`/`spot1`
+     correm a I = 605/690 e o cone continua PARA LÁ da bola — quem está atrás dela apanha 600
+     unidades em cheio. As silhuetas nasciam BRANCAS, mais claras que o chão, exatamente ao
+     contrário do que a spec pede ("massas escuras com rim light ocasional").
+     Chegou-se a pensar em deixar passar por realismo (uma pessoa a atravessar o feixe apanha-o
+     mesmo); a medição mostrou que a 600 unidades isso não é realismo nenhum, é saturação a branco.
+     O pinspot ilumina a BOLA; o público vê os REFLEXOS (os dots), não o jato direto — que é
+     literalmente a regra que os 5 planos já seguiam desde o S9.
+     O que os vultos CONTINUAM a apanhar (é lá que está o rim light das fotos): o wash da sala, os
+     flashes dos chapéus, os robots de teto e o flash do mikado. Essas são as luzes que o botão
+     `vultos: oclusão (0/1)` liga e desliga (`applyCrowdOcclusion`); as SpotLight da bola ficam
+     SEMPRE excluídas, com oclusão ligada ou não. */
+  if (crowd && crowd.meshes) light.excludedMeshes.push(...crowd.meshes);
   spotLights.push(light);
 }
 
@@ -717,7 +790,7 @@ function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
    Se ainda não existir (ou falhar), stub = esfera simples, só para se poder testar o resto. */
 let ball = null;
 try {
-  const mod = await import('./ball.js?v=5');
+  const mod = await import('./ball.js?v=7');
   ball = mod.createBall(scene, CONFIG);
   console.log('ball.js carregado —', ball && ball.tiles, 'tiles');
   // F8: pilares + chapéus + robots de teto entram na renderList do probe — a bola tem de espelhar a
@@ -726,8 +799,10 @@ try {
   // enabled no refresh ONCE.
   // F11: as barras do mikado entram TAMBÉM na renderList — a bola tem de as espelhar (nas fotos do
   // Lux é exatamente isso que se vê na bola: o mikado refletido).
+  // F15: os VULTOS entram TAMBÉM na renderList — a bola espelha a pista cheia (spec).
   const probeList = [...room.planes, ...(room.pillars || []), ...((hats && hats.meshes) || []),
-    ...((robots && robots.meshes) || []), ...((mikado && mikado.meshes) || [])];
+    ...((robots && robots.meshes) || []), ...((mikado && mikado.meshes) || []),
+    ...((crowd && crowd.meshes) || [])];
   if (ball.attachProbe) ball.attachProbe(probeList); // sala refletida nos espelhos (ONCE)
   /* F12 §3: o `createMikado` correu ACIMA, com a cota ESTIMADA do `preApplyReloadKnobs`; o
      `createBall` acabou de aplicar o CLAMP real (contra o pé-direito) e reescrever
@@ -747,6 +822,8 @@ try {
         num(ball.centerX, 0).toFixed(2) + ',' + ball.centerY.toFixed(2) + ',' +
         num(ball.centerZ, 0).toFixed(2) + ') — a regenerar a clareira do mikado.');
       mikado.rebuild();
+      // F15: a folga da bola na PISTA depende da mesma posição clampada — regenera com o mikado
+      if (crowd && crowd.rebuild) crowd.rebuild();
       if (ball.refreshProbe) ball.refreshProbe();
     }
   }
@@ -823,6 +900,53 @@ function excludeBallFromRoomLights() {
      lhe batessem direto, somavam-se à incidência dos `CONFIG.spots` e lavavam os espelhos com uma
      fonte que o rig real não aponta à bola. */
   if (mikado && mikado.lights) excludeBallFrom(mikado.lights);
+}
+
+/* ---------------- F15: knob 'vultos: oclusão (0/1)' — a luz atravessa ou não os vultos ----------
+   O botão que o David pediu tem DUAS metades, e esta é a das LUZES DE SALA (a outra, os dots da
+   bola, vive no raycast em CPU do ball.js — ver docs/f15-vultos.md §Oclusão):
+     ON  (default) = os vultos participam na luz da sala: os chapéus, os robots e o flash do mikado
+                     acendem-lhes as silhuetas (rim light das fotos) e eles tapam o que está atrás.
+     OFF           = a luz ATRAVESSA-OS: entram em `excludedMeshes` de todas as luzes de sala e
+                     ficam massas puramente decorativas, sem interagir com nada.
+   ⚠ As SpotLight DA BOLA (os pinspots) NÃO fazem parte deste botão: ficam SEMPRE excluídas dos
+   vultos, com oclusão ligada ou não — ver a nota longa no `rebuildSpotLights`/criação do pool lá em
+   cima ("parede de luz" do S9: a 600 unidades o cone que passa para lá da bola torrava as
+   silhuetas a branco). O botão manda nas luzes DE SALA, que é onde vive o rim light.
+   Idempotente e chamada por frame: só faz trabalho quando o knob muda de facto (compara com o
+   último estado escrito). O par liga/desliga é SIMÉTRICO (armadilha F11): sabe voltar a ligar,
+   e não deixa meshes órfãs nas listas. */
+let lastCrowdOcc = null;
+function crowdRoomLights() {
+  const out = [];
+  if (hats && hats.lights) out.push(...hats.lights);
+  if (robots && robots.lights) out.push(...robots.lights);
+  if (mikado && mikado.lights) out.push(...mikado.lights);
+  return out;
+}
+function applyCrowdOcclusion() {
+  if (!crowd) return;
+  const C = CONFIG.crowd || {};
+  // com os vultos desligados a pergunta não se põe: não há corpos para excluir de coisa nenhuma
+  const occ = (C.on !== false) && num(C.occlude, 1) >= 0.5;
+  if (occ === lastCrowdOcc) return;
+  lastCrowdOcc = occ;
+  const meshes = crowd.meshes || [];
+  const set = new Set(meshes);
+  for (const L of crowdRoomLights()) {
+    if (occ) {
+      // ON: a luz VÊ os vultos — tira-os das listas de exclusão (voltar a ligar, simétrico)
+      const keep = L.excludedMeshes.filter(m => !set.has(m));
+      if (keep.length !== L.excludedMeshes.length) L.excludedMeshes = keep;
+    } else {
+      // OFF: a luz ATRAVESSA — só se acrescenta o que ainda lá não está (sem duplicar)
+      const have = new Set(L.excludedMeshes);
+      const fresh = meshes.filter(m => !have.has(m));
+      if (fresh.length) L.excludedMeshes.push(...fresh);
+    }
+  }
+  // a outra metade do botão: a tabela de cilindros que o ball.js consome para matar os dots
+  if (crowd.refreshOcclusion) crowd.refreshOcclusion();
 }
 
 /* ---------------- F11: knob 'bola (0/1)' — a bola sai da sala (spec §4) ----------------
@@ -996,7 +1120,16 @@ const panelApi = await initPanel(CONFIG, {
   onColorToggleChanged: () => { updateWash(); },
   // F8-b: toggle por pilar — setEnabled ao vivo (o pilar fica na renderList do probe; o probe só
   // desenha o que está enabled, por isso não se mexe na lista, que é fixada em attachProbe).
-  onPillarsChanged: () => { try { room.applyPillarToggles(); } catch (e) { console.error(e); } },
+  /* F15: um pilar DESLIGADO deixa de ser obstáculo para a multidão (regra F13 §1, a mesma que o
+     mikado já aplica). Sem o rebuild, tapar um pilar no painel deixava um buraco de gente onde já
+     não há betão nenhum — e ligá-lo outra vez deixava pessoas dentro do pilar. */
+  onPillarsChanged: () => {
+    try {
+      room.applyPillarToggles();
+      if (crowd && crowd.rebuild) crowd.rebuild();
+      if (ball && ball.refreshProbe) ball.refreshProbe();
+    } catch (e) { console.error(e); }
+  },
   // F10: refletividade por superfície — ao vivo, sem rebuild (room.js: applyAllReflMul() remuta os
   // albedos existentes; applyFloorColor() já combina o multiplicador do chão com o toggle 'cor (0/1)').
   onReflChanged: () => { try { room.applyAllReflMul(); room.applyFloorColor(); } catch (e) { console.error(e); } },
@@ -1017,8 +1150,27 @@ const panelApi = await initPanel(CONFIG, {
   onBallToggleChanged: () => {
     try {
       if (mikado && mikado.rebuild) mikado.rebuild();
+      // F15: com a bola desmontada deixa de haver zona proibida na pista — a multidão preenche o
+      // centro (e volta a abrir espaço quando ela regressa). Mesma razão da clareira do mikado.
+      if (crowd && crowd.rebuild) crowd.rebuild();
       if (ball && ball.refreshProbe) ball.refreshProbe();
     } catch (e) { console.error('onBallToggleChanged:', e); }
+  },
+  /* ---- F15: VULTOS ----
+     `onCrowdGeomChanged` regenera a multidão AO VIVO (densidade, semente, diversidade, colocação) —
+     como o mikado, a geração é barata (sorteio + escrita de posições num pool já criado, sem
+     materiais nem meshes novas) e o David pode arrastar a densidade e ver a pista encher.
+     Depois força-se um refresh do probe: as pessoas mudaram de sítio e a bola tem de as espelhar na
+     posição nova (o probe é ONCE — sem isto ficava a multidão velha refletida).
+     `onCrowdOccChanged` é o BOTÃO: não regenera ninguém, só reescreve quem bloqueia o quê. */
+  onCrowdGeomChanged: () => {
+    try {
+      if (crowd && crowd.rebuild) crowd.rebuild();
+      if (ball && ball.refreshProbe) ball.refreshProbe();
+    } catch (e) { console.error('crowd.rebuild:', e); }
+  },
+  onCrowdOccChanged: () => {
+    try { applyCrowdOcclusion(); } catch (e) { console.error('onCrowdOccChanged:', e); }
   },
   /* F12 §3: 'bola: altura (m)' — a cota nova é aplicada pelo próprio `ball.update()` (que a lê por
      frame e reconstrói a corrente), mas há duas coisas que o ball.js não pode fazer sozinho:
@@ -1052,6 +1204,11 @@ const panelApi = await initPanel(CONFIG, {
     try {
       if (ball && ball.applyHeight) ball.applyHeight();
       if (mikado && mikado.rebuild) mikado.rebuild();
+      /* F15: a PISTA também segue a bola. A folga na planta (`vultos: folga bola`) é a mesma ideia
+         da clareira do mikado: ninguém dança debaixo dela, portanto arrastar o slider abre espaço
+         no sítio novo e fecha-o no antigo. A ORDEM continua a ser a armadilha nº1 da F12 — primeiro
+         a bola clampa e publica, só depois quem lê. */
+      if (crowd && crowd.rebuild) crowd.rebuild();
       if (ball && ball.refreshProbe) ball.refreshProbe();
     } catch (e) { console.error('onBallPosChanged:', e); }
   },
@@ -1070,6 +1227,8 @@ const panelApi = await initPanel(CONFIG, {
     try {
       if (ball && ball.applyHeight) ball.applyHeight();
       if (mikado && mikado.rebuild) mikado.rebuild();
+      // F15: a folga da pista é `raio + margem` — com o raio novo, o círculo vazio muda de tamanho
+      if (crowd && crowd.rebuild) crowd.rebuild();
       if (ball && ball.refreshProbe) ball.refreshProbe();
       // a câmara mantém o enquadramento: distância e limites de zoom seguem o raio novo
       camera.radius = camWorldDistance();
@@ -1578,6 +1737,11 @@ scene.registerBeforeRender(() => {
     try { mikado.update(tSec, dt); }
     catch (e) { console.error('mikado.update:', e); }
   }
+  if (crowd && crowd.update) {
+    try { crowd.update(tSec, dt); }
+    catch (e) { console.error('crowd.update:', e); }
+  }
+  applyCrowdOcclusion();   // F15: o botão "a luz atravessa ou não" — idempotente, ver acima
   updateWashStar();   // F12 §5: a sala recolhe quando os chapéus são a estrela (spec §5b)
   applyBallVisibility();   // F11: knob 'bola (0/1)' — só o David tira a bola da sala
   /* F12 §3: a câmara aponta ao CENTRO da bola. Sem isto, subir a bola tirava-a do enquadramento (o
@@ -1642,6 +1806,10 @@ scene.registerAfterRender(() => {
       : num(CONFIG.ballHeightM, 3.5).toFixed(2) + ' m'
         + ((Math.abs(ballCenterX()) > 1e-6 || Math.abs(ballCenterZ()) > 1e-6)
           ? `  (x ${ballCenterX().toFixed(1)} · z ${ballCenterZ().toFixed(1)})` : '')}\n` +
+    // F15: pista — quantos vultos, se a luz os atravessa, e a que BPM estão a dançar
+    `vultos ${crowd ? (CONFIG.crowd.on === false ? 'off'
+      : `${crowd.count} (${(crowd.areaM2 || 0).toFixed(0)} m² · ${crowd.bpm.toFixed(0)} bpm · ` +
+        `${num(CONFIG.crowd.occlude, 1) >= 0.5 ? 'oclui' : 'atravessa'})`) : '—'}\n` +
     // F12 §5: estrela corrente + o gesto que os chapéus usam quando lhes toca
     `estrela ${stardom ? (CONFIG.stardom.on === false ? 'off'
       : `${stardom.star} (${stardom.changes} trocas${stardom.star === 'hats'
@@ -1672,6 +1840,10 @@ window.MB2 = {
      gesto à mão, para verificar a sequência ponta-a-ponta sem esperar pela música). */
   get stardom() { return stardom; },
   get hats() { return hats; },
+  /* F15 (diagnóstico): os VULTOS — `MB2.crowd.count`, `.rebuild()` depois de escrever em
+     `CONFIG.crowd.*` sem passar pelo painel, `.refreshOcclusion()` para republicar a tabela de
+     cilindros que o ball.js consome. */
+  get crowd() { return crowd; },
   /* F5 (diagnóstico): coreografia e estado efetivo do frame. A API pública é `window.MIRRORBALL`. */
   get choreo() { return choreo; },
   get E() { return E; },

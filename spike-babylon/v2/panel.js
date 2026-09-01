@@ -44,8 +44,34 @@ const KEY_PRESETS = 'mb2.presets';      // F13.5: [{name,knobs,toggles,cam}]
 const KEY_PRESETS_UI = 'mb2.presetsUi'; // F13.5: {auto:bool, minSec, maxSec}
 const DEFAULTS_URL = './knobs-default.json';
 
+/* ============================================================================================
+   REGRA PERMANENTE — COMPATIBILIDADE ENTRE VERSÕES (David, 2026-09-01, fixada na F15)
+   ============================================================================================
+   **Um config/preset gravado numa versão TEM de fazer load na seguinte.** Nunca se pode perder um
+   ficheiro do David por ter sido gravado antes de uma fase nova. Em concreto, e para não se
+   reabrir:
+
+     1. Knobs NOVOS ausentes num ficheiro antigo → assumem os DEFAULTS, sem erro.
+        (Garantido por construção: `knobsSet` e `sanitizePreset` iteram os `sliders`, não as chaves
+        do ficheiro, e saltam o que não for `Number.isFinite` — quem não vem no ficheiro fica com o
+        valor que já tinha.)
+     2. Knobs RENOMEADOS passam SEMPRE pelo mapa `RENAMED` abaixo. **NUNCA APAGAR UMA ENTRADA DESTE
+        MAPA** — cada linha é a única ponte para os ficheiros gravados antes desse rename, e apagá-la
+        transforma silenciosamente esse knob num órfão. O mapa só CRESCE.
+     3. Knobs REMOVIDOS (e lixo em geral) são IGNORADOS sem partir o load, e nunca entram no CONFIG.
+        (Mesma razão do ponto 1: itera-se sobre os `sliders` conhecidos.)
+     4. O `sanitizePreset` (F13.5) NÃO pode rejeitar um ficheiro por lhe faltarem campos novos —
+        preenche com defaults. Um preset sem `cam`, sem `toggles` ou com `knobs: {}` é válido.
+
+   VERIFICADO na F15 (ver docs/f15-vultos.md §Compatibilidade) com um `mb2.knobs` e três presets
+   "da F14" — sem nenhum knob `vultos: *`, com um nome antigo por migrar e com lixo lá dentro:
+   carregaram os 177, migraram a opacidade, ignoraram o lixo, mantiveram os knobs novos nos seus
+   valores e não acenderam banner nenhum.
+   ============================================================================================ */
+
 /* Labels renomeados na F5 (commit 7280271) — um `mb2.knobs` gravado antes disso tem as chaves
-   antigas e os valores ficavam ÓRFÃOS (o David perdia esses knobs sem aviso). Migra-se na leitura. */
+   antigas e os valores ficavam ÓRFÃOS (o David perdia esses knobs sem aviso). Migra-se na leitura.
+   ⚠ ESTE MAPA SÓ CRESCE (regra 2 acima): acrescenta-se ao renomear, nunca se remove. */
 const RENAMED = {
   'flash: por s (só manual)': 'flash: por s',
   'flash: dura ms (só manual)': 'flash: dura ms',
@@ -106,6 +132,12 @@ export async function initPanel(CONFIG, hooks = {}) {
   // F14: posição da bola na PLANTA (X/Z) ao vivo — move a bola/corrente/probe, regenera a CLAREIRA
   // do mikado no sítio novo e refresca o probe. Mesma cadeia (e mesma ordem) da altura/diâmetro.
   const onBallPosChanged = hooks.onBallPosChanged || noop;
+  /* F15: VULTOS. `onCrowdGeomChanged` regenera a multidão ao vivo (colocação/diversidade/densidade)
+     e refresca o probe; `onCrowdOccChanged` é só o BOTÃO da oclusão (não regenera ninguém — reescreve
+     quem bloqueia o quê: as listas de `excludedMeshes` das luzes de sala e a tabela de cilindros que
+     o ball.js lê para matar os dots). */
+  const onCrowdGeomChanged = hooks.onCrowdGeomChanged || noop;
+  const onCrowdOccChanged = hooks.onCrowdOccChanged || noop;
   /* ---- F13.5: PRESETS — a única porta para a CÂMARA ----
      O painel não conhece Babylon nem o objeto `camera`; o main.js passa dois closures:
        hooks.camGet()      -> {alpha,beta,radius,ty}  (pose atual, para GRAVAR)
@@ -428,6 +460,52 @@ export async function initPanel(CONFIG, hooks = {}) {
       v => CONFIG.stardom.hatsHz = Math.min(3, v), () => CONFIG.stardom.hatsHz],
     ['estrelato: chapéus gesto', 0, 2, 1, v => CONFIG.stardom.hatsGesture = v, () => CONFIG.stardom.hatsGesture],
     ['estrelato: chapéus aux /min', 0, 60, 1, v => CONFIG.stardom.auxPerMin = v, () => CONFIG.stardom.auxPerMin],
+
+    /* ---- F15 (David, 2026-09-01, docs/f15-vultos.md): VULTOS — pessoas a dançar ----
+       "Adicionar vultos na sala como se fossem pessoas a dançar", com diversidade (altura, cabelo,
+       estatura física, género), menu próprio, densidade, luminosidade, opacidade, e um BOTÃO para
+       a luz poder atravessar ou não os vultos.
+       Só o DAVID liga/desliga (`vultos (0/1)`) — o motor NUNCA o faz; o estrelato pode, no máximo,
+       modular a luminosidade (ver crowd.js `starGain()`).
+       Os knobs de COLOCAÇÃO/DIVERSIDADE regeneram a multidão ao vivo (`onCrowdGeomChanged` →
+       `crowd.rebuild()` + refresh do probe); os de APARÊNCIA e DANÇA atuam direto, sem rebuild;
+       os dois de OCLUSÃO passam pelo `onCrowdOccChanged`, que só reescreve quem bloqueia o quê. */
+    ['vultos (0/1)', 0, 1, 1,
+      v => { CONFIG.crowd.on = v >= 0.5; onCrowdOccChanged(); }, () => (CONFIG.crowd.on === false ? 0 : 1)],
+    ['vultos: densidade (p/m²)', 0, 0.9, 0.01,
+      v => { CONFIG.crowd.densityPerM2 = v; onCrowdGeomChanged(); }, () => CONFIG.crowd.densityPerM2],
+    // LUMINOSIDADE: quanto a luz da sala os revela (multiplica o albedo). 0 = recortes pretos.
+    ['vultos: luminosidade', 0, 3, 0.05, v => CONFIG.crowd.lum = v, () => CONFIG.crowd.lum],
+    // OPACIDADE: 1 = opacos a sério (material OPAQUE, não alpha-blend a 1 — lição da F13 §2).
+    ['vultos: opacidade', 0, 1, 0.01, v => CONFIG.crowd.opacity = v, () => CONFIG.crowd.opacity],
+    /* O BOTÃO da spec: 1 = a luz NÃO os atravessa (os dots da bola morrem neles e as luzes de sala
+       acendem-lhes as silhuetas); 0 = a luz atravessa (puramente decorativos). */
+    ['vultos: oclusão (0/1)', 0, 1, 1,
+      v => { CONFIG.crowd.occlude = v >= 0.5 ? 1 : 0; onCrowdOccChanged(); },
+      () => (num(CONFIG.crowd.occlude, 1) >= 0.5 ? 1 : 0)],
+    ['vultos: oclusão raio ×', 0.3, 2.5, 0.05,
+      v => { CONFIG.crowd.occRadMul = v; onCrowdOccChanged(); }, () => CONFIG.crowd.occRadMul],
+    ['vultos: semente', 1, 99, 1,
+      v => { CONFIG.crowd.seed = v; onCrowdGeomChanged(); }, () => CONFIG.crowd.seed],
+    // ---- diversidade (spec: altura, estatura física, género, cabelo) ----
+    ['vultos: altura média (m)', 1.5, 1.95, 0.01,
+      v => { CONFIG.crowd.heightMidM = v; onCrowdGeomChanged(); }, () => CONFIG.crowd.heightMidM],
+    ['vultos: altura variação (m)', 0, 0.4, 0.01,
+      v => { CONFIG.crowd.heightVarM = v; onCrowdGeomChanged(); }, () => CONFIG.crowd.heightVarM],
+    ['vultos: estatura variação', 0, 0.5, 0.01,
+      v => { CONFIG.crowd.buildVar = v; onCrowdGeomChanged(); }, () => CONFIG.crowd.buildVar],
+    // ---- colocação ----
+    ['vultos: folga paredes (m)', 0, 3, 0.1,
+      v => { CONFIG.crowd.wallMarginM = v; onCrowdGeomChanged(); }, () => CONFIG.crowd.wallMarginM],
+    ['vultos: folga bola (m)', 0, 3, 0.1,
+      v => { CONFIG.crowd.ballClearM = v; onCrowdGeomChanged(); }, () => CONFIG.crowd.ballClearM],
+    ['vultos: espaço pessoal (m)', 0.3, 2, 0.05,
+      v => { CONFIG.crowd.minGapM = v; onCrowdGeomChanged(); }, () => CONFIG.crowd.minGapM],
+    ['vultos: virados à bola', 0, 1, 0.05,
+      v => { CONFIG.crowd.faceBias = v; onCrowdGeomChanged(); }, () => CONFIG.crowd.faceBias],
+    // ---- dança (ao vivo, sem rebuild) ----
+    ['vultos: dança amplitude', 0, 2, 0.05, v => CONFIG.crowd.danceAmp = v, () => CONFIG.crowd.danceAmp],
+    ['vultos: bpm sem motor', 60, 160, 1, v => CONFIG.crowd.autoBpm = v, () => CONFIG.crowd.autoBpm],
   ];
   for (const s of newSliders) { sliders.push(s); PERSIST.add(s[0]); }
 
@@ -566,6 +644,18 @@ export async function initPanel(CONFIG, hooks = {}) {
     ]],
     ['Explosão', [
       'explosão: alcance (radial)', 'explosão: deriva s', 'explosão: pausa s',
+    ]],
+    /* F15: grupo próprio "Vultos" (o "menu Vultos" que o David pediu por nome). São 16 knobs — não
+       cabiam em "Sala" sem a afogar, e são uma peça da cena por direito próprio (o público), não
+       uma afinação de outra coisa. Ordem: o interruptor e os 4 knobs da spec primeiro (densidade,
+       luminosidade, opacidade, oclusão), depois diversidade, colocação e dança. */
+    ['Vultos', [
+      'vultos (0/1)', 'vultos: densidade (p/m²)', 'vultos: luminosidade', 'vultos: opacidade',
+      'vultos: oclusão (0/1)', 'vultos: oclusão raio ×', 'vultos: semente',
+      'vultos: altura média (m)', 'vultos: altura variação (m)', 'vultos: estatura variação',
+      'vultos: folga paredes (m)', 'vultos: folga bola (m)', 'vultos: espaço pessoal (m)',
+      'vultos: virados à bola',
+      'vultos: dança amplitude', 'vultos: bpm sem motor',
     ]],
     /* F13.5: grupo próprio para os PRESETS (vista + config). Sem sliders — a UI toda é construída
        à mão mais abaixo, como o grupo "Ficheiro". Fica ANTES de "Ficheiro" na barra porque é o que
@@ -976,6 +1066,17 @@ export async function initPanel(CONFIG, hooks = {}) {
 
   /* Normaliza um preset vindo do storage/ficheiro. Tudo NaN-safe (regra 7): um preset corrompido
      nunca pode deixar knobs ou câmara com NaN — os campos maus são simplesmente deixados de fora. */
+  /* ⚠ COMPATIBILIDADE ENTRE VERSÕES (regra permanente do David — ver o bloco no topo do ficheiro).
+     Este filtro é a porta por onde entram TODOS os presets do disco, incluindo os gravados por
+     versões anteriores. As três linhas seguintes são o que garante a regra, e não podem mudar de
+     forma:
+       - `migrate(...)` aplica o `RENAMED` (ponto 2) ANTES de qualquer leitura;
+       - itera-se sobre os `sliders` CONHECIDOS e não sobre as chaves do ficheiro, portanto um knob
+         removido ou lixo puro é ignorado sem partir nada (ponto 3);
+       - um knob NOVO que o ficheiro antigo não tem simplesmente não entra no preset, e ao aplicar
+         fica com o valor corrente/default (ponto 1) — NUNCA se preenche com 0 nem se rejeita o
+         preset (ponto 4).
+     Um preset com `knobs: {}`, sem `cam` e sem `toggles` é VÁLIDO e tem de continuar a sê-lo. */
   function sanitizePreset(p) {
     if (!p || typeof p !== 'object') return null;
     const name = String(p.name == null ? '' : p.name).trim().slice(0, 60) || 'preset';

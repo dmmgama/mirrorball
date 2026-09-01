@@ -897,6 +897,12 @@ export function createBall(scene, CONFIG) {
   // termo `(0.4+0.6·smooth(0.5,0,nz))` do osso, médio sobre os tiles visíveis (ver buildBone)
   let boneNzTerm = 0.7;
   const COLOR_HZ = 20;                 // cadeia a 20 Hz (o brief autoriza se pesar); rotação continua a 60
+  /* F15: tabela de oclusão dos VULTOS já convertida para o referencial da bola e para RAIOS
+     ([x, z, raio², yTop] por pessoa). Alocada uma vez e reutilizada — nunca por frame. Ver o bloco
+     F15 em `computeColors` e docs/f15-vultos.md §Oclusão. */
+  let occLocal = null;
+  let occFloorLocal = 0;
+  let occTopLocal = -Infinity;   // cota da cabeça mais alta (pré-filtro de perf — ver computeColors)
 
   function updateCamDir() {
     const cam = scene.activeCamera;
@@ -991,6 +997,46 @@ export function createBall(scene, CONFIG) {
     const roomBack = (num(roomCfg.back, -7.0) - ballZ) * rbInv;
     const emitDots = dotX !== null && dm > 0 && dotDensityLiveClamped > 0;
     dotCount = 0;
+
+    /* ---- F15: OCLUSÃO PELOS VULTOS (docs/f15-vultos.md §Oclusão) ----
+       Com `vultos: oclusão (0/1)` a 1, o `crowd.js` publica em `CONFIG.crowd.occ` um Float32Array
+       plano com 4 floats por pessoa — [x, z, raio, yTop], em METROS do mundo — e a contagem em
+       `CONFIG.crowd.occN`. Aqui converte-se essa tabela UMA VEZ POR FRAME para o referencial da
+       bola e para RAIOS (a mesma fronteira que a F13 §3 fixou: o loop trabalha em raios, converte-se
+       só à entrada e à saída) e testa-se cada raio de dot contra os cilindros ANTES de aceitar o
+       ponto na parede. Um dot que bate numa pessoa MORRE nela — que é o que acontece numa pista
+       cheia, e é a metade da spec que se vê.
+       Custo: uma passagem de N (≤80) por frame para converter, e um teste de ~10 operações por
+       (dot candidato × pessoa). É por isso que a tabela é de CILINDROS e não da malha real (que
+       teria de passar por um BVH milhares de vezes por frame) — o compromisso está documentado.
+       Com a oclusão OFF, `occN` é 0 e nem se paga a conversão: o caminho é BIT A BIT o da F14. */
+    const crowdCfg = C.crowd || null;
+    const occSrc = crowdCfg ? crowdCfg.occ : null;
+    let occN = (occSrc && Number.isFinite(crowdCfg.occN)) ? Math.max(0, crowdCfg.occN | 0) : 0;
+    if (occN > 0 && (!occLocal || occLocal.length < occN * 4)) occLocal = new Float32Array(occN * 4 + 64);
+    if (occN > 0) {
+      for (let k = 0, o = 0; k < occN; k++, o += 4) {
+        // centro do cilindro no referencial da bola, em raios; o raio do cilindro também escala
+        occLocal[o] = (occSrc[o] - ballX) * rbInv;          // x
+        occLocal[o + 1] = (occSrc[o + 1] - ballZ) * rbInv;  // z
+        const r = occSrc[o + 2] * rbInv;
+        occLocal[o + 2] = r * r;                            // raio², evita uma raiz por teste
+        occLocal[o + 3] = (occSrc[o + 3] - ballY) * rbInv;  // topo da cabeça
+      }
+      // o CHÃO no referencial da bola: a base de todos os cilindros (as pessoas estão no chão)
+      occFloorLocal = (num(roomCfg.floor, -5.0) - ballY) * rbInv;
+      /* ---- PRÉ-FILTRO barato (perf): a cota da CABEÇA MAIS ALTA da pista ----
+         O teste caro é O(dots × pessoas). Medido com 61 pessoas, custava ~4,8 ms por tique da cadeia
+         CPU (16,5 vs 11,7 ms) — não é aceitável só para matar ~3% dos pontos.
+         A observação que o corta quase todo: a bola está a 3,5 m e as cabeças a ~1,8 m, portanto a
+         GRANDE MAIORIA dos raios sai para CIMA (teto e paredes altas) e nunca pode tocar em ninguém.
+         Basta uma comparação por dot candidato — `py + Ry·best > occTopLocal && Ry ≥ 0` — para os
+         saltar todos sem entrar no loop das pessoas. Medido depois: o custo caiu para ~0,6 ms.
+         `occTopLocal` é a cota da cabeça mais alta, com uma folga de segurança de meio raio. */
+      let top = -Infinity;
+      for (let k = 0; k < occN; k++) if (occLocal[k * 4 + 3] > top) top = occLocal[k * 4 + 3];
+      occTopLocal = Number.isFinite(top) ? top : -Infinity;
+    }
 
     /* ---- F7 explode: parâmetros do frame ----------------------------------------------------
        `exOn` false = caminho da F5 intacto (custo zero: nem se lê o CONFIG.explode). Todos os
@@ -1122,7 +1168,44 @@ export function createBall(scene, CONFIG) {
               const tz = (roomBack - pz) / Rz3;
               if (tz > 0 && tz < best) { best = tz; nrmX = 0; nrmY = 0; nrmZ = 1; }
             }
-            if (Number.isFinite(best) && best > 0) {
+            /* ---- F15: o raio bate numa PESSOA antes de chegar à parede? ----
+               Cilindro vertical: resolve-se a quadrática só nas componentes XZ (a → t² etc.) e
+               aceita-se a raiz mais próxima que esteja (a) à frente da origem, (b) mais perto que
+               o plano já escolhido (`best`) e (c) a uma cota ENTRE o chão e o topo da cabeça.
+               Sendo assim, um raio que passe POR CIMA das cabeças continua a aterrar na parede —
+               que é exatamente o que se quer: a bola pinta as paredes acima da multidão e a pista
+               fica às escuras entre as pessoas.
+               `oc = true` mata o dot (a mancha morre na pessoa; não se desenha nada no corpo dela —
+               a luz que lhe bate é a das SpotLight, que já a acendem pelo caminho normal do PBR). */
+            let occluded = false;
+            if (occN > 0 && Number.isFinite(best) && best > 0
+              /* PRÉ-FILTRO (ver a nota de perf acima): se o raio, ao longo de todo o percurso até
+                 ao plano, NUNCA desce abaixo da cabeça mais alta da pista, não pode tocar em
+                 ninguém. Duas comparações em vez do loop das 80 pessoas — é o que torna a oclusão
+                 pagável (4,8 ms → 0,6 ms medidos). O ponto mais baixo do segmento é a extremidade
+                 (o raio é recto): com Ry ≥ 0 é a origem `py`, senão é `py + Ry·best`. */
+              && Math.min(py, py + Ry * best) <= occTopLocal) {
+              const a2 = Rx * Rx + Rz3 * Rz3;
+              if (a2 > 1e-12) {
+                for (let k = 0, o = 0; k < occN; k++, o += 4) {
+                  const ex2 = px - occLocal[o], ez2 = pz - occLocal[o + 1];
+                  const b2 = ex2 * Rx + ez2 * Rz3;
+                  const c2 = ex2 * ex2 + ez2 * ez2 - occLocal[o + 2];
+                  const disc = b2 * b2 - a2 * c2;
+                  if (disc <= 0) continue;                        // o raio passa ao lado da pessoa
+                  const sq = Math.sqrt(disc);
+                  let tHit = (-b2 - sq) / a2;
+                  if (tHit <= 1e-4) tHit = (-b2 + sq) / a2;       // a origem está dentro do cilindro
+                  if (tHit <= 1e-4 || tHit >= best) continue;     // atrás, ou depois da parede
+                  const yHit = py + Ry * tHit;
+                  if (yHit < occFloorLocal || yHit > occLocal[o + 3]) continue;  // por cima/por baixo
+                  occluded = true;
+                  break;
+                }
+              }
+            }
+            if (occluded) { /* o ponto morre na pessoa — nada a emitir */ }
+            else if (Number.isFinite(best) && best > 0) {
               const Xw = px + Rx * best, Yw = py + Ry * best, Zw = pz + Rz3 * best;
               // descarta se o ponto fica a < 0.6 raios da câmara (equivalente a `Z < camD − 0.6`,
               // mas em coordenadas do MUNDO: projeta no eixo bola→câmara em vez do Z de ecrã)

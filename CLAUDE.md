@@ -43,6 +43,17 @@ MirrorBall-Start.bat / -Stop.bat            bola manual/câmara em :8080 (python
 8. **Registo obrigatório na repo**: todos os dados técnicos da sala (dimensões, luzes) e as
    afinações que forem sendo fixadas (chapéus, bola, wash, etc.) vão para `docs/f8-sala-lux.md`
    (ou docs/ seguinte) na mesma sessão em que se decidem — nada fica só em memória/conversa.
+9. **Compatibilidade de presets/configs entre versões** (David, F15 — permanente): um config ou
+   preset gravado numa versão **tem de fazer load na seguinte**. (a) knobs novos ausentes assumem os
+   defaults sem erro; (b) knobs renomeados passam SEMPRE pelo mapa `RENAMED` do `panel.js` — esse
+   mapa **só cresce, nunca se apaga uma entrada**; (c) knobs removidos/lixo são ignorados sem partir
+   o load; (d) o `sanitizePreset` não rejeita ficheiros por lhes faltarem campos novos. Detalhe e
+   bateria de verificação em `docs/f15-vultos.md` §7.
+9. **Compatibilidade de configs/presets entre versões** (David, 2026-09-01): tudo o que o David
+   grava (mb2.knobs, presets F13.5, JSON exportado) tem de fazer load na versão seguinte. Knob novo
+   ausente → default sem erro; knob renomeado → mapa `RENAMED` do panel.js (nunca apagar entradas
+   antigas); knob removido → ignorado sem partir; o sanitize de presets nunca rejeita ficheiros
+   antigos por faltarem campos novos. Cada fase testa o load de um config da versão anterior.
 
 ## Memória durável — Hindsight bank `claude-code::MirrorBall`
 
