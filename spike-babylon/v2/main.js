@@ -223,6 +223,17 @@ function camPoseUpdate(dt) {
    `pointerdown`/`wheel` no canvas, passivos (não interferem com o attachControl da Babylon). */
 canvas.addEventListener('pointerdown', () => { camAnim.on = false; }, { passive: true });
 canvas.addEventListener('wheel', () => { camAnim.on = false; }, { passive: true });
+/* ⚠ FIX regressão pan botão-direito (2026-09-01): o botão direito do ArcRotateCamera faz PAN
+   arrastando `camera.target` — mas o bloco F12/F14 mais abaixo reescreve `camera.target.x/y/z`
+   TODOS OS FRAMES para seguir o centro da bola, e anulava o pan no frame seguinte ao gesto (o
+   utilizador nunca via o arrasto "pegar"). A correção não é desligar o seguimento da bola (F12/F14
+   continuam válidos) — é ele CEDER enquanto o botão direito está pressionado: `userPanning` fica
+   `true` do `pointerdown` (botão 2) ao `pointerup`/`pointercancel`, e o bloco de seguimento (linha
+   ~1780) salta a escrita do target nesse intervalo. */
+let userPanning = false;
+canvas.addEventListener('pointerdown', (e) => { if (e.button === 2) userPanning = true; }, { passive: true });
+addEventListener('pointerup', (e) => { if (e.button === 2) userPanning = false; }, { passive: true });
+addEventListener('pointercancel', () => { userPanning = false; }, { passive: true });
 
 /* ---------------- F10 fix: aplicar os knobs ⟳ do localStorage ANTES de construir a geometria ----------------
    Bug encontrado ao verificar o F10 (docs/f8-sala-lux.md): `buildRoom()`/`createHats()` correm aqui,
@@ -1768,12 +1779,14 @@ scene.registerBeforeRender(() => {
   /* F12 §3: a câmara aponta ao CENTRO da bola. Sem isto, subir a bola tirava-a do enquadramento (o
      alvo da ArcRotateCamera ficava na origem) e o David via a bola a fugir para fora do ecrã em vez
      de a ver subir. O `target` é o único que se mexe — o ângulo/raio de órbita são dele. */
-  {
+  if (!userPanning) {
     const by = ballCenterY(), bx = ballCenterX(), bz = ballCenterZ();
     // ⚠ escreve-se `target.*` DIRETO, não `setTarget()`: em ArcRotateCamera o `setTarget` recalcula
     // alpha/beta/radius a partir da posição atual e dava um salto de órbita a cada mudança de cota.
     // F14: os três eixos. A câmara ORBITA a bola onde quer que ela esteja na planta — sem isto,
     // arrastar o slider de X mandava a bola para fora do enquadramento em vez de a mostrar a andar.
+    // `!userPanning`: enquanto o botão direito está a arrastar a câmara (pan), este bloco CEDE —
+    // sem isto o pan era anulado no frame seguinte (ver nota junto ao `userPanning` acima).
     if (camera.target.y !== by) camera.target.y = by;
     if (camera.target.x !== bx) camera.target.x = bx;
     if (camera.target.z !== bz) camera.target.z = bz;
