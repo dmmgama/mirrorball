@@ -1,7 +1,7 @@
 // v2/main.js — esqueleto do spike v2 (Fase 1): engine, sala, câmara, luzes mínimas, loop/HUD, painel `d`.
 // A malha da bola é responsabilidade do Opus (v2/ball.js); aqui só se importa dinamicamente com stub de recurso.
 import { buildRoom } from './room.js?v=4';
-import { initPanel } from './panel.js?v=7';
+import { initPanel } from './panel.js?v=8';
 import { applyColorToggle, hueToRgb } from './colorutil.js?v=1';
 
 const CONFIG = window.CONFIG;
@@ -149,6 +149,12 @@ addEventListener('keydown', (e) => { if (e.key === '0') resetCameraPose(); });
     CONFIG.room.ceil = CONFIG.roomHeightM - 3.5;
   }
   if (fin(stored['chapéus: corte da pala°'])) CONFIG.hats.cutDeg = stored['chapéus: corte da pala°'];
+  /* F11: 'bola (0/1)' TEM de estar aplicado antes de `createMikado` — a geração do mikado lê
+     `CONFIG.ballOn` para decidir se abre a CLAREIRA à volta da bola (spec §4). Sem isto, quem
+     tivesse a bola desligada em localStorage via na mesma o buraco no centro até mexer num knob.
+     (Os outros knobs `mikado: *` de geometria não precisam: o painel chama `set()` de todos no
+     arranque e o primeiro `onMikadoGeomChanged` refaz a disposição já com os valores gravados.) */
+  if (fin(stored['bola (0/1)'])) CONFIG.ballOn = stored['bola (0/1)'] >= 0.5;
 })();
 
 /* ---------------- sala implícita: 5 planos + F8 pilares/chão de madeira ---------------- */
@@ -181,6 +187,29 @@ try {
   for (const L of robots.lights) L.excludedMeshes.push(...room.planes);
 } catch (err) {
   moduleFail('robots.js', err);
+}
+
+/* ---------------- F11: mikado do teto — import dinâmico (v2/mikado.js) ----------------
+   Como chapéus/robots, carregado ANTES do ball.js/attachProbe para as barras entrarem na renderList
+   do ReflectionProbe — a bola TEM de espelhar o mikado (é o ponto todo da fase: nas fotos do Lux é
+   o mikado que se vê na bola). Ver o cabeçalho de mikado.js.
+
+   ⚠ ORDEM: `createMikado` gera a disposição no construtor e a geração LÊ `CONFIG.ballOn` (com bola
+   há clareira; sem bola, stack completo) — por isso o `preApplyReloadKnobs` acima já tem de ter
+   escrito o `bola (0/1)` do localStorage. Ver o bloco F11 lá em cima. */
+let mikado = null;
+try {
+  const mod = await import('./mikado.js?v=2');
+  mikado = mod.createMikado(scene, CONFIG);
+  console.log('mikado.js carregado —', mikado.barCount, 'barras.');
+  /* mesmo fix S9 "parede de luz" dos robots: as PointLight do flash do mikado são fortes e estão
+     junto ao teto — a bater direto nos 5 planos torravam teto/paredes para branco. Os planos ficam
+     de fora; pilares/chapéus/robots continuam a poder ser pintados pelo flash (é o realismo: nas
+     fotos o vermelho do mikado bate mesmo nos pilares). A BOLA é excluída mais abaixo
+     (excludeBallFromRoomLights — o mikado está ACIMA dela e não é um foco dela). */
+  for (const L of mikado.lights) L.excludedMeshes.push(...room.planes);
+} catch (err) {
+  moduleFail('mikado.js', err);
 }
 
 /* ---------------- luzes mínimas ----------------
@@ -457,8 +486,10 @@ try {
   // sala real (paredes+pilares+chapéus+rig), não só as 5 paredes. Meshes desligados
   // (setEnabled(false), sem hats montados ainda) também podem entrar: o probe só desenha o que está
   // enabled no refresh ONCE.
+  // F11: as barras do mikado entram TAMBÉM na renderList — a bola tem de as espelhar (nas fotos do
+  // Lux é exatamente isso que se vê na bola: o mikado refletido).
   const probeList = [...room.planes, ...(room.pillars || []), ...((hats && hats.meshes) || []),
-    ...((robots && robots.meshes) || [])];
+    ...((robots && robots.meshes) || []), ...((mikado && mikado.meshes) || [])];
   if (ball.attachProbe) ball.attachProbe(probeList); // sala refletida nos espelhos (ONCE)
 } catch (err) {
   moduleFail('ball.js', err);
@@ -510,6 +541,32 @@ function excludeBallFrom(lights) {
 function excludeBallFromRoomLights() {
   if (hats && hats.lights) excludeBallFrom(hats.lights);
   if (robots && robots.lights) excludeBallFrom(robots.lights);
+  /* F11: o MIKADO está ACIMA da bola e não é um foco dela — a mesma regra dos robots. A bola vê o
+     mikado como CORPO refletido no probe (que é o que as fotos mostram); se as PointLight do flash
+     lhe batessem direto, somavam-se à incidência dos `CONFIG.spots` e lavavam os espelhos com uma
+     fonte que o rig real não aponta à bola. */
+  if (mikado && mikado.lights) excludeBallFrom(mikado.lights);
+}
+
+/* ---------------- F11: knob 'bola (0/1)' — a bola sai da sala (spec §4) ----------------
+   Só o DAVID mexe nisto; o motor nunca liga/desliga elementos. Esconde a bola INTEIRA: a esfera de
+   espelhos (`root`, que é o pai de mesh/core/bone), a corrente + o gancho (soltos no mundo, não são
+   filhos do root — ver ball.js) e a auréola (`haloMesh`, um billboard independente).
+   Idempotente e chamada por frame (barato: só compara com o último estado escrito) — tem de o ser
+   porque `ball.chain`/`chainHook` só se materializam no 1º `buildChain()`, dentro do 1º
+   `ball.update()`, e porque o `ball.rebuild()` (knobs ⏫) recria as meshes.
+   As barras do mikado ficam onde estão: quem regenera a disposição quando este knob muda é o
+   `onBallToggleChanged` do painel (a clareira depende de a bola estar montada). */
+let lastBallVisible = null;
+function applyBallVisibility() {
+  const on = CONFIG.ballOn !== false;
+  const parts = ball ? [ball.root, ball.chain, ball.chainHook].filter(Boolean) : [];
+  // re-aplica quando o estado muda OU quando aparecem meshes novas (corrente no 1º frame, rebuild)
+  const n = parts.length;
+  if (lastBallVisible === on + ':' + n) return;
+  lastBallVisible = on + ':' + n;
+  for (const m of parts) m.setEnabled(on);
+  if (haloMesh) haloMesh.setEnabled(on);
 }
 
 /* ---------------- feixes refletidos + cone incidente: import dinâmico (API do Opus/Sonnet) ----------------
@@ -658,6 +715,26 @@ const panelApi = await initPanel(CONFIG, {
   // F10: refletividade por superfície — ao vivo, sem rebuild (room.js: applyAllReflMul() remuta os
   // albedos existentes; applyFloorColor() já combina o multiplicador do chão com o toggle 'cor (0/1)').
   onReflChanged: () => { try { room.applyAllReflMul(); room.applyFloorColor(); } catch (e) { console.error(e); } },
+  /* F11: geometria do mikado — regenera a disposição AO VIVO (sem reload). Ao contrário das
+     dimensões da sala, a geração é barata (sorteio + escrita de posições num pool já criado, sem
+     materiais nem meshes novas), por isso o David pode arrastar 'mikado: altura (m)' e ver as
+     barras a subir. Depois de regenerar força-se um refresh do probe: as barras mudaram de sítio e
+     a bola tem de as espelhar na posição nova (o probe é ONCE — sem isto ficava a reflexão velha). */
+  onMikadoGeomChanged: () => {
+    try {
+      if (mikado && mikado.rebuild) mikado.rebuild();
+      if (ball && ball.refreshProbe) ball.refreshProbe();
+    } catch (e) { console.error('mikado.rebuild:', e); }
+  },
+  /* F11: 'bola (0/1)' — esconder/mostrar a bola muda TAMBÉM o mikado: com a bola montada abre-se a
+     CLAREIRA à volta dela (spec §4, foto lux-barras2); sem bola, stack completo no centro. Por isso
+     este toggle regenera o mikado. `applyBallVisibility()` corre no frame seguinte (loop). */
+  onBallToggleChanged: () => {
+    try {
+      if (mikado && mikado.rebuild) mikado.rebuild();
+      if (ball && ball.refreshProbe) ball.refreshProbe();
+    } catch (e) { console.error('onBallToggleChanged:', e); }
+  },
   // F8: dimensões da sala (largura/comprimento/pé-direito) só se aplicam num RELOAD — a geometria
   // da sala/pilares/chapéus só se constrói uma vez no arranque (sem rebuild ao vivo, ver comentário
   // em config.js). Avisa alto no #err (mesmo padrão do moduleFail) em vez de silenciosamente não
@@ -1062,6 +1139,16 @@ scene.registerBeforeRender(() => {
   else if (dotDensityLive < dotDensityTarget) dotDensityLive = Math.min(dotDensityTarget, dotDensityLive * 1.005);
   if (ball) ball.dotDensityLive = dotDensityLive;
 
+  /* F11 (knob 'bola (0/1)'): com a bola desmontada NÃO basta esconder a esfera — tudo o que dela
+     DERIVA (feixes refletidos, cone incidente, pontos na parede, lente dos corpos, auréola) tem de
+     se calar, senão ficavam feixes a sair do nada no meio da sala. Em vez de gatilhos espalhados
+     por 5 módulos, zera-se `E.spotGain` ANTES do `ball.update`: os focos montados saem todos com
+     I=0 e cada módulo já sabe apagar-se com entrada vazia (beams/dots/incident fazem
+     `setEnabled(false)` + `thinInstanceCount = 0` — armadilha S9 nº1 já tratada por eles).
+     `applyBallVisibility()` (chamada mais abaixo, depois dos updates) esconde as meshes da bola. */
+  const ballMounted = CONFIG.ballOn !== false;
+  if (!ballMounted) E.spotGain = 0;
+
   // ball.update primeiro: monta mountedSpots/ambientPoses deste frame (fonte única de verdade),
   // as SpotLight/RectAreaLight lêem-nos a seguir, no MESMO frame.
   if (ball && ball.update) {
@@ -1096,6 +1183,11 @@ scene.registerBeforeRender(() => {
     try { robots.update(); }
     catch (e) { console.error('robots.update:', e); }
   }
+  if (mikado && mikado.update) {
+    try { mikado.update(tSec, dt); }
+    catch (e) { console.error('mikado.update:', e); }
+  }
+  applyBallVisibility();   // F11: knob 'bola (0/1)' — só o David tira a bola da sala
   excludeBallFromRoomLights(); // F8 (regra "nenhum foco inferior" + robots) — idempotente, ver acima
   // F8: chapéus e robots só ficam posicionados/ativados DEPOIS do 1º update() acima (attachProbe
   // correu antes disso, com os meshes ainda em posição/estado por omissão) — força mais UM refresh
@@ -1135,7 +1227,10 @@ scene.registerAfterRender(() => {
     `dots ${dotCount()}  ·  dens ${dotDensityLive.toFixed(2)}  ·  skin ${CONFIG.skin}\n` +
     `health ${health.toFixed(2)}  ·  rpm ${E.rotationRpm.toFixed(2)}  ·  flashes ${activeFlashCount}/${choreo.flashes.length}` +
     `  ·  estrobo ${CONFIG.strobe && CONFIG.strobe.enabled ? 'on' : 'off'}\n` +
-    `[d] painel  ·  [w] skin  ·  [0] repor câmara  ·  rato: orbitar/zoom`;
+    // F11: barras montadas + bloco aceso (−1 = todas) — o David vê logo se o mikado está a reagir
+    `mikado ${mikado ? (CONFIG.mikado.on === false ? 'off' : mikado.barCount + ' barras') : '—'}` +
+    `  ·  bola ${CONFIG.ballOn === false ? 'off' : 'on'}\n` +
+    `[d]/[k] painel  ·  [h] HUD  ·  [w] skin  ·  [0] repor câmara  ·  rato: orbitar/zoom`;
 });
 
 engine.runRenderLoop(() => scene.render());
@@ -1153,6 +1248,9 @@ window.MB2 = {
   get skinMix() { return skinMix; },
   /* Bónus §7 do brief F4: sliders re-lêem CONFIG quando este é escrito pela consola. */
   refreshPanel,
+  /* F11 (diagnóstico): o mikado, para inspeção/verificação pela consola — `MB2.mikado.rebuild()`
+     regenera a disposição depois de escrever em `CONFIG.mikado.*` sem passar pelo painel. */
+  get mikado() { return mikado; },
   /* F5 (diagnóstico): coreografia e estado efetivo do frame. A API pública é `window.MIRRORBALL`. */
   get choreo() { return choreo; },
   get E() { return E; },

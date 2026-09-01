@@ -80,6 +80,10 @@ export async function initPanel(CONFIG, hooks = {}) {
   const onRoomDimChanged = hooks.onRoomDimChanged || noop;
   const onPillarsChanged = hooks.onPillarsChanged || noop; // F8-b: toggle por pilar (setEnabled ao vivo)
   const onReflChanged = hooks.onReflChanged || noop; // F10: refletividade por superfície (ao vivo, sem rebuild)
+  // F11: geometria do mikado (mikado.rebuild() ao vivo) e toggle da bola (esconde a bola E regenera
+  // o mikado, porque a clareira depende de a bola estar montada ou não — spec §4).
+  const onMikadoGeomChanged = hooks.onMikadoGeomChanged || noop;
+  const onBallToggleChanged = hooks.onBallToggleChanged || noop;
 
   const CH = CONFIG.choreo, AMB = CONFIG.ambient;
   // 'health' é mecânico (placeholder local) até o Opus criar window.MIRRORBALL.setHealth/getHealth
@@ -269,6 +273,45 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['robots: luz', 0, 1.5, 0.02, v => CONFIG.robots.intensity = v, () => CONFIG.robots.intensity],
     // F8-b: graus a partir da VERTICAL; default 3 = praticamente a prumo (pedido do David).
     ['robots: inclinação°', 0, 30, 1, v => CONFIG.robots.tiltDeg = v, () => CONFIG.robots.tiltDeg],
+
+    /* ---- F11 (David, 2026-09-01, docs/f11-mikado.md): BOLA e MIKADO ----
+       Só o David liga/desliga elementos — o motor NUNCA o faz (spec §4). `bola (0/1)` esconde a
+       bola inteira E regenera o mikado (com bola há CLAREIRA; sem bola, stack completo). Os knobs
+       de GEOMETRIA do mikado chamam `onMikadoGeomChanged()` → `mikado.rebuild()`, que refaz a
+       disposição AO VIVO (sem reload — ao contrário das dimensões da sala, a geração do mikado é
+       barata e não há materiais a recriar). Os knobs de EFEITO atuam direto, sem rebuild. */
+    ['bola (0/1)', 0, 1, 1, v => { CONFIG.ballOn = v >= 0.5; onBallToggleChanged(); }, () => (CONFIG.ballOn === false ? 0 : 1)],
+    ['mikado (0/1)', 0, 1, 1, v => { CONFIG.mikado.on = v >= 0.5; }, () => (CONFIG.mikado.on === false ? 0 : 1)],
+    // geometria (rebuild ao vivo)
+    ['mikado: barras', 0, 44, 1, v => { CONFIG.mikado.count = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.count],
+    // altura do MIKADO INTEIRO ao chão (spec §3: default 4,0 m, ao vivo)
+    ['mikado: altura (m)', 2.5, 5.2, 0.05, v => { CONFIG.mikado.heightM = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.heightM],
+    ['mikado: espalha (m)', 0, 2, 0.05, v => { CONFIG.mikado.spreadM = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.spreadM],
+    ['mikado: camadas', 1, 10, 1, v => { CONFIG.mikado.layers = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.layers],
+    ['mikado: barra min (m)', 1, 8, 0.1, v => { CONFIG.mikado.lenMinM = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.lenMinM],
+    ['mikado: barra máx (m)', 1, 12, 0.1, v => { CONFIG.mikado.lenMaxM = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.lenMaxM],
+    ['mikado: Ø tubo (m)', 0.03, 0.3, 0.005, v => { CONFIG.mikado.tubeDiaM = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.tubeDiaM],
+    ['mikado: inclinação°', 0, 25, 1, v => { CONFIG.mikado.pitchDeg = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.pitchDeg],
+    ['mikado: viés eixo', 0, 1, 0.05, v => { CONFIG.mikado.axisBias = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.axisBias],
+    ['mikado: folga pilares (m)', 0, 1.5, 0.05, v => { CONFIG.mikado.insetM = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.insetM],
+    ['mikado: clareira bola (m)', 0, 2, 0.05, v => { CONFIG.mikado.ballClearM = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.ballClearM],
+    ['mikado: semente', 1, 99, 1, v => { CONFIG.mikado.seed = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.seed],
+    // efeito/flashes (ao vivo, sem rebuild). ⚠ 'mikado: flash Hz' TEM teto 3 — regra da sala.
+    ['mikado: repouso', 0, 1, 0.02, v => CONFIG.mikado.idle = v, () => CONFIG.mikado.idle],
+    ['mikado: flash força', 0, 6, 0.1, v => CONFIG.mikado.flashGain = v, () => CONFIG.mikado.flashGain],
+    ['mikado: flash ms', 30, 500, 10, v => CONFIG.mikado.flashMs = v, () => CONFIG.mikado.flashMs],
+    ['mikado: flash Hz', 0.2, 3, 0.1, v => CONFIG.mikado.hz = Math.min(3, v), () => CONFIG.mikado.hz],
+    ['mikado: flashes/rajada', 1, 8, 1, v => CONFIG.mikado.burst = v, () => CONFIG.mikado.burst],
+    ['mikado: modo (0=todas/1=blocos)', 0, 1, 1, v => CONFIG.mikado.mode = v, () => CONFIG.mikado.mode],
+    ['mikado: tam. bloco', 1, 12, 1, v => { CONFIG.mikado.blockSize = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.blockSize],
+    ['mikado: cor (0=rot)', 0, 3, 1, v => CONFIG.mikado.color = v, () => CONFIG.mikado.color],
+    ['mikado: luz sala ×', 0, 3, 0.05, v => CONFIG.mikado.lightMul = v, () => CONFIG.mikado.lightMul],
+    // triggers musicais (spec §7)
+    ['mikado: tarola (0/1)', 0, 1, 1, v => { CONFIG.mikado.snareOn = v >= 0.5; }, () => (CONFIG.mikado.snareOn === false ? 0 : 1)],
+    ['mikado: tarola sens.', 0, 1, 0.05, v => CONFIG.mikado.snareSens = v, () => CONFIG.mikado.snareSens],
+    ['mikado: drop (0/1)', 0, 1, 1, v => { CONFIG.mikado.dropOn = v >= 0.5; }, () => (CONFIG.mikado.dropOn === false ? 0 : 1)],
+    ['mikado: drop rajada ×', 1, 4, 0.5, v => CONFIG.mikado.dropBurstMul = v, () => CONFIG.mikado.dropBurstMul],
+    ['mikado: auto /min', 0, 30, 0.5, v => CONFIG.mikado.autoPerMin = v, () => CONFIG.mikado.autoPerMin],
   ];
   for (const s of newSliders) { sliders.push(s); PERSIST.add(s[0]); }
 
@@ -361,6 +404,20 @@ export async function initPanel(CONFIG, hooks = {}) {
     // F8-b: grupo próprio para os 6 pilares individuais ("tapar e ligar" — David).
     // F10: geometria paramétrica (vão entre filas, passo na fila, secção) junta-se aqui — mesmo grupo.
     ['Pilares', ['pilares: vão entre filas (m)', 'pilares: passo na fila (m)', 'pilares: lado (m)', ...PILLAR_NAMES]],
+    /* F11: grupo próprio para o mikado do teto (26 knobs — não cabiam em "Sala" sem a afogar).
+       'bola (0/1)' vive AQUI, ao lado de 'mikado (0/1)': são o par que o David usa para escolher a
+       peça central da sala (bola ↔ mikado ↔ as duas), e é o gesto que a spec §4 descreve. */
+    ['Mikado & Bola', [
+      'bola (0/1)', 'mikado (0/1)',
+      'mikado: barras', 'mikado: altura (m)', 'mikado: espalha (m)', 'mikado: camadas',
+      'mikado: barra min (m)', 'mikado: barra máx (m)', 'mikado: Ø tubo (m)', 'mikado: inclinação°',
+      'mikado: viés eixo', 'mikado: folga pilares (m)', 'mikado: clareira bola (m)', 'mikado: semente',
+      'mikado: repouso', 'mikado: flash força', 'mikado: flash ms', 'mikado: flash Hz',
+      'mikado: flashes/rajada', 'mikado: modo (0=todas/1=blocos)', 'mikado: tam. bloco',
+      'mikado: cor (0=rot)', 'mikado: luz sala ×',
+      'mikado: tarola (0/1)', 'mikado: tarola sens.', 'mikado: drop (0/1)', 'mikado: drop rajada ×',
+      'mikado: auto /min',
+    ]],
     ['Pós & Skin', [
       'bloom: força', 'bloom: limiar', 'bloom: raio px', 'grão', 'vinheta',
       'pós: tonemap (0/1)', 'pós: exposição',
@@ -404,7 +461,14 @@ export async function initPanel(CONFIG, hooks = {}) {
   const dbg = document.getElementById('dbg');
   dbg.innerHTML = '';
   dbg.className = 'dbgpop';
-  dbg.classList.add('on'); // painel visível por omissão nesta fase (spike); tecla d alterna
+  /* ---- F11 (pedido do David, 2026-09-01): esconder o painel INTEIRO, e que fique escondido ----
+     Antes o painel nascia SEMPRE visível e a tecla `d` alternava-o sem guardar nada: a cada reload
+     voltava a tapar o canto. Agora a visibilidade persiste em `localStorage['mb2.panelOn']`
+     (padrão `mb2.*` do spike) e há tecla dedicada — ver o bloco keydown mais abaixo.
+     Default mantém-se VISÍVEL (é um spike de afinação; quem nunca tocou na tecla não perde o painel). */
+  let panelOn = true;
+  try { panelOn = localStorage.getItem('mb2.panelOn') !== 'off'; } catch (e) { /* sem storage */ }
+  if (panelOn) dbg.classList.add('on');
 
   let dbgSize = { cols: 1, scale: 1, compact: false };
   try { Object.assign(dbgSize, JSON.parse(localStorage.getItem('mb2.dbgSize') || '{}')); } catch (e) { /* sem storage */ }
@@ -848,17 +912,32 @@ export async function initPanel(CONFIG, hooks = {}) {
   persistAll = function () { _persistAll(); refreshDirtyDots(); };
   refreshDirtyDots();
 
+  /* ---- F11 (David, 2026-09-01): mostrar/esconder o painel TODO, com estado persistido ----
+     `setPanelVisible(on)` é a única porta: mexe nos 3 elementos juntos (popover `#dbg`, barra de
+     separadores `#dbgbar`, faixa de favoritos `#dbgfav`) e grava em `localStorage['mb2.panelOn']`.
+     Antes a tecla `d` fazia o toggle mas NÃO gravava — a cada reload o painel voltava a tapar o
+     canto, que é a queixa do David.
+     TECLAS: `k` (dedicada, nova — estava livre) e `d` (a de sempre, mantida por memória muscular).
+     Mapa de teclas já ocupadas no spike v2 e no motor, para referência de quem vier a seguir:
+        h HUD · d painel · k painel (nova) · w skin · x/X explosão · 0 repor câmara
+        m HUD do motor · p perfil · g gerador sintético · n próxima fase (todas em web/music.js)
+     `e` (HUD de emoções) não existe no spike, mas fica reservada por paridade com a bola 2D. */
+  function setPanelVisible(on) {
+    panelOn = !!on;
+    dbg.classList.toggle('on', panelOn);
+    dbgbar.classList.toggle('on', panelOn);
+    dbgfav.classList.toggle('on', panelOn);
+    if (!panelOn) closeGroup();
+    try { localStorage.setItem('mb2.panelOn', panelOn ? 'on' : 'off'); } catch (e) { /* sem storage */ }
+  }
   addEventListener('keydown', (e) => {
-    if (e.key === 'd' && !isTypingTarget(e.target)) {
-      const on = dbg.classList.toggle('on');
-      dbgbar.classList.toggle('on', on);
-      dbgfav.classList.toggle('on', on);
-      if (!on) closeGroup();
-    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (isTypingTarget(e.target)) return;
+    if (e.key === 'd' || e.key === 'D' || e.key === 'k' || e.key === 'K') setPanelVisible(!panelOn);
   });
   function isTypingTarget(t) { return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'); }
-  // painel visível por omissão (spike) — a faixa/barra seguem o mesmo estado inicial do `#dbg.on`.
-  dbgbar.classList.add('on'); dbgfav.classList.add('on');
+  // estado inicial: a barra/faixa seguem o `panelOn` lido do localStorage (ver o bloco acima).
+  dbgbar.classList.toggle('on', panelOn); dbgfav.classList.toggle('on', panelOn);
 
   // bónus (brief F4 §7): sliders re-lêem CONFIG quando este é escrito pela consola/motor — chama-se
   // `get()` de cada slider e escreve-se no input, sem passar por `set()` (não reescreve o CONFIG).

@@ -327,4 +327,53 @@ window.CONFIG = {
     coneDeg: 12,               // meia-abertura do cone (estreito, "beam" e não wash)
     dropM: 0.35,               // quanto o corpo desce do teto (lente fica a ≤0,5 m do teto)
   },
+
+  /* ---- F11 (David, 2026-09-01, docs/f11-mikado.md): BOLA e MIKADO como elementos que SÓ O DAVID
+     liga/desliga (o motor nunca liga/desliga nada — só anima o que estiver montado). ----
+     `ballOn` esconde a bola INTEIRA (esfera + núcleo + osso + corrente + auréola) e é lido pelo
+     mikado.js na geração: com a bola ON abre-se a CLAREIRA à volta dela (as barras que a
+     atravessam são rejeitadas, como na foto lux-barras2); com a bola OFF o mikado enche o centro
+     (stack completo). Mudar este knob REGENERA o mikado (main.js: onMikadoGeomChanged). */
+  ballOn: true,                // knob 'bola (0/1)'
+
+  /* ---- F11 — MIKADO DO TETO (v2/mikado.js) ----
+     ~36 barras compridas e finas cruzadas em várias camadas, SÓ no miolo (dentro do retângulo dos
+     pilares). Cada barra = tubo luminoso + perfil/calha metálica + terminais + 2 tirantes ao teto.
+     Piscam TODAS JUNTAS (mode 0) ou ALTERNANDO BLOCOS (mode 1), sempre com a MESMA cor simultânea,
+     em rajadas ("flashadas"). Cores: vermelho/branco/azul.
+     TETO INVIOLÁVEL: `hz` ≤ 3 (regra da sala) — clampado no knob E no agendador (MIN_GAP_S).
+     Triggers: tarola (snare) e drop do motor de música, por POLL de `window.MUSIC.state` (nenhuma
+     linha de web/music.js muda). Sem motor, o modo autónomo (`autoPerMin`) mantém o mikado vivo. */
+  mikado: {
+    on: true,                  // knob 'mikado (0/1)'
+    // ---- geometria (⟳ ao vivo via rebuild(), não exige reload) ----
+    count: 40,                 // knob 'mikado: barras' (0-44) — ~30-40 como nas fotos
+    heightM: 4.0,              // knob 'mikado: altura (m)' — cota do CENTRO do mikado ao CHÃO (spec §3)
+    spreadM: 0.85,             // knob 'mikado: espalha (m)' — banda de altura ocupada pelas camadas
+    layers: 6,                 // knob 'mikado: camadas' — cotas distintas dentro da banda
+    lenMinM: 3.5,              // knob 'mikado: barra min (m)'
+    lenMaxM: 7.5,              // knob 'mikado: barra máx (m)'
+    tubeDiaM: 0.07,            // knob 'mikado: Ø tubo (m)' — o perfil/terminais derivam daqui
+    pitchDeg: 6,               // knob 'mikado: inclinação°' — pitch raso (nas fotos quase à mesma cota)
+    axisBias: 0.35,            // knob 'mikado: viés eixo' — 0 = azimutes uniformes, 1 = tudo ao comprido
+    insetM: 0.35,              // knob 'mikado: folga pilares (m)' — as pontas não roçam os pilares
+    ballClearM: 0.5,           // knob 'mikado: clareira bola (m)' — margem além do raio da bola (1 m)
+    seed: 7,                   // knob 'mikado: semente' — disposição estável e reproduzível
+    // ---- efeito/flashes ----
+    idle: 0.12,                // knob 'mikado: repouso' — brilho contínuo do tubo (0 = mikado apagado)
+    flashGain: 2.6,            // knob 'mikado: flash força'
+    flashMs: 120,              // knob 'mikado: flash ms' — duração de cada flash
+    hz: 2.4,                   // knob 'mikado: flash Hz' (TETO 3 — regra invariável da sala)
+    burst: 2,                  // knob 'mikado: flashes/rajada'
+    mode: 0,                   // knob 'mikado: modo (0=todas/1=blocos)'
+    blockSize: 5,              // knob 'mikado: tam. bloco' (4-6 na spec)
+    color: 0,                  // knob 'mikado: cor (0=rot)' — 0 rotação · 1 vermelho · 2 branco · 3 azul
+    lightMul: 1.0,             // knob 'mikado: luz sala ×' — quanto o flash pinta a sala
+    // ---- triggers musicais (spec §7) ----
+    snareOn: true,             // knob 'mikado: tarola (0/1)'
+    snareSens: 0.55,           // knob 'mikado: tarola sens.' — prob. de cada tarola disparar rajada
+    dropOn: true,              // knob 'mikado: drop (0/1)'
+    dropBurstMul: 2,           // knob 'mikado: drop rajada ×' — o drop faz uma rajada mais longa
+    autoPerMin: 4,             // knob 'mikado: auto /min' — rajadas sem motor (0 = só com música)
+  },
 };
