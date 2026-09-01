@@ -1,6 +1,6 @@
 // v2/main.js — esqueleto do spike v2 (Fase 1): engine, sala, câmara, luzes mínimas, loop/HUD, painel `d`.
 // A malha da bola é responsabilidade do Opus (v2/ball.js); aqui só se importa dinamicamente com stub de recurso.
-import { buildRoom } from './room.js?v=4';
+import { buildRoom } from './room.js?v=5';
 import { initPanel } from './panel.js?v=18';
 import { applyColorToggle, hueToRgb } from './colorutil.js?v=1';
 
