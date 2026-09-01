@@ -76,6 +76,7 @@
   "pontos: escala": 0.32,
   "pontos: queda": 0.028,
   "pontos: teto cinza": 216,
+  "pontos: losango (0/1)": 1,
   "bloom: força": 0.75,
   "bloom: limiar": 0.8,
   "bloom: raio px": 9,

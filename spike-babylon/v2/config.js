@@ -82,6 +82,11 @@ window.CONFIG = {
   strobeRate: 1.0,           // multiplicador da frequência dos estrobos do motor (0 = nunca, 1 = normal, 3 = 3×) — knob
   dotScale: 0.32,            // tamanho do ponto na parede relativo ao tile projetado
   dotMaxGrey: 0xd8,          // teto de brilho dos pontos
+  /* V1 (research-realismo §2.1): forma da mancha na parede. 1 = LOSANGO (a mancha herda a
+     silhueta quadrada da faceta que a projetou — é o que uma bola de espelhos real faz),
+     0 = disco redondo (o comportamento até S12). Área aparente igual nos dois. Knob
+     'pontos: losango (0/1)'. Valor inicial finito (regra 7). */
+  dotDiamond: 1,
   bloomStrength: 0.75,       // alpha da passagem de bloom
   bloomBlurPx: 9,            // raio do blur (em px CSS, a meia resolução)
   bloomThreshold: 0.8,       // NOVO (F4): fonte do bloom = só o que já está quase branco (~ gl>0.35 do Canvas 2D)

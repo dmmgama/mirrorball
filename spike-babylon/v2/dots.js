@@ -3,12 +3,23 @@
 // `ball.js` (`ball.dots` = {count, X, N, R, I, size}, bloco `// ---- F4 dots ----`); aqui só se
 // DESENHA — mesmo padrão do beams.js.
 //
-// Thin instances de UM disco (`CreateDisc`, ~12 lados) colado ao plano da parede: translação =
-// X + N·0.01 (evita z-fighting com a parede), rotação alinha o disco com N, escala
+// Thin instances de UMA mancha colada ao plano da parede: translação =
+// X + N·0.01 (evita z-fighting com a parede), rotação alinha a mancha com N, escala
 // [size·elong, size, 1] com elong = clamp(1/max(graze,0.2), 1, 4.5), graze = |N·R̂| (ângulo rasante —
 // no Canvas 2D era |nrm.z|, aqui é a normal do plano contra a direção do feixe R, que é o que
 // fisicamente alonga a mancha: um feixe quase paralelo à parede risca-a em vez de pingar).
 // Eixo maior ao longo da projeção de R no plano (a direção em que o feixe "arrasta" a mancha).
+//
+// FORMA (V1, research-realismo §2.1): uma bola de espelhos real não projeta círculos — cada faceta
+// é um quadrado plano e a mancha HERDA a silhueta da faceta. A mesh base passa a ser um LOSANGO
+// (`CreateDisc` com `tessellation: 4` — 4 vértices a 0/90/180/270°, i.e. um quadrado com as
+// diagonais sobre o X e o Y locais). Isto é de propósito: os eixos locais X/Y já são os eixos que a
+// matriz por instância orienta (X = direção em que o feixe arrasta, Y = travessa), por isso o
+// losango herda a orientação da faceta de graça — não há billboard nenhum aqui, a rotação é sempre
+// Z→N + alinhamento em torno de N, e a elongação estica a diagonal maior como esticava o disco.
+// Raio 1.2247 (=√1.5) para o quadrado ter a MESMA área do dodecágono de raio 1 que substitui
+// (3.0 vs 2.0 à mesma escala) — tamanho aparente inalterado, só muda a silhueta.
+// O knob `pontos: losango (0/1)` (CONFIG.dotDiamond, default 1) troca entre as duas meshes ao vivo.
 //
 // Material: StandardMaterial sem luz, emissiveColor branco, ALPHA_ADD, sem depth write, greyscale —
 // cor por instância `v = clamp(I,0,1)·dotMaxGrey/255`, descarta v < 8/255 (mesmo teto do Canvas 2D).
@@ -20,7 +31,11 @@ const BJS = (typeof BABYLON !== 'undefined') ? BABYLON : (typeof globalThis !== 
 function num(v, d) { return Number.isFinite(v) ? v : d; }
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
-const SIDES = 12; // disco: poucos lados, é uma mancha de luz, não precisa de ser redondo perfeito
+const SIDES = 12;  // disco: poucos lados, é uma mancha de luz, não precisa de ser redondo perfeito
+const QUAD_SIDES = 4;  // losango: 4 vértices a 0/90/180/270° — quadrado com as diagonais em X/Y locais
+// área de um polígono regular de n lados e raio r = ½·n·r²·sin(2π/n): 3.0 (n=12, r=1) vs 2.0 (n=4,
+// r=1). √(3/2) devolve ao losango a área do disco — o David compara SILHUETA, não tamanho.
+const QUAD_R = Math.sqrt(1.5); // 1.224744...
 
 export function createDots(scene, CONFIG, ball) {
   if (!BJS) throw new Error('dots.js: BABYLON global não encontrado');
@@ -41,12 +56,27 @@ export function createDots(scene, CONFIG, ball) {
   mat.needAlphaBlending = () => true; // mesma cautela do beams.js: não depender de heurística
   mat.transparencyMode = BJS.Material.MATERIAL_ALPHABLEND; // WebGPU ignorou o override no haloMat
 
-  const mesh = BJS.MeshBuilder.CreateDisc('dots', { radius: 1, tessellation: SIDES }, scene);
-  mesh.material = mat;
-  mesh.isPickable = false;
-  mesh.thinInstanceEnablePicking = false;
-  mesh.alwaysSelectAsActiveMesh = true;   // nunca cair fora do frustum por bounding stale
-  mesh.renderingGroupId = 1;              // depois da bola, junto com feixes/incidente
+  /* Duas meshes base, mesmo material e mesmo pipeline de thin instances: a redonda (histórica) e o
+     losango (V1). Só UMA recebe instâncias por frame — a outra fica com count 0 E `setEnabled(false)`
+     (armadilha WebGPU: count 0 sozinho não esconde a mesh base; ver beams.js). */
+  function makeBase(name, tess, radius) {
+    const m = BJS.MeshBuilder.CreateDisc(name, { radius, tessellation: tess }, scene);
+    m.material = mat;
+    m.isPickable = false;
+    m.thinInstanceEnablePicking = false;
+    m.alwaysSelectAsActiveMesh = true;   // nunca cair fora do frustum por bounding stale
+    m.renderingGroupId = 1;              // depois da bola, junto com feixes/incidente
+    m.thinInstanceCount = 0;
+    m.setEnabled(false);
+    return m;
+  }
+  const meshRound = makeBase('dots', SIDES, 1);
+  const meshQuad = makeBase('dotsQuad', QUAD_SIDES, QUAD_R);
+  // mesh ativa deste frame; `pickMesh()` lê o knob (valor inicial finito garantido pelo cfg())
+  let mesh = meshQuad;
+  function pickMesh() {
+    return (num(cfg('dotDiamond', 1), 1) >= 0.5) ? meshQuad : meshRound;
+  }
 
   /* ---- buffers pré-alocados (nada de alocar por frame) ---- */
   let cap = 0;
@@ -56,13 +86,19 @@ export function createDots(scene, CONFIG, ball) {
     cap = Math.max(64, n * 2);
     mBuf = new Float32Array(cap * 16);
     cBuf = new Float32Array(cap * 4);
-    mesh.thinInstanceSetBuffer('matrix', mBuf, 16, false);
-    mesh.thinInstanceSetBuffer('instanceColor', cBuf, 4, false);
+    // as duas meshes partilham os MESMOS Float32Array (só uma é desenhada por frame)
+    meshRound.thinInstanceSetBuffer('matrix', mBuf, 16, false);
+    meshRound.thinInstanceSetBuffer('instanceColor', cBuf, 4, false);
+    meshQuad.thinInstanceSetBuffer('matrix', mBuf, 16, false);
+    meshQuad.thinInstanceSetBuffer('instanceColor', cBuf, 4, false);
   }
   ensureCap(64);
-  mesh.thinInstanceCount = 0;
   // WebGPU: count 0 nao esconde a mesh base (ver beams.js) - desligar sempre em conjunto
-  mesh.setEnabled(false);
+  function hideAll() {
+    meshRound.thinInstanceCount = 0; meshRound.setEnabled(false);
+    meshQuad.thinInstanceCount = 0; meshQuad.setEnabled(false);
+  }
+  hideAll();
 
   /* ---- objetos reutilizados no loop (contrato: nunca alocar por ponto) ---- */
   const vN = new BJS.Vector3();
@@ -71,9 +107,10 @@ export function createDots(scene, CONFIG, ball) {
   const mScale = BJS.Matrix.Identity();
   const mRot = BJS.Matrix.Identity();
   const mOut = BJS.Matrix.Identity();
-  const Z = new BJS.Vector3(0, 0, 1); // eixo nativo do disco (CreateDisc nasce no plano XY, normal +Z)
+  const Z = new BJS.Vector3(0, 0, 1); // eixo nativo da mancha (CreateDisc nasce no plano XY, normal +Z)
 
-  // eixo maior do disco (X local) ANTES da rotação from-to: projeção de R no plano do disco, em
+  // eixo maior da mancha (X local; no losango é uma DIAGONAL) ANTES da rotação from-to:
+  // projeção de R no plano da mancha, em
   // coordenadas do MUNDO — mas como a rotação from-to (Z→N) leva X a um eixo arbitrário no plano,
   // aplica-se uma rotação extra em torno de N para alinhar X com a projeção de R.
   const vProj = new BJS.Vector3();
@@ -99,7 +136,7 @@ export function createDots(scene, CONFIG, ball) {
     const src = ball && ball.dots;
     const n0 = (src && Number.isFinite(src.count)) ? src.count : 0;
     if (n0 <= 0) {
-      if (lastCount) { mesh.thinInstanceCount = 0; mesh.setEnabled(false); lastCount = 0; }
+      if (lastCount) { hideAll(); lastCount = 0; }
       return;
     }
     ensureCap(n0);
@@ -169,8 +206,16 @@ export function createDots(scene, CONFIG, ball) {
     }
 
     if (ni === 0) {
-      if (lastCount) { mesh.thinInstanceCount = 0; mesh.setEnabled(false); lastCount = 0; }
+      if (lastCount) { hideAll(); lastCount = 0; }
       return;
+    }
+    /* Escolha da forma ao vivo: se o David virou o knob, a mesh que sai de serviço tem de ficar
+       com count 0 E desligada no MESMO frame (armadilha WebGPU) — senão via-se a mesh base. */
+    const want = pickMesh();
+    if (want !== mesh) {
+      mesh.thinInstanceCount = 0;
+      mesh.setEnabled(false);
+      mesh = want;
     }
     mesh.thinInstanceSetBuffer('matrix', mBuf, 16, false);
     mesh.thinInstanceSetBuffer('instanceColor', cBuf, 4, false);
@@ -179,7 +224,9 @@ export function createDots(scene, CONFIG, ball) {
     lastCount = ni;
   }
 
-  return { update, mesh };
+  // `mesh` é getter: a mesh ativa muda com o knob `pontos: losango` (nenhum consumidor a usa hoje,
+  // mas o contrato do módulo mantém-se — quem lesse `.mesh` vê sempre a que está a desenhar).
+  return { update, get mesh() { return mesh; }, meshRound, meshQuad };
 }
 
 export default createDots;
