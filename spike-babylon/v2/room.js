@@ -79,6 +79,18 @@ export function buildRoom(scene, CONFIG) {
     if (rot) p.rotation = rot;
     p.material = mat || roomMat;
     p.receiveShadows = true;
+    /* V0/G1 (research-gpu-offload.md §3.5 e §7; docs/f17-visual.md §0): os 5 planos da sala são
+       ESTÁTICOS desde o `buildRoom()` — position/rotation são escritas aqui, acima, e mais ninguém
+       lhes toca. Os knobs de dimensão da sala ('sala: pé-direito', 'pilares: vão/passo/lado') são ⟳:
+       `preApplyReloadKnobs()` (main.js) reescreve o CONFIG e a sala nasce outra vez no reload;
+       `onRoomDimChanged` é um no-op assumido (F13 §4). Congelar a world matrix poupa o recálculo
+       por frame. `freezeWorldMatrix()` DEPOIS de position/rotation postas.
+       NÃO afeta: `setEnabled()` (visibilidade, não transform), a renderList do ReflectionProbe
+       (`ball.attachProbe` guarda referências de mesh, não matrizes — e ninguém chama
+       `computeWorldMatrix(true)` nesta cena), nem `excludedMeshes` das luzes.
+       ⚠ Se algum dia um knob passar a mexer position/rotation/scaling AO VIVO num destes planos,
+       tem de chamar `mesh.unfreezeWorldMatrix()` antes — senão o movimento não aparece. */
+    p.freezeWorldMatrix();
     return p;
   }
 
@@ -169,6 +181,11 @@ export function buildRoom(scene, CONFIG) {
         box.position.set(side * halfX, cy, z);
         box.material = pillarMat;
         box.receiveShadows = true;
+        /* V0/G1: mesma regra dos planos — os pilares nunca mudam de transform depois de construídos
+           (vão/passo/lado são knobs ⟳, só entram no reload via `preApplyReloadKnobs`).
+           `applyPillarToggles()` usa `setEnabled()`, que não mexe na world matrix — logo o freeze é
+           compatível com ligar/desligar pilares ao vivo (F8-b) e com a renderList do probe. */
+        box.freezeWorldMatrix();
         pillars.push(box);
       }
     }
