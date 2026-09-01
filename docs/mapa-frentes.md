@@ -14,7 +14,7 @@ Não repete o CLAUDE.md nem os handoffs — aponta para eles.
 | Frente | O que é | Estado | Maior dívida | Próximo passo |
 |---|---|---|---|---|
 | **A · Motor de música & sync** | sidecar → `music.js` (kick/grelha/FSM/gestos) → `MUSIC.state` → peças da sala; estrelato (`stardom.js`) | **em dívida** — motor sólido, sala **sem relógio comum** (`audit-sync-motor.md`) | ninguém lê `beatPhase` exceto vultos; 9 relógios aleatórios; estrelato morre sem grelha | **DEBATE do plano de sync** (David decide antes de código) |
-| **B · Motor visual & render** | Babylon 9, WebGPU/WebGL2, malha da bola + cadeia de cinza, probe, thin instances, pós | **maduro, perf por medir** — 5 fases sem número limpo | perf limpa (tab à frente); renderList do probe com 1391 meshes | medir baseline (protocolo `research-gpu-offload.md` §6); `freezeWorldMatrix` na sala (G1) |
+| **B · Motor visual & render** | Babylon 9, WebGPU/WebGL2, malha da bola + cadeia de cinza, probe, thin instances, pós, realismo | **maduro, perf por medir** — 5 fases sem número limpo; "parece CG" por luz/ar, não por geometria (`research-realismo.md`) | perf limpa (tab à frente); renderList do probe com 1391 meshes; sem névoa real (`scene.fog` nunca tocado) | medir baseline (`research-gpu-offload.md` §6) + R1-R3 do realismo (dots em losango, fog nativo, exposição) — custo ~0 ms |
 | **C · Elementos físicos** | bola, corrente, mikado, chapéus, robots, vultos, sala/pilares — geometria e knobs ⟳ | **em evolução** — tudo existe, tudo por afinar ao vivo | estética "à sensação" (barras, vultos, chapéus); posição↔mira dos focos (regra 3) | afinar com o David com música real; separar posição↔mira |
 | **D · Luminárias & ambiente** | spots montados, feixes, dots, haze, wash, incidentes, flashes/strobe, choreo | **maduro** na bola, **em dívida** na coreografia da sala | choreo com relógios próprios; chapéus com duplo comando; 3 donos do `spotGain` | fica à espera do plano de sync (é a frente que ele mais toca) |
 | **E · Controlo, presets & UX** | painel `d`, ~193 knobs, `mb2.*`, presets, `RENAMED`, disjuntores | **maduro** (auditado 2×, regra 9 com bateria) | `MANUAL.html` desatualizado; snapshot do localStorage em baterias | manter a bateria da regra 9 em cada fase; nada mais por agora |
@@ -138,7 +138,9 @@ thin instances (feixes, dots, corrente), `DefaultRenderingPipeline` (bloom/grão
 diz o que faz e o que **não** faz; `computeColors` é o único loop pesado) · `beams.js` · `dots.js` ·
 `incident.js` · `explode.js` · `colorutil.js` · `room.js` (materiais) · `vendor/babylon.js`.
 Referência: `docs/babylon-reference.md` (armadilhas medidas), `docs/parity-canvas2d.md`,
-`docs/research-gpu-offload.md` (o que vale e não vale a pena mover para GPU).
+`docs/research-gpu-offload.md` (o que vale e não vale a pena mover para GPU),
+`docs/research-realismo.md` (como gastar os ~13 ms de margem para "parecer aquilo": tabela-mestra
+§4, fases R1-R5 §5, o que **não** fazer §6 — SSR, frame-graph volumétrico, god rays a 957 ms).
 
 **Estado: maduro, perf por medir.** Bola e espelhos aprovados pelo David (S9). Baseline conhecida
 7,8-11,9 ms (alvo < 17,5) mas **5 fases seguidas sem medição limpa** — a automação mente
@@ -171,7 +173,11 @@ mikado com 672 meshes base (candidato a thin instances, G3 do research); grão e
 branco de frente" mitigado por ACES, ideia `(1−Rz)^k` por fazer.
 
 **Próximo.** G1+G2 do `research-gpu-offload.md` §7: `freezeWorldMatrix` na sala (2 linhas) + baseline
-medida no pior caso (sala-toda + Ø3,0 + 80 vultos). Só depois decidir G3.
+medida no pior caso (sala-toda + Ø3,0 + 80 vultos). Só depois decidir G3. Em paralelo, as fases
+baratas do realismo (`research-realismo.md` §5): R1 dots em quadrado/losango (`dots.js:44`, herdam
+a forma da faceta), R2 `scene.fogMode` nativo com knob, R3 exposição/`ColorCurves` — todas ~0 ms e
+reversíveis numa linha; R4 (`tileTone:'real'` como default) é decisão estética do David; R5
+(sombras em 2-4 luzes hero) só depois, é a única com custo e risco técnico novo.
 
 ### C · Elementos físicos
 
@@ -349,17 +355,19 @@ Antes de tocar em qualquer frente:
    `audit-sync-motor.md` + `research-lighting-pro.md` §4. Saída: um doc em `docs/` com o relógio
    único (derivado de `beatPhase`/`bpmEst`), a hierarquia hero/apoio por secção, e a lista de
    relógios aleatórios a abater. Implementação Opus, com stop visual por gesto.
-2. **Baseline de perf (frente B), em paralelo e barato.** G1+G2 do research: 2 linhas + um número
-   medido no pior caso. Decide se o mikado em thin instances vale a pena antes de a sala crescer mais.
+2. **Baseline de perf + realismo barato (frente B), em paralelo.** G1+G2 do `research-gpu-offload`:
+   2 linhas + um número medido no pior caso. E R1-R3 do `research-realismo` (dots em losango, fog
+   nativo, exposição): ~0 ms, cada uma com stop visual, e atacam o "parece CG" sem tocar em sync
+   nem em elementos. Decide também se o mikado em thin instances vale a pena antes de a sala crescer.
 3. **Afinar elementos ao vivo (frente C)** — sementes, luminosidade dos vultos, repouso do mikado,
    chapéus. É afinação de sensação, só com o David e música real; não bloqueia nada.
 4. **Posição↔mira dos focos (C/D)** — só quando o plano de sync disser o que os focos fazem; hoje
    é dívida de realismo, não de comportamento.
 5. **Frente E** fica em manutenção: bateria da regra 9 por fase; MANUAL quando houver uma pausa.
 
-Suposição minha (não do David): a frente de **realismo** (materiais, sombras dos vultos, fumo real)
-tem research pendente — `docs/research-realismo.md` não existia à data desta revisão; quando
-existir, entra na frente B/C com uma linha na tabela §0.
+Nota: o realismo (`research-realismo.md`) não é frente própria — é trabalho da frente B (luz/ar/pós)
+com uma decisão estética na C (`tileTone`). Os ganhos percetuais da tabela-mestra são hipóteses do
+analista, não testes A/B com o David (§7/§8 desse doc) — validar ao vivo, fase a fase.
 
 ---
 
