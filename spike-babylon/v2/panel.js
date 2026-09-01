@@ -89,13 +89,27 @@ const RENAMED = {
   // Auditoria de knobs (2026-09-01): é um SELETOR e o nome não dizia o que os números querem dizer.
   // Passa a trazer a legenda, como os outros seletores do painel.
   'estrelato: chapéus gesto': 'estrelato: chapéus gesto (0=juntos/1=seq/2=alt)',
+  // UX do painel (2026-09-01): prefixo por elemento, como o resto dos knobs da bola. O sufixo
+  // "(motor manda)" fica — com motor, é o motor que escreve o rpm (regra 2 do CLAUDE.md).
+  'rotationRpm (motor manda)': 'bola: rotação rpm (motor manda)',
+  // UX do painel (2026-09-01): prefixo 'pontos:' como os irmãos ('pontos: escala', 'pontos: queda').
+  // ⚠ Este é o ALVO da entrada '(fase 4)' lá em cima — o migrate() segue CADEIAS, ver resolveName().
+  'pontos na parede (densidade)': 'pontos: densidade (parede)',
 };
+/* Segue a CADEIA de renames até ao nome atual (um knob renomeado duas vezes: fase4→F5→UX). O
+   migrate() era single-pass e um ficheiro pré-F5 pararia no nome intermédio, que já não existe
+   como slider — o valor perdia-se em silêncio. O guard de 8 saltos evita loops acidentais. */
+function resolveName(k) {
+  let n = k, hops = 0;
+  while (RENAMED[n] && hops++ < 8) n = RENAMED[n];
+  return n;
+}
 function migrate(obj) {
   if (!obj || typeof obj !== 'object') return {};
   const out = {}, moved = [];
   for (const k in obj) {
-    const nk = RENAMED[k];
-    if (nk) { if (!(nk in obj)) { out[nk] = obj[k]; moved.push(k + ' → ' + nk); } }
+    const nk = resolveName(k);
+    if (nk !== k) { if (!(nk in obj)) { out[nk] = obj[k]; moved.push(k + ' → ' + nk); } }
     else out[k] = obj[k];
   }
   if (moved.length) console.log('[MB2] knobs renomeados recuperados:', moved.join(', '));
@@ -193,7 +207,7 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['fundo: claridade (dark)', 0, 60, 1, v => { CONFIG.bgGrey = v; onBgGreyChanged(); }, () => CONFIG.bgGrey],
     ['strobe fundo (0/1)', 0, 1, 1, v => CONFIG.strobe.enabled = v >= 1, () => CONFIG.strobe.enabled ? 1 : 0],
     ['strobe: frequência ×', 0, 3, 0.1, v => CONFIG.strobeRate = v, () => CONFIG.strobeRate],
-    ['pontos na parede (densidade)', 0, 3, 0.05, v => CONFIG.dotDensity = v, () => CONFIG.dotDensity],
+    ['pontos: densidade (parede)', 0, 3, 0.05, v => CONFIG.dotDensity = v, () => CONFIG.dotDensity],
     ['strobe: força', 0, 1, 0.05, v => CONFIG.strobe.level = v, () => CONFIG.strobe.level],
     ['strobe: dura ms', 20, 200, 5, v => CONFIG.strobe.lenMs = v, () => CONFIG.strobe.lenMs],
     ['luz indireta', 0, 0.4, 0.01, v => AMB.intensity = v, () => AMB.intensity],
@@ -217,7 +231,7 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['junta (seam)', 0, 0.4, 0.01, v => { CONFIG.seamInset = v; onRebuildBall(); }, () => CONFIG.seamInset],
     ['espelhos: filas', 16, 96, 2, v => { if (v !== CONFIG.facetRows) { CONFIG.facetRows = v; onRebuildBall(); } }, () => CONFIG.facetRows],
     // ---- bola ----
-    ['rotationRpm (motor manda)', 0, 3, 0.05, v => CONFIG.rotationRpm = v, () => CONFIG.rotationRpm],
+    ['bola: rotação rpm (motor manda)', 0, 3, 0.05, v => CONFIG.rotationRpm = v, () => CONFIG.rotationRpm],
     ['haze máx (motor modula)', 0, 1, 0.01, v => { CONFIG.hazeMax = v; CONFIG.haze = v; }, () => CONFIG.hazeMax],
     ['feixes+haze: motor manda (0/1)', 0, 1, 1, v => CONFIG.beamsMotor = !!v, () => CONFIG.beamsMotor ? 1 : 0],
     ['focos+flashes: motor manda (0/1)', 0, 1, 1, v => CONFIG.spotsMotor = !!v, () => CONFIG.spotsMotor ? 1 : 0],
@@ -236,7 +250,7 @@ export async function initPanel(CONFIG, hooks = {}) {
 
   // índice onde termina o bloco "focos" original (antes de 'rotationRpm') — usado para o PERSIST,
   // igual à regra da bola Canvas 2D (:845): tudo até ao bloco '---- bola' persiste.
-  const rotationIdx = sliders.findIndex(x => x[0].startsWith('rotationRpm'));
+  const rotationIdx = sliders.findIndex(x => x[0].startsWith('bola: rotação rpm'));
   const PERSIST = new Set(
     sliders.slice(0, rotationIdx).map(x => x[0]).concat([
       'haze máx (motor modula)',
@@ -253,7 +267,7 @@ export async function initPanel(CONFIG, hooks = {}) {
          'bola: opacidade' acima: com 'feixes+haze: motor manda' a 0 quem manda é o slider, e um
          knob de afinação grava-se. ('health (motor manda)' fica DE FORA de propósito: é runtime
          puro do motor/health, não uma afinação do David.) */
-      'rotationRpm (motor manda)',
+      'bola: rotação rpm (motor manda)',
     ])
   );
 
@@ -580,64 +594,70 @@ export async function initPanel(CONFIG, hooks = {}) {
   ]);
   const spotHueNames = [];
   for (let i = 0; i < 6; i++) spotHueNames.push('spot' + i + ': matiz°');
+  /* ============================================================================================
+     UX DO PAINEL (2026-09-01, docs/ux-painel.md) — grupos por MODELO MENTAL, não por fase.
+     Um grupo por ELEMENTO físico da sala (Bola · Espelhos · Focos · Feixes/Pontos · Chapéus+Robots
+     · Mikado · Vultos) + os transversais (Coreografia · Estrelato · Motor & Sync · Sala & Geometria
+     · Pós & Skin · Presets · Ficheiro). Ordem DENTRO de cada grupo: interruptor 0/1 no topo, depois
+     do mais mexido ao vivo para o mais fino/estrutural. Ordem DA BARRA: elementos primeiro (por
+     frequência de afinação), estrutura e gavetas no fim. Os nomes dos sliders são os do array
+     `sliders` — qualquer rename passa pelo RENAMED (regra 9 do CLAUDE.md).
+     ============================================================================================ */
   const GROUPS = [
+    /* BOLA — o objeto inteiro num só sítio: on/off, opacidade, rotação, tamanho, posição (altura +
+       planta X/Z, que andavam repartidos por "Mikado & Bola" e "Sala"), sombreado, corrente e a
+       explosão (é a bola que estilhaça — o grupo "Explosão" de 3 knobs deixou de existir à parte).
+       Nota: a F14 tinha posto a posição X/Z em "Sala" a pedido do David; a reorganização por
+       elemento (esta fase, também a pedido dele) consolida tudo o que é `bola:` aqui. */
+    ['Bola', [
+      'bola (0/1)', 'bola: opacidade (0-1)', 'bola: rotação rpm (motor manda)',
+      'bola: diâmetro (m)', 'bola: altura (m)', 'bola: posição X (m)', 'bola: posição Z (m)',
+      'bola: luz', 'bola: contraste', 'luz geral (volume)', 'luz geral: az°', 'luz geral: el°',
+      'corrente (0/1)', 'corrente: elo (raios)',
+      'explosão: alcance (radial)', 'explosão: deriva s', 'explosão: pausa s',
+    ]],
+    /* FOCOS — tudo o que é o PAR36 apontado à bola: contagem/luz/óptica, mira por spot, cor, e os
+       CORPOS visíveis (a carcaça do foco é do foco, não da sala). As checkboxes spot 0-5 (DOM
+       próprio, spRow) também vivem aqui — ver o bloco que as cria, mais abaixo. */
     ['Focos', [
-      'focos: quantos', 'focos: raio ×', 'focos: orla', 'focos: luz (lm)', 'focos: distância',
+      'focos: quantos', 'focos: luz (lm)', 'focos: raio ×', 'focos: distância', 'focos: orla',
       'spot0: az° (−=esq)', 'spot0: el°', 'spot1: az°', 'spot1: el°', 'spot2: az°', 'spot2: el°',
       'spot3: az°', 'spot3: el°', 'focos: cor (0/1)', 'focos: saturação', ...spotHueNames,
+      'corpos (0/1)', 'corpos: escala', 'corpos: lente ×', 'corpos: haste (0/1)',
     ]],
+    // COREOGRAFIA & FLASHES — o MOVIMENTO dos focos (saltos, permanência, janela de origem) e os
+    // flashes manuais. É o "técnico de luz" dos focos; a óptica deles fica no grupo Focos.
     ['Coreografia & Flashes', [
       'focos: saltam (0/1)', 'focos: fixo min s', 'focos: fixo max s', 'origem: |az| min°',
       'origem: |az| max°', 'origem: el min°', 'origem: el max°', 'origem: mira (raios)',
       'flash: por s', 'flash: raio ×', 'flash: dura ms',
     ]],
-    ['Bola & Espelhos', [
-      'bola: luz', 'bola: contraste', 'espelhos: brilho', 'luz geral (volume)', 'luz geral: az°',
-      'luz geral: el°', 'espelhos: filas', 'junta (seam)', 'espelhos: variação',
-      'espelhos: tom (0=hash/1=real)', 'espelhos: alinhados (0/1)', 'espelhos: junta (real)',
-      'espelhos: junta larg. (real)', 'espelhos: junta var. (real)', 'pbr: metallic',
-      'pbr: roughness', 'pbr: ambiente', 'pbr: glint mix', 'raio-x: osso (0/1)',
-      'raio-x: osso alpha ×', 'corrente (0/1)', 'corrente: elo (raios)',
+    /* FEIXES, PONTOS & NÉVOA — o que a bola PROJETA na sala: feixes refletidos, pontos na parede
+       (vinham do antigo "Sala", mas são luz da bola), cones incidentes, haze e auréola. Os dois
+       tetos "(motor modula)" vivem aqui ao pé do que limitam — saíram dos favoritos porque em modo
+       manual não se sente efeito (auditoria §2). */
+    ['Feixes, Pontos & Névoa', [
+      'feixes: intensidade', 'feixes: largura°', 'feixes: comprimento', 'feixes: dispersão',
+      'feixes: base ×', 'feixes: glow z', 'feixes: glow ×',
+      'feixes: fração máx (motor modula)', 'haze máx (motor modula)',
+      'pontos: densidade (parede)', 'pontos: escala', 'pontos: queda', 'pontos: teto cinza',
+      'cone incidente', 'cone: alcance', 'cone: largura máx', 'cone: teto (raios)', 'auréola',
     ]],
-    ['Névoa & Feixes', [
-      'haze máx (motor modula)', 'feixes: fração máx (motor modula)', 'feixes: intensidade',
-      'feixes: largura°', 'feixes: dispersão', 'feixes: comprimento', 'feixes: base ×',
-      'feixes: glow z', 'feixes: glow ×', 'cone incidente',
-      'cone: alcance', 'cone: largura máx', 'cone: teto (raios)', 'auréola',
-    ]],
-    ['Sala', [
-      'pontos na parede (densidade)', 'pontos: escala', 'pontos: queda', 'pontos: teto cinza',
-      'luz indireta', 'indireta: área°', 'indireta: luz ×', 'corpos (0/1)', 'corpos: escala',
-      'corpos: lente ×', 'corpos: haste (0/1)', 'fundo: claridade (dark)',
-      // ---- Fase 8: dimensões (RELOAD), wash, chapéus, cor ----
-      'sala: pé-direito (m)', 'cor (0/1)',
-      /* F14 (spec do David): a POSIÇÃO da bola na planta vive no grupo "Sala" — é uma decisão de
-         SALA ("onde é que a bola está pendurada"), não uma afinação da bola. Os outros três knobs da
-         bola (on/off, altura, diâmetro) ficam onde estão, em "Mikado & Bola": foi o David que pediu
-         estes dois aqui, e é aqui que ele os vai procurar. */
-      'bola: posição X (m)', 'bola: posição Z (m)',
-      'sala: wash (0-1)', 'sala: wash matiz',
-      // ---- F10: refletividade por superfície (ao vivo) ----
-      'refl: chão', 'refl: teto', 'refl: paredes fundo', 'refl: paredes laterais',
-      'chapéus (0/1)', 'chapéus: quantos', 'chapéus: brilho', 'chapéus: altura (m)',
-      'chapéus: inclinação°', 'chapéus: corte da pala°',
-      // F12 §4: os chapéus a sério — força/duração/modo do flash + cadência da sequência
+    // CHAPÉUS & ROBOTS — as luminárias do Lux (F8/F12), antes enterradas no fundo de "Sala".
+    ['Chapéus & Robots', [
+      'chapéus (0/1)', 'chapéus: quantos', 'chapéus: brilho',
       'chapéus: flash /min', 'chapéus: força do flash', 'chapéus: flash ms',
       'chapéus: modo (0=só/1=juntos/2=seq)', 'chapéus: sequência ms/passo',
+      'chapéus: altura (m)', 'chapéus: inclinação°', 'chapéus: corte da pala°',
       'robots (0/1)', 'robots: luz', 'robots: inclinação°',
     ]],
-    // F8-b: grupo próprio para os 6 pilares individuais ("tapar e ligar" — David).
-    // F10: geometria paramétrica (vão entre filas, passo na fila, secção) junta-se aqui — mesmo grupo.
-    ['Pilares', ['pilares: vão entre filas (m)', 'pilares: passo na fila (m)', 'pilares: lado (m)', ...PILLAR_NAMES]],
-    /* F11: grupo próprio para o mikado do teto (26 knobs — não cabiam em "Sala" sem a afogar).
-       'bola (0/1)' vive AQUI, ao lado de 'mikado (0/1)': são o par que o David usa para escolher a
-       peça central da sala (bola ↔ mikado ↔ as duas), e é o gesto que a spec §4 descreve. */
-    ['Mikado & Bola', [
-      'bola (0/1)', 'bola: altura (m)', 'bola: diâmetro (m)', 'mikado (0/1)',
+    // MIKADO — só o mikado (F11-F13). Os knobs da bola que aqui viviam mudaram-se para "Bola";
+    // o par de gesto bola↔mikado continua a ser os dois 0/1, cada um no topo do seu grupo.
+    ['Mikado', [
+      'mikado (0/1)',
       'mikado: barras/m²', 'mikado: altura (m)', 'mikado: espalha (m)', 'mikado: camadas',
       'mikado: barra min (m)', 'mikado: barra máx (m)', 'mikado: Ø tubo (m)', 'mikado: inclinação°',
       'mikado: viés eixo', 'mikado: folga pilares (m)',
-      // F13 §1: o par do modo "sala toda"
       'mikado: sala toda (0/1)', 'mikado: folga paredes (m)',
       'mikado: clareira bola (m)', 'mikado: semente',
       'mikado: repouso', 'mikado: flash força', 'mikado: flash ms', 'mikado: flash Hz',
@@ -646,32 +666,7 @@ export async function initPanel(CONFIG, hooks = {}) {
       'mikado: tarola (0/1)', 'mikado: tarola sens.', 'mikado: drop (0/1)', 'mikado: drop rajada ×',
       'mikado: auto /min',
     ]],
-    /* F12 §5: grupo próprio para o estrelato — é um SISTEMA (decide quem é a estrela), não um
-       efeito de uma peça, por isso não cabia em "Mikado & Bola" nem em "Sala". */
-    ['Estrelato', [
-      'estrelato (0/1)', 'estrelato: força',
-      'estrelato: viés bola', 'estrelato: viés mikado', 'estrelato: viés chapéus',
-      'estrelato: viés smooth', 'estrelato: não repetir',
-      'estrelato: frase (compassos)', 'estrelato: rampa s', 'estrelato: auto s',
-      'estrelato: chapéus Hz', 'estrelato: chapéus gesto (0=juntos/1=seq/2=alt)', 'estrelato: chapéus aux /min',
-    ]],
-    ['Pós & Skin', [
-      'bloom: força', 'bloom: limiar', 'bloom: raio px', 'grão', 'vinheta',
-      'pós: tonemap (0/1)', 'pós: exposição',
-    ]],
-    ['Motor', [
-      'feixes+haze: motor manda (0/1)', 'focos+flashes: motor manda (0/1)',
-      'opacidade: motor manda (0/1)', 'health (motor manda)', 'bola: opacidade (0-1)',
-      'rotationRpm (motor manda)', 'strobe fundo (0/1)', 'strobe: frequência ×',
-      'strobe: força', 'strobe: dura ms',
-    ]],
-    ['Explosão', [
-      'explosão: alcance (radial)', 'explosão: deriva s', 'explosão: pausa s',
-    ]],
-    /* F15: grupo próprio "Vultos" (o "menu Vultos" que o David pediu por nome). São 16 knobs — não
-       cabiam em "Sala" sem a afogar, e são uma peça da cena por direito próprio (o público), não
-       uma afinação de outra coisa. Ordem: o interruptor e os 4 knobs da spec primeiro (densidade,
-       luminosidade, opacidade, oclusão), depois diversidade, colocação e dança. */
+    // VULTOS — inalterado (F15): interruptor + spec primeiro, depois diversidade/colocação/dança.
     ['Vultos', [
       'vultos (0/1)', 'vultos: densidade (p/m²)', 'vultos: luminosidade', 'vultos: opacidade',
       'vultos: oclusão (0/1)', 'vultos: oclusão raio ×', 'vultos: semente',
@@ -680,16 +675,60 @@ export async function initPanel(CONFIG, hooks = {}) {
       'vultos: virados à bola',
       'vultos: dança amplitude', 'vultos: bpm sem motor',
     ]],
+    // ESTRELATO — inalterado (F12 §5): é um SISTEMA transversal, não um efeito de uma peça.
+    ['Estrelato', [
+      'estrelato (0/1)', 'estrelato: força',
+      'estrelato: viés bola', 'estrelato: viés mikado', 'estrelato: viés chapéus',
+      'estrelato: viés smooth', 'estrelato: não repetir',
+      'estrelato: frase (compassos)', 'estrelato: rampa s', 'estrelato: auto s',
+      'estrelato: chapéus Hz', 'estrelato: chapéus gesto (0=juntos/1=seq/2=alt)', 'estrelato: chapéus aux /min',
+    ]],
+    /* MOTOR & SYNC — só o que decide QUEM MANDA (disjuntores + health) e o strobe (gesto do motor;
+       os knobs afinam-no também no disparo manual). 'bola: opacidade' e o rpm saíram daqui para
+       "Bola": são afinações da bola, o disjuntor é que é do motor. */
+    ['Motor & Sync', [
+      'feixes+haze: motor manda (0/1)', 'focos+flashes: motor manda (0/1)',
+      'opacidade: motor manda (0/1)', 'health (motor manda)',
+      'strobe fundo (0/1)', 'strobe: força', 'strobe: frequência ×', 'strobe: dura ms',
+    ]],
+    /* SALA & GEOMETRIA — a caixa onde tudo acontece: cor/claridade/wash, luz indireta,
+       refletividade por superfície, e a estrutura ⟳ (pé-direito, pilares paramétricos F10 + os 6
+       toggles F8-b, que tinham grupo próprio "Pilares"). Set-and-forget: fica no fim da barra. */
+    ['Sala & Geometria', [
+      'cor (0/1)', 'fundo: claridade (dark)', 'sala: wash (0-1)', 'sala: wash matiz',
+      'luz indireta', 'indireta: área°', 'indireta: luz ×',
+      'refl: chão', 'refl: teto', 'refl: paredes fundo', 'refl: paredes laterais',
+      'sala: pé-direito (m)',
+      'pilares: vão entre filas (m)', 'pilares: passo na fila (m)', 'pilares: lado (m)',
+      ...PILLAR_NAMES,
+    ]],
+    /* ESPELHOS & PBR — a PELE da bola (facetas, juntas, material, raio-x). Quase tudo ⏫ ou
+       set-and-forget; separado de "Bola" para o grupo de afinação ao vivo não afogar no rebuild. */
+    ['Espelhos & PBR', [
+      'espelhos: brilho', 'espelhos: filas', 'espelhos: variação',
+      'espelhos: tom (0=hash/1=real)', 'espelhos: alinhados (0/1)', 'junta (seam)',
+      'espelhos: junta (real)', 'espelhos: junta larg. (real)', 'espelhos: junta var. (real)',
+      'pbr: metallic', 'pbr: roughness', 'pbr: ambiente', 'pbr: glint mix',
+      'raio-x: osso (0/1)', 'raio-x: osso alpha ×',
+    ]],
+    ['Pós & Skin', [
+      'bloom: força', 'bloom: limiar', 'bloom: raio px', 'grão', 'vinheta',
+      'pós: tonemap (0/1)', 'pós: exposição',
+    ]],
     /* F13.5: grupo próprio para os PRESETS (vista + config). Sem sliders — a UI toda é construída
        à mão mais abaixo, como o grupo "Ficheiro". Fica ANTES de "Ficheiro" na barra porque é o que
        o David vai usar ao vivo; "Ficheiro" continua a ser a última gaveta. */
     ['Presets', []],
     ['Ficheiro', []],
   ];
-  // 7 favoritos (§2) — sempre visíveis na faixa acima da barra, independentemente do grupo aberto.
+  /* 7 favoritos — os knobs de afinação AO VIVO mais frequentes, sempre visíveis (UX 2026-09-01).
+     Saíram: 'haze máx' e 'feixes: fração máx' (tetos que só o motor lê — em modo manual não fazem
+     nada sentível; vivem em "Feixes, Pontos & Névoa" com o sufixo "(motor modula)") e
+     'focos: quantos' (estrutural, afina-se uma vez). Entraram: 'bola: opacidade' (o knob da queixa
+     da F13), 'focos: luz (lm)' (o brilho real dos focos) e 'sala: wash (0-1)' (o mood da sala). */
   const FAVORITES = [
-    'haze máx (motor modula)', 'feixes: fração máx (motor modula)', 'feixes: intensidade',
-    'focos: quantos', 'espelhos: brilho', 'pontos na parede (densidade)', 'rotationRpm (motor manda)',
+    'bola: rotação rpm (motor manda)', 'bola: opacidade (0-1)', 'feixes: intensidade',
+    'focos: luz (lm)', 'espelhos: brilho', 'pontos: densidade (parede)', 'sala: wash (0-1)',
   ];
 
   // valida em dev que todo o slider está em exatamente 1 grupo (exceto Ficheiro, sem sliders) —
@@ -758,7 +797,9 @@ export async function initPanel(CONFIG, hooks = {}) {
     const r = await fetch(DEFAULTS_URL, { cache: 'no-store' });
     if (r.ok) {
       const j = await r.json();
-      if (j && typeof j === 'object') fileDefaults = j;
+      // migrate(): um knobs-default.json de uma versão anterior (nomes antigos) também tem de
+      // carregar limpo — mesma regra 9 dos mb2.knobs/presets (UX do painel, 2026-09-01).
+      if (j && typeof j === 'object') fileDefaults = migrate(j);
       console.log('[MB2] knobs-default.json:', Object.keys(fileDefaults).length, 'knobs');
     } else {
       console.warn('[MB2] knobs-default.json não encontrado (HTTP ' + r.status + ') — defaults do código');
@@ -776,7 +817,7 @@ export async function initPanel(CONFIG, hooks = {}) {
       // por isso as suas chaves são exatamente a lista de "tocados" que faltava.
       return Object.keys(knobStore);
     }
-    return arr.map(k => RENAMED[k] || k);
+    return arr.map(resolveName);
   }
   function persistAll() {
     const all = {};
@@ -1031,6 +1072,10 @@ export async function initPanel(CONFIG, hooks = {}) {
     spotChecks.push(c);
   });
   if (savedToggles.spots) onSpotsChanged();
+  // UX do painel (2026-09-01): as checkboxes spot 0-5 mudam-se de "Ficheiro" para o grupo FOCOS —
+  // é lá que se afina tudo o resto dos focos. appendChild (o stub do gen-knobs-default.js não tem
+  // insertBefore), por isso ficam no fim da lista do grupo, a seguir aos corpos.
+  if (groupLists['Focos']) groupLists['Focos'].appendChild(spRow);
 
   // ---- grupo "Ficheiro" (§2 grupo 9): sem sliders — botões gravar/carregar/repor, checkboxes spot
   // 0-5, colunas 1/2/3 e A-/A+ (tamanho de fonte) vivem todos aqui, dentro do popover próprio. ----
@@ -1047,7 +1092,6 @@ export async function initPanel(CONFIG, hooks = {}) {
     list.appendChild(sz);
     list.appendChild(sp);
     list.appendChild(fileInput);
-    list.appendChild(spRow);
     list.appendChild(knobMsg);
     applyDbgSize();
   }
@@ -1493,7 +1537,7 @@ export async function initPanel(CONFIG, hooks = {}) {
     b.textContent = gname;
     setAttr(b, 'aria-expanded', 'false');
     b.onclick = () => openGroupByName(gname);
-    if (gname === 'Motor') b.title = 'só faz efeito com ?src=music (motor de música)';
+    if (gname === 'Motor & Sync') b.title = 'só faz efeito com ?src=music (motor de música)';
     const dot = document.createElement('span'); dot.className = 'dot'; dot.hidden = true;
     b.appendChild(dot);
     dbgbar.appendChild(b);
@@ -1511,7 +1555,7 @@ export async function initPanel(CONFIG, hooks = {}) {
   if (openGroup && groupBoxes[openGroup]) { const g0 = openGroup; openGroup = null; openGroupByName(g0); }
 
   // grupo Motor esmaecido sem ?src=music (passo 3 do brief): só serve quando o motor de música manda.
-  if (!(window.MUSIC)) { groupBtns['Motor'].style.opacity = '.5'; }
+  if (!(window.MUSIC)) { groupBtns['Motor & Sync'].style.opacity = '.5'; }
 
   // passo 3: ponto "por gravar" no separador — acende quando algum knob do grupo diverge do knobFile
   // (ou dos defaults, se não há ficheiro carregado ainda). Recalcula-se a cada oninput via persistAll.
@@ -1579,7 +1623,10 @@ export async function initPanel(CONFIG, hooks = {}) {
   // gravado" precisa de guardar o snapshot ORIGINAL do ficheiro para poder repor depois de o David
   // ter mexido nos sliders. `setKnobFile` é chamado pelo bloco `// ---- F5 music ----` do main.js.
   function setKnobFile(obj) {
-    knobFile = (obj && typeof obj === 'object') ? obj : null;
+    // migrate(): a secção `ball` do music-config.json pode trazer nomes antigos (regra 9) — sem
+    // isto, o botão "repor ficheiro" funcionava (knobsSet migra) mas a baseline dos pontos
+    // "por gravar" comparava com chaves órfãs e acendia dots a mais (UX do painel, 2026-09-01).
+    knobFile = (obj && typeof obj === 'object') ? migrate(obj) : null;
     btnFile.disabled = !knobFile && !Object.keys(fileDefaults).length;
     syncSaveLabel(); // com música, o botão passa a "gravar (music-config.json)"
     refreshDirtyDots(); // a "baseline" do ponto por-gravar mudou
