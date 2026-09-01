@@ -1,7 +1,7 @@
 // v2/main.js — esqueleto do spike v2 (Fase 1): engine, sala, câmara, luzes mínimas, loop/HUD, painel `d`.
 // A malha da bola é responsabilidade do Opus (v2/ball.js); aqui só se importa dinamicamente com stub de recurso.
 import { buildRoom } from './room.js?v=4';
-import { initPanel } from './panel.js?v=10';
+import { initPanel } from './panel.js?v=13';
 import { applyColorToggle, hueToRgb } from './colorutil.js?v=1';
 
 const CONFIG = window.CONFIG;
@@ -160,6 +160,59 @@ function resetCameraPose() {
   camera.target.y = num(CONFIG.ballHeightM, 3.5) - 3.5;
 }
 addEventListener('keydown', (e) => { if (e.key === '0') resetCameraPose(); });
+
+/* ---------------- F13.5: pose da câmara para os PRESETS ----------------
+   Um preset grava `{alpha,beta,radius,ty}` e aplica-o com um LERP suave (default 1,2 s) — em modo
+   auto um salto seco lê-se como falha da cena, não como uma escolha.
+
+   ⚠ O QUE SE INTERPOLA E O QUE NÃO. `alpha`/`beta`/`radius` são a ÓRBITA e são do David (e agora
+   dos presets). O `target.y` NÃO entra na interpolação: o loop escreve-o TODOS os frames a partir
+   de `ballCenterY()` (F12 §3 — a câmara aponta ao centro da bola). Se o lerp também lhe mexesse
+   ficavam DOIS DONOS do mesmo número, que é a assinatura de bug desta repo (F13 §2). O `ty` é
+   gravado no preset apenas como diagnóstico — o alvo segue o knob 'bola: altura (m)' do preset,
+   que é o comportamento certo: a câmara aponta à bola onde quer que o preset a ponha.
+
+   `radius` é clampado pelos limites vivos da câmara (que dependem do raio da bola, F13 §3): um
+   preset gravado com Ø 2,0 aplicado com Ø 3,0 não pode meter a câmara dentro dos espelhos. */
+const camAnim = { on: false, t: 0, dur: 0, from: null, to: null };
+function camPoseGet() {
+  return { alpha: camera.alpha, beta: camera.beta, radius: camera.radius, ty: camera.target.y };
+}
+function camPoseGoto(pose, sec) {
+  if (!pose || !Number.isFinite(pose.alpha) || !Number.isFinite(pose.beta) || !Number.isFinite(pose.radius)) return;
+  const lo = num(camera.lowerRadiusLimit, 2.5), hi = num(camera.upperRadiusLimit, 20);
+  const to = {
+    alpha: pose.alpha,
+    beta: Math.min(Math.PI - 0.01, Math.max(0.01, pose.beta)),
+    radius: Math.min(hi, Math.max(lo, pose.radius)),
+  };
+  /* caminho angular mais curto: sem isto, ir de alpha=3,1 para alpha=−3,1 dava uma volta quase
+     completa à bola (o mesmo sítio, o caminho longo) — feio e desnecessário. */
+  const from = { alpha: camera.alpha, beta: camera.beta, radius: camera.radius };
+  const TAU = Math.PI * 2;
+  let d = (to.alpha - from.alpha) % TAU;
+  if (d > Math.PI) d -= TAU; else if (d < -Math.PI) d += TAU;
+  to.alpha = from.alpha + d;
+  const dur = Math.min(4, Math.max(0, num(sec, 1.2)));
+  if (dur <= 0.001) { camera.alpha = to.alpha; camera.beta = to.beta; camera.radius = to.radius; camAnim.on = false; return; }
+  camAnim.on = true; camAnim.t = 0; camAnim.dur = dur; camAnim.from = from; camAnim.to = to;
+}
+function camPoseUpdate(dt) {
+  if (!camAnim.on) return;
+  if (!Number.isFinite(dt) || dt <= 0) dt = 1 / 60;
+  camAnim.t += dt;
+  const u = Math.min(1, camAnim.t / camAnim.dur);
+  const s = u * u * (3 - 2 * u); // smoothstep: arranca e chega devagar (nada de corte seco)
+  const f = camAnim.from, t = camAnim.to;
+  camera.alpha = f.alpha + (t.alpha - f.alpha) * s;
+  camera.beta = f.beta + (t.beta - f.beta) * s;
+  camera.radius = f.radius + (t.radius - f.radius) * s;
+  if (u >= 1) camAnim.on = false;
+}
+/* um gesto de rato/roda do David CANCELA o lerp a meio — se ele agarrou a câmara, a câmara é dele.
+   `pointerdown`/`wheel` no canvas, passivos (não interferem com o attachControl da Babylon). */
+canvas.addEventListener('pointerdown', () => { camAnim.on = false; }, { passive: true });
+canvas.addEventListener('wheel', () => { camAnim.on = false; }, { passive: true });
 
 /* ---------------- F10 fix: aplicar os knobs ⟳ do localStorage ANTES de construir a geometria ----------------
    Bug encontrado ao verificar o F10 (docs/f8-sala-lux.md): `buildRoom()`/`createHats()` correm aqui,
@@ -987,6 +1040,10 @@ const panelApi = await initPanel(CONFIG, {
      entra no reload", tem de ser dentro do painel (p. ex. o próprio slider a marcar-se ⟳), nunca
      uma faixa por cima da cena. O `#err` é exclusivo de `moduleFail()`.
      Fica só o diagnóstico por consola, que não é visível na cena. */
+  /* F13.5: as duas portas da CÂMARA para o sistema de presets (ver o bloco `camAnim` lá em cima).
+     O painel não conhece Babylon — só chama estes dois closures. */
+  camGet: () => camPoseGet(),
+  camGoto: (pose, sec) => camPoseGoto(pose, sec),
   onRoomDimChanged: () => {
     if (!panelReady) return;
     if (window.MB2_DEBUG_ROOMDIM && roomGeomDiffers()) {
@@ -1365,6 +1422,9 @@ scene.registerBeforeRender(() => {
   lastFrame = now;
   tSec += dt;
 
+  // F13.5: lerp da câmara entre presets (só alpha/beta/radius — o target.y é do loop, ver camAnim)
+  camPoseUpdate(dt);
+
   // ---- F5: sanitiza o que o motor escreveu no CONFIG (tetos invioláveis) e resolve o health ----
   sanitizeConfig();
   effective(E);                       // escreve spotGain/rotationRpm/sphereOpacity/haze
@@ -1562,6 +1622,8 @@ window.MB2 = {
      consola. `MB2.builtGeom` é a fotografia tirada antes do `buildRoom()`. */
   roomGeomDiffers,
   get builtGeom() { return Object.assign({}, BUILT_GEOM); },
+  /* F13.5 (diagnóstico): estado do lerp da câmara entre presets. */
+  get camAnim() { return camAnim; },
 };
 
 console.log('MB2 pronto —', engine.isWebGPU ? 'WebGPU' : 'WebGL2');

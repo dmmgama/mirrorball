@@ -28,10 +28,20 @@
 //    limpa o localStorage e volta aos defaults do código.
 //
 // initPanel é ASSÍNCRONA (o fetch do knobs-default.json) — main.js faz `await initPanel(...)`.
+//
+// ---- F13.5: PRESETS (vista + config) — pedido do David ----------------------------------------
+// Um PRESET = { name, knobs:{…todos os persistíveis…}, toggles:{…}, cam:{alpha,beta,radius,ty} }.
+// Vivem em `localStorage['mb2.presets']`, chave SEPARADA de `mb2.knobs` (um preset nunca escreve
+// no store dos knobs a não ser pelo caminho normal de aplicação — ver `applyPreset`).
+// Grupo próprio "Presets" no painel: gravar, lista clicável (aplica knobs + câmara), renomear,
+// apagar, exportar/importar JSON, toggle "auto" + sliders de tempo min/max.
+// Auto = baralho (shuffle bag): sorteia sem repetir até esgotar a lista, só depois volta a baralhar.
 
 const KEY_KNOBS = 'mb2.knobs';
 const KEY_TOUCHED = 'mb2.knobsTouched';
 const KEY_TOGGLES = 'mb2.toggles';
+const KEY_PRESETS = 'mb2.presets';      // F13.5: [{name,knobs,toggles,cam}]
+const KEY_PRESETS_UI = 'mb2.presetsUi'; // F13.5: {auto:bool, minSec, maxSec}
 const DEFAULTS_URL = './knobs-default.json';
 
 /* Labels renomeados na F5 (commit 7280271) — um `mb2.knobs` gravado antes disso tem as chaves
@@ -93,6 +103,14 @@ export async function initPanel(CONFIG, hooks = {}) {
   // F13 §3: diâmetro da bola ao vivo — escala a bola, reaplica a cota (o clamp depende do raio),
   // regenera a clareira do mikado e refresca o probe.
   const onBallDiameterChanged = hooks.onBallDiameterChanged || noop;
+  /* ---- F13.5: PRESETS — a única porta para a CÂMARA ----
+     O painel não conhece Babylon nem o objeto `camera`; o main.js passa dois closures:
+       hooks.camGet()      -> {alpha,beta,radius,ty}  (pose atual, para GRAVAR)
+       hooks.camGoto(pose, sec) -> arranca o lerp suave (o main.js é que corre por frame)
+     Assim o painel continua a poder correr no sandbox do `gen-knobs-default.js` (que não tem
+     câmara nenhuma) — sem hooks, gravar/aplicar preset simplesmente não mexe na câmara. */
+  const camGet = typeof hooks.camGet === 'function' ? hooks.camGet : null;
+  const camGoto = typeof hooks.camGoto === 'function' ? hooks.camGoto : null;
 
   const CH = CONFIG.choreo, AMB = CONFIG.ambient;
   // 'health' é mecânico (placeholder local) até o Opus criar window.MIRRORBALL.setHealth/getHealth
@@ -528,6 +546,10 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['Explosão', [
       'explosão: alcance (radial)', 'explosão: deriva s', 'explosão: pausa s',
     ]],
+    /* F13.5: grupo próprio para os PRESETS (vista + config). Sem sliders — a UI toda é construída
+       à mão mais abaixo, como o grupo "Ficheiro". Fica ANTES de "Ficheiro" na barra porque é o que
+       o David vai usar ao vivo; "Ficheiro" continua a ser a última gaveta. */
+    ['Presets', []],
     ['Ficheiro', []],
   ];
   // 7 favoritos (§2) — sempre visíveis na faixa acima da barra, independentemente do grupo aberto.
@@ -896,6 +918,363 @@ export async function initPanel(CONFIG, hooks = {}) {
     applyDbgSize();
   }
 
+  /* ================================================================================================
+     F13.5 — PRESETS (vista + config).  Spec do David:
+       1. "save" grava o CONFIG atual (os knobs) + a POSIÇÃO DA CÂMARA como preset com nome;
+       2. menu "presets": lista, seleção rápida (aplica knobs + câmara), renomear, apagar,
+          persistência em localStorage (`mb2.presets`), exportar/importar JSON;
+       3. "auto presets": muda de preset ao acaso, SEM REPETIR até esgotar a lista (baralho);
+       4. sliders de tempo min/max (s) — cada permanência sorteia uma duração entre os dois.
+
+     ---- DECISÕES (documentadas em docs/f13-ajustes.md §F13.5) -------------------------------------
+     * APLICAR = o MESMO caminho de reposição em bloco de "carregar ficheiro": `knobsSet(obj, true)`
+       + `togglesSet(...)`. Não há segundo caminho de escrita nos knobs — é a lição das F12/F13
+       (dois donos = o último a escrever ganha). Um preset NUNCA escreve em `mb2.knobs` à mão:
+       quem persiste é o `persistAll()` que o `knobsSet(…, true)` já chama.
+     * KNOBS ⟳ (dimensões da sala, construídas uma vez no arranque): aplicam-se ao CONFIG na mesma
+       (para sobreviverem ao próximo reload) mas a geometria só entra no reload. NÃO há banner nem
+       aviso na cena (F13 §4 — "avisos NENHUNS"): o sinal é DISCRETO e vive dentro do menu, um ⟳ a
+       amarelo ao lado do nome do preset cuja geometria difere da construída. É a mesma marca que os
+       sliders ⟳ já usam, no mesmo sítio (o painel), e desaparece sozinha depois do reload.
+     * AUTO vs o DAVID: sem luta. O auto só escreve quando muda de preset; se o David mexer num knob
+       entretanto, o valor dele fica até à próxima troca, e aí o preset seguinte aplica-se por cima.
+       Simples e previsível — nada de "reverter" nem de bloquear sliders.
+     * AUTO vs MOTOR/ESTRELATO: o auto só mexe em knobs + câmara. O motor de música e o estrelato
+       continuam a mandar no que é deles (rpm, haze, feixes, opacidade quando o disjuntor lho dá) —
+       um preset que gravou `rotationRpm` só ganha o instante da aplicação, depois o motor reescreve,
+       exatamente como acontece hoje quando se mexe no slider à mão.
+     * CÂMARA: lerp suave (default 1,2 s, faixa 0-4 s) — um corte seco em modo auto é feio e lê-se
+       como falha. Não é strobe (é uma pose a interpolar), portanto a regra dos 3 Hz não se aplica,
+       mas por segurança o mínimo de permanência é 2 s.
+     ================================================================================================ */
+
+  const CAM_LERP_DEFAULT = 1.2;
+  const PRESET_UI_DEFAULT = { auto: false, minSec: 12, maxSec: 30, camSec: CAM_LERP_DEFAULT };
+
+  function fin(v, d) { return Number.isFinite(v) ? v : d; }
+
+  /* Normaliza um preset vindo do storage/ficheiro. Tudo NaN-safe (regra 7): um preset corrompido
+     nunca pode deixar knobs ou câmara com NaN — os campos maus são simplesmente deixados de fora. */
+  function sanitizePreset(p) {
+    if (!p || typeof p !== 'object') return null;
+    const name = String(p.name == null ? '' : p.name).trim().slice(0, 60) || 'preset';
+    const knobs = {};
+    const src = migrate((p.knobs && typeof p.knobs === 'object') ? p.knobs : {});
+    for (const [n] of sliders) if (PERSIST.has(n) && Number.isFinite(src[n])) knobs[n] = src[n];
+    const out = { name, knobs };
+    if (p.toggles && typeof p.toggles === 'object') out.toggles = p.toggles;
+    const c = p.cam;
+    if (c && typeof c === 'object' &&
+        Number.isFinite(c.alpha) && Number.isFinite(c.beta) && Number.isFinite(c.radius)) {
+      out.cam = { alpha: c.alpha, beta: c.beta, radius: c.radius, ty: fin(c.ty, 0) };
+    }
+    /* fotografia dos knobs ⟳ com que este preset foi gravado — serve o sinal discreto ⟳ na lista
+       (ver decisões acima). Deriva-se dos próprios knobs, não é um campo à parte que possa mentir. */
+    return out;
+  }
+
+  let presets = (function readPresets() {
+    const raw = readJSON(KEY_PRESETS);
+    if (!Array.isArray(raw)) return [];
+    return raw.map(sanitizePreset).filter(Boolean);
+  })();
+  function persistPresets() { writeJSON(KEY_PRESETS, presets); }
+
+  let presetUi = Object.assign({}, PRESET_UI_DEFAULT, readJSON(KEY_PRESETS_UI) || {});
+  presetUi.minSec = Math.min(Math.max(fin(presetUi.minSec, 12), 2), 300);
+  presetUi.maxSec = Math.min(Math.max(fin(presetUi.maxSec, 30), 2), 300);
+  if (presetUi.maxSec < presetUi.minSec) presetUi.maxSec = presetUi.minSec;
+  presetUi.camSec = Math.min(Math.max(fin(presetUi.camSec, CAM_LERP_DEFAULT), 0), 4);
+  presetUi.auto = !!presetUi.auto;
+  function persistPresetUi() { writeJSON(KEY_PRESETS_UI, presetUi); }
+
+  /* Grava o estado ATUAL como preset. `knobsGet()` já devolve todos os persistíveis. */
+  function capturePreset(name) {
+    const p = { name: String(name || '').trim().slice(0, 60) || 'preset', knobs: knobsGet(), toggles: togglesGet() };
+    if (camGet) {
+      try {
+        const c = camGet();
+        if (c && Number.isFinite(c.alpha) && Number.isFinite(c.beta) && Number.isFinite(c.radius)) {
+          p.cam = { alpha: c.alpha, beta: c.beta, radius: c.radius, ty: fin(c.ty, 0) };
+        }
+      } catch (e) { console.warn('[MB2] presets: câmara não legível:', e && e.message); }
+    }
+    return sanitizePreset(p);
+  }
+
+  /* Aplica um preset: knobs em BLOCO (o caminho de "carregar ficheiro") + toggles + câmara. */
+  function applyPreset(p, { camera = true } = {}) {
+    const s = sanitizePreset(p);
+    if (!s) return 0;
+    const n = knobsSet(s.knobs, true);
+    if (s.toggles) togglesSet(s.toggles);
+    if (camera && s.cam && camGoto) {
+      try { camGoto(s.cam, presetUi.camSec); } catch (e) { console.warn('[MB2] presets: câmara:', e && e.message); }
+    } else if (window.MB2_DEBUG_PRESETS) {
+      // diagnóstico por consola (padrão do `MB2_DEBUG_ROOMDIM` da F13) — nada visível na cena
+      console.log('[MB2] preset aplicado sem câmara:', { pedida: camera, temPose: !!s.cam, hook: !!camGoto });
+    }
+    return n;
+  }
+
+  /* Sinal DISCRETO ⟳ (F13 §4: sem banners): true quando algum knob ⟳ do preset difere do CONFIG
+     vivo — ou seja, aplicá-lo muda geometria que só entra no reload. */
+  function presetNeedsReload(p) {
+    if (!p || !p.knobs) return false;
+    for (const name of RELOAD) {
+      const v = p.knobs[name];
+      if (!Number.isFinite(v)) continue;
+      const def = sliderDef[name]; if (!def) continue;
+      const cur = def[5]();
+      if (Number.isFinite(cur) && Math.abs(cur - v) > 1e-6) return true;
+    }
+    return false;
+  }
+
+  /* ---- baralho (shuffle bag): sorteia sem repetir até esgotar a lista ----
+     `bag` guarda ÍNDICES por sortear. Quando esvazia, volta a encher com todos e baralha (Fisher-
+     Yates). Guard extra: com ≥2 presets, um baralho novo nunca começa pelo mesmo que acabou de
+     tocar (senão via-se o mesmo preset duas vezes seguidas na fronteira entre baralhos, que é
+     exatamente o "repetir" que o David não quer ver). */
+  let bag = [];
+  let autoLast = -1;
+  function refillBag() {
+    bag = presets.map((_, i) => i);
+    for (let i = bag.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; const t = bag[i]; bag[i] = bag[j]; bag[j] = t; }
+    if (bag.length > 1 && bag[bag.length - 1] === autoLast) { const t = bag[bag.length - 1]; bag[bag.length - 1] = bag[0]; bag[0] = t; }
+  }
+  function bagNext() {
+    if (!presets.length) return -1;
+    if (!bag.length) refillBag();
+    const i = bag.pop();
+    return (i >= 0 && i < presets.length) ? i : -1;
+  }
+
+  let autoTimer = null;
+  let autoIdx = -1; // índice do preset que o auto pôs no ar (só para destacar na lista)
+  function autoDurationSec() {
+    const a = Math.min(presetUi.minSec, presetUi.maxSec);
+    const b = Math.max(presetUi.minSec, presetUi.maxSec);
+    return a + Math.random() * (b - a);
+  }
+  function autoStop() {
+    if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
+  }
+  function autoStep() {
+    autoTimer = null;
+    if (!presetUi.auto) return;
+    const i = bagNext();
+    if (i < 0) { autoSetEnabled(false); return; } // sem presets não há auto (par liga/desliga simétrico)
+    autoLast = i; autoIdx = i;
+    applyPreset(presets[i]);
+    renderPresets();
+    autoTimer = setTimeout(autoStep, autoDurationSec() * 1000);
+  }
+  function autoSetEnabled(on) {
+    on = !!on && presets.length > 0;
+    presetUi.auto = on;
+    persistPresetUi();
+    autoStop();
+    if (on) { bag = []; autoLast = -1; autoStep(); } // arranca já no primeiro preset
+    else autoIdx = -1;
+    if (autoCheck) autoCheck.checked = on;
+    renderPresets();
+  }
+
+  // ---- DOM do grupo "Presets" ----
+  let autoCheck = null;
+  const presetMsg = document.createElement('div');
+  presetMsg.className = 'knobMsg';
+  presetMsg.style.cssText = 'margin-top:4px;color:#8a8a8a;font-size:11px';
+  const presetList = document.createElement('div');
+  presetList.className = 'presetList';
+
+  function say(t) { presetMsg.textContent = t; }
+
+  function renderPresets() {
+    presetList.innerHTML = '';
+    if (!presets.length) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'color:#7a7a7a;padding:6px 0';
+      empty.textContent = 'sem presets — afina a cena, aponta a câmara e carrega em "gravar preset".';
+      presetList.appendChild(empty);
+      return;
+    }
+    presets.forEach((p, i) => {
+      const row = document.createElement('div');
+      row.className = 'presetRow' + (i === autoIdx ? ' live' : '');
+      const use = document.createElement('button');
+      use.className = 'presetUse';
+      use.textContent = p.name;
+      use.title = 'aplicar knobs + câmara';
+      use.onclick = () => {
+        const n = applyPreset(p);
+        autoIdx = i; renderPresets();
+        say(`"${p.name}" aplicado (${n} knobs${p.cam ? ' + câmara' : ''})`);
+      };
+      if (presetNeedsReload(p)) {
+        const rl = document.createElement('span');
+        rl.className = 'rb'; rl.textContent = ' ⟳';
+        rl.title = 'este preset tem dimensões de sala diferentes — os knobs aplicam-se, a geometria só no próximo reload (F5)';
+        use.appendChild(rl);
+      }
+      if (!p.cam) {
+        const nc = document.createElement('span');
+        nc.style.cssText = 'color:#6a6a6a'; nc.textContent = ' (sem câmara)';
+        use.appendChild(nc);
+      }
+      const upd = document.createElement('button');
+      upd.textContent = '⟲'; upd.title = 'substituir por o estado atual (knobs + câmara)';
+      upd.onclick = () => {
+        const np = capturePreset(p.name);
+        if (!np) return;
+        presets[i] = np; persistPresets(); renderPresets();
+        say(`"${np.name}" atualizado com o estado atual`);
+      };
+      const ren = document.createElement('button');
+      ren.textContent = '✎'; ren.title = 'renomear';
+      ren.onclick = () => {
+        const nn = prompt('novo nome:', p.name);
+        if (nn == null) return;
+        const clean = String(nn).trim().slice(0, 60);
+        if (!clean) { say('nome vazio — não mudou'); return; }
+        p.name = clean; persistPresets(); renderPresets();
+        say(`renomeado para "${clean}"`);
+      };
+      const del = document.createElement('button');
+      del.textContent = '✕'; del.title = 'apagar';
+      del.onclick = () => {
+        const nm = p.name;
+        presets.splice(i, 1);
+        persistPresets();
+        // o baralho referencia ÍNDICES — depois de apagar, é preciso refazê-lo (senão saltava
+        // presets ou apontava para fora do array). Simples: esvazia-se, o próximo passo enche.
+        bag = []; autoLast = -1;
+        if (autoIdx === i) autoIdx = -1; else if (autoIdx > i) autoIdx--;
+        if (!presets.length && presetUi.auto) autoSetEnabled(false);
+        renderPresets();
+        say(`"${nm}" apagado (${presets.length} restantes)`);
+      };
+      row.appendChild(use); row.appendChild(upd); row.appendChild(ren); row.appendChild(del);
+      presetList.appendChild(row);
+    });
+  }
+
+  {
+    const list = groupLists['Presets'];
+    // linha 1: gravar preset (pede nome) + exportar/importar
+    const r1 = document.createElement('div'); r1.className = 'sp';
+    const btnNew = document.createElement('button');
+    btnNew.textContent = 'gravar preset';
+    btnNew.title = 'grava os knobs atuais + a posição da câmara';
+    btnNew.onclick = () => {
+      const nn = prompt('nome do preset:', 'preset ' + (presets.length + 1));
+      if (nn == null) return;
+      const p = capturePreset(nn);
+      if (!p) { say('não gravou'); return; }
+      const at = presets.findIndex(x => x.name === p.name);
+      if (at >= 0) presets[at] = p; else presets.push(p);
+      persistPresets();
+      bag = []; // lista mudou → baralho novo
+      renderPresets();
+      say(`"${p.name}" gravado (${Object.keys(p.knobs).length} knobs${p.cam ? ' + câmara' : ''})`);
+    };
+    const btnExp = document.createElement('button');
+    btnExp.textContent = 'exportar (.json)';
+    btnExp.onclick = () => {
+      if (!presets.length) { say('sem presets para exportar'); return; }
+      const blob = new Blob([JSON.stringify({ mb2Presets: presets }, null, 2) + '\n'], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'mb2-presets.json';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      say(`mb2-presets.json descarregado (${presets.length} presets)`);
+    };
+    const presetFileInput = document.createElement('input');
+    presetFileInput.type = 'file';
+    presetFileInput.accept = '.json,application/json';
+    presetFileInput.style.display = 'none';
+    presetFileInput.onchange = async () => {
+      const f = presetFileInput.files && presetFileInput.files[0];
+      if (!f) return;
+      try {
+        const obj = JSON.parse(await f.text());
+        const arr = Array.isArray(obj) ? obj : (Array.isArray(obj && obj.mb2Presets) ? obj.mb2Presets : null);
+        if (!arr) throw new Error('não é uma lista de presets');
+        const ok = arr.map(sanitizePreset).filter(Boolean);
+        if (!ok.length) throw new Error('nenhum preset válido');
+        for (const p of ok) {
+          const at = presets.findIndex(x => x.name === p.name);
+          if (at >= 0) presets[at] = p; else presets.push(p);
+        }
+        persistPresets(); bag = []; renderPresets();
+        say(`${ok.length} presets importados de ${f.name}`);
+      } catch (e) {
+        say('ficheiro inválido: ' + (e && e.message));
+      } finally { presetFileInput.value = ''; }
+    };
+    const btnImp = document.createElement('button');
+    btnImp.textContent = 'importar (.json)';
+    btnImp.onclick = () => presetFileInput.click();
+    r1.appendChild(btnNew); r1.appendChild(btnExp); r1.appendChild(btnImp);
+
+    // linha 2: auto + durações + tempo do lerp da câmara
+    const r2 = document.createElement('div'); r2.className = 'sp';
+    const lab = document.createElement('label');
+    autoCheck = document.createElement('input'); autoCheck.type = 'checkbox'; autoCheck.checked = false;
+    autoCheck.onchange = () => autoSetEnabled(autoCheck.checked);
+    lab.appendChild(autoCheck); lab.append(' auto presets');
+    lab.title = 'roda os presets ao acaso, sem repetir até esgotar a lista';
+    r2.appendChild(lab);
+
+    // sliders de tempo: mesma mecânica visual do resto do painel (label+número+range), mas
+    // NÃO são knobs do CONFIG — vivem em `mb2.presetsUi`, à parte de `mb2.knobs`.
+    function mkUiRow(text, mn, mx, st, get, set, title) {
+      const l = document.createElement('label');
+      const s = document.createElement('span'); s.textContent = text; if (title) l.title = title;
+      const v = document.createElement('input'); v.type = 'number'; v.min = mn; v.max = mx; v.step = st; v.value = fmt(get(), st);
+      const r = document.createElement('input'); r.type = 'range'; r.min = mn; r.max = mx; r.step = st; r.value = get();
+      const apply = (x) => {
+        x = Math.min(mx, Math.max(mn, Number.isFinite(x) ? x : get()));
+        set(x); r.value = x; v.value = fmt(x, st);
+        persistPresetUi();
+      };
+      r.oninput = () => apply(+r.value);
+      v.onchange = () => apply(+v.value);
+      v.onkeydown = (e) => { if (e.key === 'Enter') v.blur(); };
+      l.appendChild(s); l.appendChild(v); l.appendChild(r);
+      return { lab: l, sync: () => { r.value = get(); v.value = fmt(get(), st); } };
+    }
+    const rowMin = mkUiRow('preset: tempo min (s)', 2, 300, 1,
+      () => presetUi.minSec,
+      (x) => { presetUi.minSec = x; if (presetUi.maxSec < x) { presetUi.maxSec = x; rowMax.sync(); } },
+      'permanência mínima de cada preset em modo auto');
+    const rowMax = mkUiRow('preset: tempo máx (s)', 2, 300, 1,
+      () => presetUi.maxSec,
+      (x) => { presetUi.maxSec = x; if (presetUi.minSec > x) { presetUi.minSec = x; rowMin.sync(); } },
+      'permanência máxima de cada preset em modo auto');
+    const rowCam = mkUiRow('preset: câmara lerp (s)', 0, 4, 0.1,
+      () => presetUi.camSec,
+      (x) => { presetUi.camSec = x; },
+      '0 = salto seco; 1-2 s é o que fica bem em modo auto');
+
+    list.appendChild(r1);
+    list.appendChild(presetFileInput);
+    list.appendChild(r2);
+    list.appendChild(rowMin.lab);
+    list.appendChild(rowMax.lab);
+    list.appendChild(rowCam.lab);
+    list.appendChild(presetList);
+    list.appendChild(presetMsg);
+    renderPresets();
+    /* auto NÃO arranca sozinho num reload, mesmo que estivesse ligado quando a página fechou:
+       o David abre a página para AFINAR, e uma cena a mudar de preset sozinha ao arranque é o
+       oposto do que se quer nesse momento. O estado do checkbox persiste (fica desligado à
+       espera do clique) — par liga/desliga simétrico, sem surpresas. */
+    presetUi.auto = false; persistPresetUi();
+  }
+
   /* `skin` e `explosões` vivem fora do painel (botões do #ui, teclas w/x) mas são estado do David —
      guardam-se aqui, na mesma chave. `main.js` chama `panel.togglesApply()` depois de criar os
      botões, e `panel.persistToggles()` sempre que os muda. */
@@ -1066,5 +1445,40 @@ export async function initPanel(CONFIG, hooks = {}) {
     get knobFile() { return knobFile; }, get fileDefaults() { return fileDefaults; },
     togglesGet, togglesSet, persistToggles, syncSaveLabel,
     dbgSize, inputs, vals, favInputs, favVals, GROUPS, FAVORITES, openGroupByName, closeGroup, refresh,
+    /* F13.5 (diagnóstico + automação): presets pela consola — `MB2.panel.presets.list()`,
+       `.save('nome')`, `.apply('nome')`, `.auto(true/false)`, `.state()`. */
+    presets: {
+      list: () => presets.map(p => ({ name: p.name, knobs: Object.keys(p.knobs).length, cam: !!p.cam, reload: presetNeedsReload(p) })),
+      save: (name) => {
+        const p = capturePreset(name);
+        if (!p) return null;
+        const at = presets.findIndex(x => x.name === p.name);
+        if (at >= 0) presets[at] = p; else presets.push(p);
+        persistPresets(); bag = []; renderPresets();
+        return p.name;
+      },
+      apply: (nameOrIdx, opts) => {
+        const i = typeof nameOrIdx === 'number' ? nameOrIdx : presets.findIndex(x => x.name === nameOrIdx);
+        if (!(i >= 0 && i < presets.length)) return 0;
+        const n = applyPreset(presets[i], opts || {});
+        autoIdx = i; renderPresets();
+        return n;
+      },
+      remove: (name) => {
+        const i = presets.findIndex(x => x.name === name);
+        if (i < 0) return false;
+        presets.splice(i, 1); persistPresets(); bag = []; autoLast = -1;
+        if (autoIdx === i) autoIdx = -1; else if (autoIdx > i) autoIdx--;
+        renderPresets(); return true;
+      },
+      auto: (on) => { autoSetEnabled(on); return presetUi.auto; },
+      // dá o próximo passo do baralho JÁ (sem esperar o timer) — usado na verificação da sequência
+      step: () => { if (!presetUi.auto) return -1; autoStop(); autoStep(); return autoIdx; },
+      state: () => ({
+        auto: presetUi.auto, minSec: presetUi.minSec, maxSec: presetUi.maxSec, camSec: presetUi.camSec,
+        live: autoIdx, liveName: (autoIdx >= 0 && presets[autoIdx]) ? presets[autoIdx].name : null,
+        bag: bag.slice(), count: presets.length,
+      }),
+    },
   };
 }

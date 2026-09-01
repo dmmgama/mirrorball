@@ -79,6 +79,13 @@
   #dbg .dbgpop-list > .sz,
   #dbg .dbgpop-list > .knobMsg{grid-column:1/-1}
   #dbg .dbgpop-list > .sp label{display:inline-flex;align-items:center;gap:4px;grid-template-columns:none;height:auto}
+  /* ---- F13.5: grupo "Presets" — lista de presets gravados (vista + config) ---- */
+  #dbg .dbgpop-list > .presetList{grid-column:1/-1;margin-top:6px;display:flex;flex-direction:column;gap:2px}
+  #dbg .presetRow{display:flex;align-items:center;gap:4px}
+  #dbg .presetRow button{font:inherit;background:#111;color:var(--dbgTxt);border:1px solid #2a2a2a;padding:3px 6px;cursor:pointer;flex:none}
+  #dbg .presetRow button.presetUse{flex:1;min-width:0;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #dbg .presetRow button:hover{color:#fff;border-color:#4a4a4a}
+  #dbg .presetRow.live button.presetUse{color:#fff;border-color:#6a6a6a;background:#1c1c1c}
   /* ---- HUD do motor de música (tecla m, web/music.js) — só existe/aparece com ?src=music.
        Sobe para cima da barra/faixa (68px) para não colidir (§ Passo 2 do brief). ---- */
   #mus{position:fixed;bottom:68px;right:12px;max-width:46vw;background:rgba(10,10,10,.86);color:#cfcfcf;
@@ -113,6 +120,6 @@
 </script>
 <script src="../vendor/babylon.js"></script>
 <script src="config.js?v=12"></script>
-<script type="module" src="main.js?v=26"></script>
+<script type="module" src="main.js?v=30"></script>
 </body>
 </html>

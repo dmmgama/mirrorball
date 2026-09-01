@@ -219,3 +219,153 @@ caminho do `music-config.json`, que o guard da F12 não apanhava); e **reload co
 - **A bola grande com o mikado no miolo fica apertada**: a Ø 3,0 a clareira exigida sobe para 2,0 m
   e come uma fatia grande do miolo (49 m²). No modo sala toda isso dilui-se. Se o David quiser as
   duas coisas no miolo, `mikado: clareira bola (m)` é o knob para baixar.
+
+---
+
+# Adição F13.5 — PRESETS (vista + config)
+
+Spec do David (verbatim, 4 pontos): botão **save** que grava o CONFIG atual + a **posição da
+câmara** como preset com nome; **menu "presets"** com lista, seleção rápida, renomear/apagar e
+persistência; **"auto presets"** que roda ao acaso **sem repetir nenhum até esgotar a lista**;
+**slider(s) de tempo** min/máx, sorteando uma duração por permanência.
+
+Tocados: `spike-babylon/v2/panel.js` (UI + storage + baralho), `main.js` (pose da câmara + lerp),
+`index.html` (CSS da lista + cache-busters). **Nenhum knob novo** — os 175 da F13 mantêm-se, e
+`knobs-default.json` foi regenerado sem diferenças (verificado). **`web/music.js` e
+`web/music-config.json` NÃO foram tocados.**
+
+## UI — grupo "Presets" na barra do painel
+
+Grupo próprio, imediatamente antes de "Ficheiro" (é o que se usa ao vivo; "Ficheiro" continua a ser
+a última gaveta). Sem sliders de CONFIG — a UI é construída à mão, como o grupo "Ficheiro".
+
+| elemento | o que faz |
+|---|---|
+| **gravar preset** | pede o nome e grava knobs + câmara. Nome repetido **substitui** (não duplica). |
+| **exportar (.json)** / **importar (.json)** | ficheiro `mb2-presets.json`; importar funde por nome. |
+| ☐ **auto presets** | liga/desliga o baralho. |
+| `preset: tempo min (s)` / `preset: tempo máx (s)` | 2-300 s, passo 1. Empurram-se um ao outro (min > máx é impossível). |
+| `preset: câmara lerp (s)` | 0-4 s, passo 0,1. **0 = salto seco.** Default **1,2 s**. |
+| lista de presets | uma linha por preset: **nome** (aplica), **⟲** (substitui pelo estado atual), **✎** (renomear), **✕** (apagar). |
+
+O preset no ar fica destacado (borda e fundo mais claros). Sem presets, a lista mostra uma linha de
+ajuda em vez de ficar vazia.
+
+**Sinal ⟳ discreto, sem banners.** Um preset cuja geometria ⟳ (dimensões da sala) difere da que está
+construída leva um **⟳ amarelo** ao lado do nome, com tooltip. É a **mesma marca que os sliders ⟳ já
+usam, no mesmo sítio** (dentro do painel) — cumpre a F13 §4 ("avisos NENHUNS"): nada é escrito no
+`#err` nem por cima da cena, e a marca desaparece sozinha depois do reload. **O banner da F13 não
+foi ressuscitado.**
+
+## Formato gravado (localStorage)
+
+Duas chaves novas, **separadas de `mb2.knobs`** (um preset não pode corromper os knobs gravados —
+verificado: depois de toda a bateria, `mb2.knobs` continua com 175 knobs e zero campos de preset):
+
+```
+mb2.presets    [ { name, knobs:{…175…}, toggles:{spots,skin,explode}, cam:{alpha,beta,radius,ty} }, … ]
+mb2.presetsUi  { auto, minSec, maxSec, camSec }
+```
+
+Exportado como `{ "mb2Presets": [ … ] }` (o importador também aceita um array cru).
+`sanitizePreset()` filtra tudo à entrada — só passam knobs que existam e sejam finitos, e a `cam` só
+entra com `alpha`/`beta`/`radius` finitos. Um ficheiro corrompido não consegue meter `NaN` na cena.
+
+## Decisões
+
+1. **Aplicar = o caminho de reposição em bloco que já existia.** `knobsSet(obj, true)` +
+   `togglesSet(...)`, exatamente o que "carregar ficheiro" faz. **Não se criou um segundo caminho de
+   escrita nos knobs** — é a lição das F12/F13 (dois donos = o último a escrever ganha). Um preset
+   nunca escreve em `mb2.knobs` à mão; quem persiste é o `persistAll()` que o `knobsSet` já chama.
+
+2. **Knobs ⟳: aplicam-se ao vivo o que dá, sem aviso.** Os valores entram no CONFIG (para
+   sobreviverem ao próximo reload) mas a geometria da sala só se reconstrói no arranque, como sempre.
+   O sinal é o ⟳ na lista, dentro do painel. Alternativa rejeitada: recarregar a página sozinho ao
+   aplicar um preset — em modo auto seria um corte brutal a meio da música.
+
+3. **Câmara: lerp com smoothstep, 1,2 s por omissão.** Um salto seco em auto lê-se como falha da
+   cena. **Não é strobe** (é uma pose a interpolar, não um piscar), portanto a regra dos 3 Hz não se
+   aplica; ainda assim o mínimo de permanência é 2 s, o que impede qualquer cadência epilética.
+   Interpola-se pelo **caminho angular mais curto** (sem isto, ir de α=3,1 a α=−3,1 — o mesmo sítio —
+   dava uma volta quase completa à bola). Um **`pointerdown`/`wheel` do David cancela o lerp**: se
+   ele agarrou a câmara, a câmara é dele.
+
+4. **O `target.y` NÃO entra na interpolação — de propósito.** O loop escreve-o todos os frames a
+   partir de `ballCenterY()` (F12 §3). Se o lerp lhe mexesse ficavam **dois donos do mesmo número**,
+   que é a assinatura de bug desta repo (F13 §2). O `ty` grava-se no preset só como diagnóstico; o
+   alvo segue o knob `bola: altura (m)` do preset, que é o comportamento certo — a câmara aponta à
+   bola onde quer que o preset a ponha. O `radius` é **clampado pelos limites vivos** da câmara (que
+   dependem do raio da bola, F13 §3): um preset gravado a Ø 2,0 aplicado a Ø 3,0 não mete a câmara
+   dentro dos espelhos.
+
+5. **Auto vs o David: sem luta.** O auto só escreve quando **muda** de preset. Se o David mexer num
+   knob entretanto, o valor dele fica até à troca seguinte, e aí o preset aplica-se por cima. Simples
+   e previsível — nada de reverter nem de bloquear sliders.
+
+6. **Auto vs motor/estrelato: cada um no seu.** O auto só mexe em knobs + câmara. O motor de música e
+   o estrelato continuam a mandar no que é deles (rpm, haze, feixes, opacidade quando o disjuntor
+   lha dá). Um preset que gravou `rotationRpm` ganha o instante da aplicação e o motor reescreve a
+   seguir — exatamente como já acontece hoje ao mexer no slider à mão.
+
+7. **O auto NÃO arranca sozinho num reload**, mesmo que estivesse ligado quando a página fechou. O
+   David abre a página para **afinar**; uma cena a trocar de preset sozinha ao arranque é o oposto
+   disso. O checkbox nasce desligado à espera do clique (par liga/desliga simétrico).
+
+8. **Baralho (shuffle bag).** `bag` guarda os ÍNDICES por sortear; quando esvazia, enche com todos e
+   baralha (Fisher-Yates). Guard extra na fronteira: com ≥2 presets, um baralho novo **nunca começa
+   pelo que acabou de tocar** — senão via-se o mesmo preset duas vezes seguidas na junção entre
+   baralhos, que é precisamente o "repetir" que o David não quer ver. Apagar um preset **esvazia o
+   baralho** (ele referencia índices; sem isto saltava presets ou apontava para fora do array).
+
+## Verificação feita
+
+- **Sequência do baralho, ao vivo com o motor a correr** (5 presets, `?src=music`, `owner = music`):
+  baralho 1 `D · A · E · B · C`, baralho 2 `E · A · D · C · B` — **os 5 distintos em cada um**,
+  ordens diferentes, e **nenhuma repetição seguida na fronteira** (C → E).
+- **Algoritmo em isolamento** (extraído *literalmente* do `panel.js`, 10 000 sorteios): o guard
+  disparou 401 vezes e deu **0 repetições seguidas**; cada preset saiu exatamente 1/5 das vezes
+  (200/200/200/200/200 em 1000) — uniforme, sem enviesar.
+- **Lerp da câmara medido passo a passo**: de (1,571 · 1,571 · 10,5) até (2,2 · 1,15 · 9,0) em 1,2 s,
+  com easing smoothstep, aterrando **exatamente** no alvo e com `camAnim.on` a desligar-se sozinho.
+- **Seleção rápida aplica os dois**: knobs (diâmetro, mikado sala toda, cor, wash, nº de focos) e
+  câmara, verificados preset a preset.
+- **Sobrevive ao reload**: 5 presets com pose de câmara intacta depois de F5; `mb2.presetsUi` também.
+- **Durações dentro do min/máx**: 2000 sorteios com [2, 3] → mínimo 2,00 e máximo 3,00, todos dentro.
+- **`mb2.knobs` não corrompido**: 175 knobs, zero campos de preset infiltrados; chaves separadas.
+- **UI pelos botões reais**: renomear (✎), apagar (✕) e substituir (⟲) — todos persistem na hora e
+  a lista re-renderiza. O ⟲ mantém o nome e troca knobs **e** câmara.
+- **Consola limpa**: 10 módulos, zero erros, zero avisos novos — só o `maxSimultaneousLights 12 > 8`
+  do `room.js`, **pré-existente** (documentado desde a F11).
+- **Zero banners**: `#err` nunca acendeu em nenhum cenário, incluindo aplicar presets com geometria ⟳
+  diferente (que é exatamente o caso que fazia aparecer o banner antigo).
+- **NaN-safe**: `ballR`, `ballYEffective`, `sphereOpacity`, `rotationRpm`, `camera.alpha/beta/radius`
+  e `camera.target.y` todos finitos depois de toda a bateria.
+- **Greyscale funcional** nos dois sentidos e **par liga/desliga simétrico** (mikado) mantidos.
+- **Arranque limpo** (localStorage sem presets): lista com a linha de ajuda, defaults 12/30/1,2 s,
+  175 knobs, sem banner.
+- **`node gen-knobs-default.js` continua a correr** (o `panel.js` corre no sandbox sem câmara nem
+  `document.body`): 175 knobs, ficheiro sem diferenças.
+
+## Dívidas / por afinar ao vivo com o David
+
+- **Perf POR MEDIR, outra vez** — e desta vez a automação nem sequer mente com jeito: com
+  `document.hidden = true` o `requestAnimationFrame` **não corre de todo** (medido:
+  `registerBeforeRender` com **0 chamadas** e um FPS de 476 que era leitura velha). Forçar
+  `scene.render()` à mão funciona para provar lógica, mas com o auto a 2-3 s a bloquear o renderer.
+  **Medir no stop visual, com a tab à frente**, sobretudo o auto a rodar presets com `mikado: sala
+  toda` a Ø 3,0. Baseline de referência 7,8-11,9 ms, alvo < 17,5. O custo que a F13.5 acrescenta por
+  frame é uma mão-cheia de contas no `camPoseUpdate` (só quando há lerp a decorrer) — não se espera
+  regressão estrutural, mas **não está medido**.
+- **Aplicar um preset é caro**: `knobsSet` chama `onRebuildBall`/`onSpotsChanged`/`onMikadoGeomChanged`
+  e um `refreshProbe`. A 2 s de permanência isso é uma reconstrução do mikado a cada 2 s. Ao vivo,
+  com a tab à frente, provavelmente é imperceptível — mas se o David sentir um soluço na troca, o
+  caminho é aplicar só os knobs que **mudaram** em vez dos 175 (o `knobsSet` hoje aplica tudo).
+- **Tempos default 12-30 s**: são um palpite razoável para "não cansa", não uma afinação. É de ouvir.
+- **Não há ordenação nem reordenação da lista** — os presets ficam pela ordem de gravação. Se o David
+  acumular muitos, arrastar para reordenar (ou pelo menos subir/descer) é o passo seguinte natural.
+- **O preset guarda os toggles** (spots, skin, explosão) porque o "carregar ficheiro" já os guardava.
+  ⚠ Isto inclui a **skin**, que pela Regra 1 é do utilizador — um preset gravado com skin `white`
+  põe a skin em `white` ao ser aplicado. É consistente com "o preset é uma fotografia do estado",
+  mas se incomodar, tirar a skin do `togglesGet` do preset é uma linha.
+- **Sem limite ao número de presets nem ao tamanho do `localStorage`**: cada preset são ~175 números
+  (~4 KB). Umas centenas cabem à vontade; milhares não. Não se pôs guarda — é um spike.
