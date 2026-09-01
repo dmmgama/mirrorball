@@ -145,7 +145,7 @@ daí) — viola a regra "posição fixa, só aim/dimmer variam". Exige separar m
 main.js, ball.js (mountedSpots) e fixtures.js; fica para o próximo incremento. Os chapéus novos já
 cumprem (posições determinísticas, nunca re-sorteadas).
 
-## F10 — IMPLEMENTADA (Sonnet, 2026-09-01, POR COMMITAR — aguarda stop visual)
+## F10 — IMPLEMENTADA (Sonnet, 2026-09-01, commit 79fbe6a)
 
 125 knobs. Novos: `pilares: vão entre filas (m)` (4-10, ⟳), `pilares: passo na fila (m)` (3-8, ⟳),
 `pilares: lado (m)` (0.3-1.2, ⟳), `refl: chão/teto/paredes fundo/paredes laterais` (0-3, ao vivo).
