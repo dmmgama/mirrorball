@@ -99,9 +99,11 @@ greyscale passa a existir como **toggle** (tem de estar sempre disponível e fun
 Correções do David aplicadas (119 knobs):
 - **Sala alargada +1 m**: vão entre filas de pilares 5→**6 m** (eixos X=±3.0), largura 10→**11 m**
   (halfW 5.5); pilar→parede mantém 2,5 m; chapéus movem para |X|=4.5 (mantêm 1 m à parede).
-- **Chapéus**: pala (meia parede cilíndrica sobre o vidro, avança 0,30 m), aro de suspensão (meio
-  torus sobre a cúpula), inclinação 25→**15°** + knob. (3 armadilhas Babylon documentadas: slice
-  corta em latitude; Euler compõe YXZ → rotationQuaternion explícito.)
+- **Chapéus**: pala refeita após anotação Λ do David = **continuação assimétrica da própria casca**
+  (aba cónica: bordo avança 0,27 m em cima → 0,04 m em baixo; a esfera cortada por plano oblíquo
+  foi tentada e rejeitada — colapsa num bico), aro de suspensão (meio torus sobre a cúpula),
+  inclinação 25→**15°** + knob, knob `chapéus: corte da pala°` (0-60, default 34, ⟳). 120 knobs.
+  (Armadilhas Babylon documentadas: slice corta em latitude; Euler compõe YXZ → rotationQuaternion.)
 - **Grupo "Pilares"**: 6 knobs `pilar N (0/1)` individuais (setEnabled ao vivo; probe respeita).
 - **Robots**: inclinação 25→**3°** (a prumo) + knob `robots: inclinação°` (0-30).
 - **HUD**: botão + tecla `h`, persistido (mb2.hudOn).
@@ -142,6 +144,31 @@ MOVE a posição do corpo no retarget/flash (choreo.js escreve az/el e main/fixt
 daí) — viola a regra "posição fixa, só aim/dimmer variam". Exige separar montagem↔mira em choreo.js,
 main.js, ball.js (mountedSpots) e fixtures.js; fica para o próximo incremento. Os chapéus novos já
 cumprem (posições determinísticas, nunca re-sorteadas).
+
+## F10 — IMPLEMENTADA (Sonnet, 2026-09-01, POR COMMITAR — aguarda stop visual)
+
+125 knobs. Novos: `pilares: vão entre filas (m)` (4-10, ⟳), `pilares: passo na fila (m)` (3-8, ⟳),
+`pilares: lado (m)` (0.3-1.2, ⟳), `refl: chão/teto/paredes fundo/paredes laterais` (0-3, ao vivo).
+Os knobs `sala: largura/comprimento` foram REMOVIDOS (derivados: largura = vão+5, comprimento =
+2×passo+5, margens fixas 2,5 m). Chapéus reespaçam (passo = passo pilares/2, |X| = largura/2−1).
+roomMat partilhado dividido em ceil/back/side (cada um com RawCubeTexture própria). Dots verificados:
+material próprio emissivo, refletividade não lhes toca. **2 bugs pré-existentes corrigidos**: os
+knobs ⟳ nunca chegavam a aplicar-se no reload (geometria construída antes do painel ler o
+localStorage → `preApplyReloadKnobs()` em main.js) — afetava pé-direito e corte da pala; e o grupo
+do painel reaberto no load fechava-se logo. Verificação medida (vão 6→8: paredes ±6.5, pilares ±4,
+corredor 2,5 m, chapéus 5.5). Perf sem leitura limpa (tab churn WebGPU); mudança é só 2 materiais.
+
+## F10 — parametrização da geometria + refletividade (spec do David, 2026-09-01)
+
+1. **Geometria por knob** (grupo Sala/Pilares): (a) distância entre FILAS de pilares (eixo curto) e
+   distância entre pilares NA fila (eixo longo) — passos de **0,5 m**, medidas **ao eixo**; os
+   corredores laterais/topos NUNCA mudam: as paredes acompanham (só o miolo estica/encolhe);
+   (b) lado do pilar (secção), com o **centro fixo**. Nota: se a distância entre pilares da fila
+   muda, os **chapéus reespaçam proporcionalmente** (e vice-versa).
+2. **Refletividade de chão, teto e paredes** por knob — quão escuros ficam quando iluminados.
+   **Não afeta os pontos refletidos pela mirror ball** (dots ficam com a mesma luz; só a resposta
+   das superfícies à luz de sala muda).
+3. Refletividade das paredes **separada**: paredes de fundo (topos) vs paredes laterais.
 
 ## Regras que se mantêm
 
