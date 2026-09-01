@@ -45,7 +45,7 @@ import { applyColorToggle, hueToRgb } from './colorutil.js?v=1';
 function num(v, d) { return Number.isFinite(v) ? v : d; }
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
-const MAX_HATS = 12;
+const MAX_HATS_FALLBACK = 12;   // K1: fallback se CONFIG.hats.maxCount faltar/for inválido (regra 7)
 const GOLD_HUE = 42; // ~#d9a640 dourado quente (hue≈42° em HSV)
 const BRASS_DARK = [0.06, 0.05, 0.03]; // exterior latão escuro (quase preto, só um traço quente)
 
@@ -256,6 +256,9 @@ function buildHat(scene, idx, mats, lampD, cutDeg) {
 
 export function createHats(scene, CONFIG) {
   const H = () => CONFIG.hats || {};
+  /* K1 (2026-09-01): pool de chapéus — antes const MAX_HATS=12 hardcoded. ⟳ reload: lido UMA vez
+     aqui, no build (o pool de meshes aloca-se a seguir). Mesmo valor de hoje por defeito. */
+  const MAX_HATS = num((CONFIG.hats || {}).maxCount, MAX_HATS_FALLBACK);
   const N = MAX_HATS;
 
   const shellMat = new BABYLON.PBRMaterial('hatShellMat', scene);
@@ -352,8 +355,12 @@ export function createHats(scene, CONFIG) {
      é na mesma trabalho pago por nada.
      O que se limita é só a luz que PINTA A SALA: o EMISSIVO de todos os chapéus continua a flashar
      (é isso que se vê). Com 12 focos dourados a bater no mesmo chão, a diferença entre 4 e 12
-     PointLight não se lê — e mantém a cena dentro do orçamento de luzes de qualquer backend. */
-  const MAX_LIVE_LIGHTS = 4;
+     PointLight não se lê — e mantém a cena dentro do orçamento de luzes de qualquer backend.
+
+     K1 (2026-09-01): o TETO continua DURO em 4 no código — `Math.min(4, knob)` — porque é o
+     WebGL2 quem rebenta acima disso, não uma preferência estética; o knob 'chapéus: luzes vivas
+     máx' só pode DESCER esse teto (ex.: 2, se o David quiser poupar mais). */
+  const MAX_LIVE_LIGHTS = Math.min(4, num((CONFIG.hats || {}).maxLiveLights, 4));
   const liveLightRank = new Array(N).fill(false);  // quais podem acender luz NESTE frame
   /* estado da sequência ponta-a-ponta. `cursor` = índice do PAR (0..perLine-1), `dir` = sentido.
      Regra 7 (NaN-safe): tudo nasce com valor. */

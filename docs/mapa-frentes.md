@@ -17,7 +17,7 @@ Não repete o CLAUDE.md nem os handoffs — aponta para eles.
 | **B · Motor visual & render** | Babylon 9, WebGPU/WebGL2, malha da bola + cadeia de cinza, probe, thin instances, pós, realismo | **maduro, perf por medir** — 5 fases sem número limpo; "parece CG" por luz/ar, não por geometria (`research-realismo.md`). **V0 (S13): G1 feito** — `freezeWorldMatrix()` nos 5 planos + pilares (`room.js`); baseline G2 **por medir pelo David** (protocolo em `docs/f17-visual.md` §0) | baseline ainda por preencher (`f17-visual.md` §0.4); renderList do probe com 1391 meshes; sem névoa real (`scene.fog` nunca tocado) | David mede a baseline (§0.2-§0.3) → depois V1 dots em losango, V2 fog nativo, V3 exposição — custo ~0 ms |
 | **C · Elementos físicos** | bola, corrente, mikado, chapéus, robots, vultos, sala/pilares — geometria e knobs ⟳ | **em evolução** — tudo existe, tudo por afinar ao vivo | estética "à sensação" (barras, vultos, chapéus); posição↔mira dos focos (regra 3) | afinar com o David com música real; separar posição↔mira |
 | **D · Luminárias & ambiente** | spots montados, feixes, dots, haze, wash, incidentes, flashes/strobe, choreo | **maduro** na bola, **em dívida** na coreografia da sala | choreo com relógios próprios; chapéus com duplo comando; 3 donos do `spotGain` | fica à espera do plano de sync (é a frente que ele mais toca) |
-| **E · Controlo, presets & UX** | painel `d`, ~193 knobs, `mb2.*`, presets, `RENAMED`, disjuntores | **maduro** (auditado 2×, regra 9 com bateria) | `MANUAL.html` desatualizado; snapshot do localStorage em baterias | manter a bateria da regra 9 em cada fase; nada mais por agora |
+| **E · Controlo, presets & UX** | painel `d`, **200** knobs (K1: +7), `mb2.*`, presets, `RENAMED`, disjuntores | **maduro** (auditado 2×, regra 9 com bateria) | `MANUAL.html` desatualizado; snapshot do localStorage em baterias | K2 (Fable): contrato "todo knob nasce em config" para as fases S/V |
 
 **Ajuste aos 4 eixos do David:** acrescentei a frente **E (controlo/UX)** porque tem regras próprias
 (regra 9, disjuntores, toggles 0/1, `RENAMED` só cresce), já partiu coisas sozinha (knobs órfãos,
@@ -269,9 +269,11 @@ de "quem toca quando" mudar.
 
 ### E · Controlo, presets & UX
 
-**O que é.** O painel `d`/`k` (14 grupos por elemento, 7 favoritos), ~193 knobs persistíveis,
-presets F13.5 (knobs+câmara, auto-shuffle), ficheiro `mb2-knobs.json`/`music-config.json`, o
-`tuner` do motor (`m`), teclas, HUD `h`. Regra 9 do CLAUDE.md vive aqui.
+**O que é.** O painel `d`/`k` (14 grupos por elemento, 7 favoritos), **200** knobs persistíveis
+(K1, 2026-09-01: +7 — pools/buffers de mikado/vultos/chapéus, albedo base da sala, cadência da
+cadeia de cinza da bola), presets F13.5 (knobs+câmara, auto-shuffle), ficheiro
+`mb2-knobs.json`/`music-config.json`, o `tuner` do motor (`m`), teclas, HUD `h`. Regra 9 do
+CLAUDE.md vive aqui.
 
 **Onde vive.** `panel.js` (chaves `mb2.*` :40-44 · `RENAMED` :75 · `resolveName` :102 · `migrate`
 :107 · `PERSIST` :254 · `sanitizePreset` :1147) · `gen-knobs-default.js` → `knobs-default.json`
@@ -306,7 +308,9 @@ ao reabrir · `0`/`w` a disparar dentro de campos.
 grupo Focos; `Sala & Geometria` mistura luz e estrutura; `web/index-v2.html` (2D) mantém nomes
 antigos no seu painel `mb.knobs`; preset grava a skin (tira-se numa linha se incomodar).
 
-**Próximo.** Nada ativo. Cada fase nova: correr a bateria da regra 9 (padrão `9118710`) **com
+**Próximo (K2).** Contrato "todo knob novo nasce em config" para as fases S/V do
+`plan-s13-faseado.md` — página no `mapa-frentes.md` + regra 10 no CLAUDE.md (Fable). Até lá, cada
+fase nova: correr a bateria da regra 9 (padrão `9118710`) **com
 snapshot/restore do localStorage**.
 
 ---

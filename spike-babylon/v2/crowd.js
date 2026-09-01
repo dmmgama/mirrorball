@@ -82,7 +82,7 @@ function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
    uma pista bem cheia. Acima disso o `generate()` avisa UMA vez na consola em vez de mentir em
    silêncio — a mesma regra do `MAX_BARS` do mikado (o knob não pode dizer uma coisa e a sala
    mostrar outra). */
-const MAX_PEOPLE = 80;
+const MAX_PEOPLE_FALLBACK = 80;  // K1: fallback se CONFIG.crowd.maxPeople faltar/for inválido (regra 7)
 
 /* Silhuetas de cabelo (spec: "variar cabelo"). Índices usados em `layout()`.
    Não há "cabelo de homem" e "cabelo de mulher" — o sorteio é independente do eixo de género,
@@ -113,6 +113,9 @@ function tri(rng) { return (rng() + rng() - 1); }
 
 export function createCrowd(scene, CONFIG) {
   const K = () => CONFIG.crowd || {};
+  /* K1 (2026-09-01): pool de vultos — antes const MAX_PEOPLE=80 hardcoded. ⟳ reload: lido UMA vez
+     aqui, no build (o pool de meshes/oclusão aloca-se a seguir). Mesmo valor de hoje por defeito. */
+  const MAX_PEOPLE = num((CONFIG.crowd || {}).maxPeople, MAX_PEOPLE_FALLBACK);
 
   /* F12 §5 (estrelato): os vultos NÃO entram no sorteio de estrela — não são uma peça de luz, são
      o público. O que o estrelato faz, e só isso, é modular a LUMINOSIDADE: quando o mikado ou os

@@ -273,6 +273,10 @@ export async function initPanel(CONFIG, hooks = {}) {
 
   // ---- novos knobs do spike Babylon (Fase 1): variação/tom/disposição dos espelhos + PBR + focos ----
   const newSliders = [
+    /* K1 (2026-09-01): cadência da cadeia de cinza → vertex color (ball.js:899, antes COLOR_HZ=20
+       hardcoded). AO VIVO, sem rebuild — ball.js já lê `CONFIG.colorHz` a cada frame. Piso 10
+       (abaixo disso a rotação "engasga" visualmente), teto 60 (acima disso não ganha nada). */
+    ['bola: cadeia Hz', 10, 60, 1, v => CONFIG.colorHz = v, () => CONFIG.colorHz],
     ['espelhos: variação', 0, 1, 0.02, v => { CONFIG.tileSizeVar = v; onRebuildBall(); }, () => CONFIG.tileSizeVar],
     ['espelhos: tom (0=hash/1=real)', 0, 1, 1, v => { CONFIG.tileTone = v >= 1 ? 'real' : 'hash'; onRebuildBall(); }, () => CONFIG.tileTone === 'real' ? 1 : 0],
     ['espelhos: alinhados (0/1)', 0, 1, 1, v => { CONFIG.tileLayout = v >= 1 ? 'aligned' : 'offset'; onRebuildBall(); }, () => CONFIG.tileLayout === 'aligned' ? 1 : 0],
@@ -351,6 +355,13 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['pilares: lado (m)', 0.3, 1.2, 0.05, v => { CONFIG.pillars.section = v; onRoomDimChanged(); }, () => CONFIG.pillars.section],
     ['sala: pé-direito (m)', 3, 10, 0.1,
       v => { CONFIG.roomHeightM = v; CONFIG.room.ceil = v - (3.5); onRoomDimChanged(); }, () => CONFIG.roomHeightM],
+    /* K1 (2026-09-01): albedo BASE (0-1, escalar aplicado às 3 componentes RGB) de teto/paredes de
+       fundo/laterais (room.js:37, antes BASE_ALBEDO=[0.055,0.055,0.055] hardcoded). ⟳ RELOAD — os
+       materiais (ceilMat/backMat/sideMat) só se criam uma vez no build; 'refl: *' abaixo continua a
+       multiplicar isto AO VIVO, sem tocar aqui. NÃO afeta o chão (tom próprio) nem os pilares
+       (albedo próprio). */
+    ['sala: albedo base', 0, 1, 0.005,
+      v => { CONFIG.baseAlbedo = v; onRoomDimChanged(); }, () => CONFIG.baseAlbedo],
     // ---- F10: refletividade por superfície — multiplicador do albedo (0-3, default 1), AO VIVO
     // (room.js: applyXReflMul(), sem rebuild). NÃO afeta os pontos refletidos pela bola (dots.js usa
     // um material próprio, emissivo aditivo, alimentado por ball.dots — confirmado por leitura). ----
@@ -366,7 +377,19 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['sala: wash matiz', 0, 360, 2, v => { CONFIG.wash.hue = v; onWashChanged(); }, () => CONFIG.wash.hue],
     // chapéus de latão
     ['chapéus (0/1)', 0, 1, 1, v => { CONFIG.hats.on = v >= 0.5; }, () => (CONFIG.hats.on === false ? 0 : 1)],
+    /* K1 (2026-09-01): tamanho do POOL de chapéus (hats.js:48, antes MAX_HATS=12 hardcoded).
+       ⟳ RELOAD — o pool de meshes só se aloca uma vez no build; 'chapéus: quantos' continua a
+       decidir quantos ficam ATIVOS dentro do pool (já clampado ao pool em hats.js, nunca passa
+       deste teto). */
+    ['chapéus: máx', 1, 24, 1,
+      v => { CONFIG.hats.maxCount = v; onRoomDimChanged(); }, () => CONFIG.hats.maxCount],
     ['chapéus: quantos', 0, 12, 1, v => CONFIG.hats.count = v, () => CONFIG.hats.count],
+    /* K1: teto de PointLight de chapéu SIMULTÂNEAS que pintam a sala (hats.js:356). Teto DURO 4 no
+       código (WebGL2 rebenta o shader acima disso) — este knob só pode DESCER esse teto, nunca
+       subir (ver `Math.min(4, knob)` em hats.js). Ao vivo: hats.js lê `CONFIG.hats.maxLiveLights`
+       só no build de `createHats` (mesma razão do pool — é um `Array.fill`/rank fixo por N). */
+    ['chapéus: luzes vivas máx', 0, 4, 1,
+      v => { CONFIG.hats.maxLiveLights = v; onRoomDimChanged(); }, () => CONFIG.hats.maxLiveLights],
     ['chapéus: brilho', 0, 2, 0.02, v => CONFIG.hats.glow = v, () => CONFIG.hats.glow],
     /* F12 §4: os chapéus a SÉRIO. `flash /min` continua a ser a frequência de uso (agora também a
        do motor, via estrelato); a FORÇA passa a knob (o flash da F8 era "levezinho" — David); o
@@ -428,6 +451,13 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['bola: posição Z (m)', -6, 6, 1,
       v => { CONFIG.ballPosZM = v; onBallPosChanged(); }, () => CONFIG.ballPosZM],
     ['mikado (0/1)', 0, 1, 1, v => { CONFIG.mikado.on = v >= 0.5; }, () => (CONFIG.mikado.on === false ? 0 : 1)],
+    /* K1 (2026-09-01): tamanho do POOL de barras/blocos (mikado.js:88/:155, antes MAX_BARS=112/
+       MAX_BLOCKS=12 hardcoded). ⟳ RELOAD — o pool só se aloca uma vez no build; 'mikado: barras/m²'
+       continua a decidir quantas ficam ATIVAS dentro do pool (nunca pode passar deste teto). */
+    ['mikado: máx barras', 20, 200, 1,
+      v => { CONFIG.mikado.maxBars = v; onRoomDimChanged(); }, () => CONFIG.mikado.maxBars],
+    ['mikado: máx blocos', 1, 24, 1,
+      v => { CONFIG.mikado.maxBlocks = v; onRoomDimChanged(); }, () => CONFIG.mikado.maxBlocks],
     // geometria (rebuild ao vivo)
     /* F12 §1: a contagem passou a DENSIDADE (barras/m² do miolo) — muda a geometria da sala e a
        malha escala uniforme. 0,77 ≈ as 40 barras do default da F11 na sala nominal (~52 m²). */
@@ -512,6 +542,11 @@ export async function initPanel(CONFIG, hooks = {}) {
        os dois de OCLUSÃO passam pelo `onCrowdOccChanged`, que só reescreve quem bloqueia o quê. */
     ['vultos (0/1)', 0, 1, 1,
       v => { CONFIG.crowd.on = v >= 0.5; onCrowdOccChanged(); }, () => (CONFIG.crowd.on === false ? 0 : 1)],
+    /* K1 (2026-09-01): tamanho do POOL de vultos (crowd.js:85, antes MAX_PEOPLE=80 hardcoded).
+       ⟳ RELOAD — o pool de meshes/oclusão só se aloca uma vez no build; 'vultos: densidade (p/m²)'
+       continua a decidir quantos ficam ATIVOS dentro do pool (nunca pode passar deste teto). */
+    ['vultos: pool', 10, 200, 1,
+      v => { CONFIG.crowd.maxPeople = v; onRoomDimChanged(); }, () => CONFIG.crowd.maxPeople],
     ['vultos: densidade (p/m²)', 0, 0.9, 0.01,
       v => { CONFIG.crowd.densityPerM2 = v; onCrowdGeomChanged(); }, () => CONFIG.crowd.densityPerM2],
     // LUMINOSIDADE: quanto a luz da sala os revela (multiplica o albedo). 0 = recortes pretos.
@@ -594,6 +629,9 @@ export async function initPanel(CONFIG, hooks = {}) {
   const RELOAD = new Set([
     'pilares: vão entre filas (m)', 'pilares: passo na fila (m)', 'pilares: lado (m)',
     'sala: pé-direito (m)', 'chapéus: corte da pala°',
+    // K1 (2026-09-01): pools/buffers alocados no build — mesma razão dos knobs de geometria acima.
+    'mikado: máx barras', 'mikado: máx blocos', 'vultos: pool',
+    'chapéus: máx', 'chapéus: luzes vivas máx', 'sala: albedo base',
   ]);
   const spotHueNames = [];
   for (let i = 0; i < 6; i++) spotHueNames.push('spot' + i + ': matiz°');
@@ -616,7 +654,7 @@ export async function initPanel(CONFIG, hooks = {}) {
       'bola (0/1)', 'bola: opacidade (0-1)', 'bola: rotação rpm (motor manda)',
       'bola: diâmetro (m)', 'bola: altura (m)', 'bola: posição X (m)', 'bola: posição Z (m)',
       'bola: luz', 'bola: contraste', 'luz geral (volume)', 'luz geral: az°', 'luz geral: el°',
-      'corrente (0/1)', 'corrente: elo (raios)',
+      'corrente (0/1)', 'corrente: elo (raios)', 'bola: cadeia Hz',
       'explosão: alcance (radial)', 'explosão: deriva s', 'explosão: pausa s',
     ]],
     /* FOCOS — tudo o que é o PAR36 apontado à bola: contagem/luz/óptica, mira por spot, cor, e os
@@ -649,16 +687,17 @@ export async function initPanel(CONFIG, hooks = {}) {
     ]],
     // CHAPÉUS & ROBOTS — as luminárias do Lux (F8/F12), antes enterradas no fundo de "Sala".
     ['Chapéus & Robots', [
-      'chapéus (0/1)', 'chapéus: quantos', 'chapéus: brilho',
+      'chapéus (0/1)', 'chapéus: máx', 'chapéus: quantos', 'chapéus: brilho',
       'chapéus: flash /min', 'chapéus: força do flash', 'chapéus: flash ms',
       'chapéus: modo (0=só/1=juntos/2=seq)', 'chapéus: sequência ms/passo',
       'chapéus: altura (m)', 'chapéus: inclinação°', 'chapéus: corte da pala°',
+      'chapéus: luzes vivas máx',
       'robots (0/1)', 'robots: luz', 'robots: inclinação°',
     ]],
     // MIKADO — só o mikado (F11-F13). Os knobs da bola que aqui viviam mudaram-se para "Bola";
     // o par de gesto bola↔mikado continua a ser os dois 0/1, cada um no topo do seu grupo.
     ['Mikado', [
-      'mikado (0/1)',
+      'mikado (0/1)', 'mikado: máx barras', 'mikado: máx blocos',
       'mikado: barras/m²', 'mikado: altura (m)', 'mikado: espalha (m)', 'mikado: camadas',
       'mikado: barra min (m)', 'mikado: barra máx (m)', 'mikado: Ø tubo (m)', 'mikado: inclinação°',
       'mikado: viés eixo', 'mikado: folga pilares (m)',
@@ -672,7 +711,7 @@ export async function initPanel(CONFIG, hooks = {}) {
     ]],
     // VULTOS — inalterado (F15): interruptor + spec primeiro, depois diversidade/colocação/dança.
     ['Vultos', [
-      'vultos (0/1)', 'vultos: densidade (p/m²)', 'vultos: luminosidade', 'vultos: opacidade',
+      'vultos (0/1)', 'vultos: pool', 'vultos: densidade (p/m²)', 'vultos: luminosidade', 'vultos: opacidade',
       'vultos: oclusão (0/1)', 'vultos: oclusão raio ×', 'vultos: semente',
       'vultos: altura média (m)', 'vultos: altura variação (m)', 'vultos: estatura variação',
       'vultos: folga paredes (m)', 'vultos: folga bola (m)', 'vultos: espaço pessoal (m)',
@@ -701,6 +740,7 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['Sala & Geometria', [
       'cor (0/1)', 'fundo: claridade (dark)', 'sala: wash (0-1)', 'sala: wash matiz',
       'luz indireta', 'indireta: área°', 'indireta: luz ×',
+      'sala: albedo base',
       'refl: chão', 'refl: teto', 'refl: paredes fundo', 'refl: paredes laterais',
       'sala: pé-direito (m)',
       'pilares: vão entre filas (m)', 'pilares: passo na fila (m)', 'pilares: lado (m)',

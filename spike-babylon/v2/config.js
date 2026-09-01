@@ -10,6 +10,11 @@ window.CONFIG = {
   ballCenter: [0.5, 0.53],   // posição do centro (fração da largura/altura)
   facetRows: 48,             // filas de latitude (32 original → 48: espelhos a 2/3, ~2.25× tiles) (tiles quadrados → equador tem ~2·facetRows tiles)
   rotationRpm: 1.0,          // rotação real de uma bola (0.5–3 rpm)
+  /* K1 (2026-09-01): cadência da cadeia de cinza → vertex color (ball.js:899, antes hardcoded
+     `COLOR_HZ=20`). Ao VIVO, sem rebuild — `computeColors` já lê o cronómetro a cada frame; só
+     muda de quanto em quanto tempo ele recalcula. Piso 10 (abaixo disso a rotação "engasga"
+     visualmente), teto 60 (acima disso não ganha nada, é 1 frame). */
+  colorHz: 20,               // knob 'bola: cadeia Hz' (10-60)
   spots: [                   // pinspots FORA do ecrã; az/el em graus a partir da câmara; radius = raio do foco na
                              // superfície (em raios da bola, DIÂMETRO CONSTANTE — não pulsa com a intensidade)
     // Rig realista (docs/lighting-design-research.md): 2 pinspots OPOSTOS ao nível do equador,
@@ -263,6 +268,14 @@ window.CONFIG = {
   },
   floorWoodColor: [0.10, 0.075, 0.055], // tom de madeira escura do chão — knob 'sala: chão madeira' (RGB fixo, sem knob de cor individual; sujeito a colorOn)
 
+  /* K1 (2026-09-01): albedo BASE (0-1, escalar aplicado às 3 componentes RGB) de teto/paredes de
+     fundo/paredes laterais (room.js:37, antes hardcoded `BASE_ALBEDO=[0.055,0.055,0.055]`). NÃO
+     toca no chão (`floorWoodColor`, tom próprio) nem nos pilares (`pillars.albedo`, também à
+     parte) — só as 3 superfícies que a `BASE_ALBEDO` de hoje cobre. ⟳ reload: os materiais
+     (`ceilMat`/`backMat`/`sideMat`) só se criam uma vez no build de `buildRoom`; o multiplicador
+     `reflMul.*` (acima) continua a atuar AO VIVO por cima deste valor, como hoje. */
+  baseAlbedo: 0.055,          // knob 'sala: albedo base' (0-1, ⟳ reload)
+
   /* ---- F10 (David, 2026-09-01): refletividade por superfície — multiplicador do albedo (0-3,
      default 1) de cada material de sala; ao vivo, SEM rebuild (room.js: applyXReflMul()). Confirmado
      por leitura de dots.js: os pontos refletidos pela mirror ball são thin instances de UM material
@@ -299,6 +312,15 @@ window.CONFIG = {
   hats: {
     on: true,                  // knob 'chapéus (0/1)'
     count: 12,                 // knob 'chapéus: quantos' (0-12; 12 = 6 por linha)
+    /* K1 (2026-09-01): tamanho do POOL de chapéus (meshes pré-criadas no arranque, hats.js:48).
+       ⟳ reload — o pool só se aloca uma vez, no build. Mesmo valor de hoje (MAX_HATS=12), fica
+       como fallback em hats.js. `count` (acima) continua a ser quantos chapéus estão ATIVOS dentro
+       do pool — nunca pode passar de `maxCount`. */
+    maxCount: 12,               // knob 'chapéus: máx' (⟳ reload)
+    /* K1: teto de PointLight de chapéu SIMULTÂNEAS que pintam a sala (hats.js:356). Teto DURO 4 no
+       código — WebGL2 rebenta o shader dos materiais (maxSimultaneousLights:12) acima disso — o
+       knob só pode DESCER, nunca subir esse teto (ver `Math.min(4, knob)` em hats.js). */
+    maxLiveLights: 4,           // knob 'chapéus: luzes vivas máx' (teto duro 4 no código)
     glow: 0.35,                // knob 'chapéus: brilho' (emissivo contínuo, dourado quente ~#d9a640)
     flashPerMin: 8,            // knob 'chapéus: flash /min' (0 = nunca; Poisson no CONJUNTO TODO, não por chapéu)
 
@@ -445,6 +467,14 @@ window.CONFIG = {
      linha de web/music.js muda). Sem motor, o modo autónomo (`autoPerMin`) mantém o mikado vivo. */
   mikado: {
     on: true,                  // knob 'mikado (0/1)'
+    /* K1 (2026-09-01): tamanho do POOL de barras/blocos (mikado.js:88/:155 — meshes e materiais
+       pré-alocados no arranque). ⟳ reload — o pool só se cria uma vez no build. Mesmo valor de
+       hoje (MAX_BARS=112, MAX_BLOCKS=12), ficam como fallback em mikado.js. `densityPerM2` (abaixo)
+       continua a ser quem decide QUANTAS barras estão ativas dentro do pool — nunca pode passar de
+       `maxBars`; `blockSize` decide em quantos blocos se agrupam os flashes, nunca mais que
+       `maxBlocks`. */
+    maxBars: 112,               // knob 'mikado: máx barras' (⟳ reload)
+    maxBlocks: 12,               // knob 'mikado: máx blocos' (⟳ reload)
     // ---- geometria (⟳ ao vivo via rebuild(), não exige reload) ----
     /* F12 §1: DENSIDADE em barras/m² da zona central (retângulo dos pilares menos a folga), em vez
        de uma contagem absoluta. Ao mexer na geometria da sala (vão/passo dos pilares) a malha
@@ -505,6 +535,12 @@ window.CONFIG = {
      DOIS tempos, ou seja `bpm/120` Hz (1,45 Hz a 174 BPM). */
   crowd: {
     on: true,                    // knob 'vultos (0/1)' — SÓ o David
+    /* K1 (2026-09-01): tamanho do POOL de vultos (crowd.js:85 — 8 meshes/pessoa pré-criadas no
+       arranque, mais o Float32Array de oclusão dimensionado a partir daqui). ⟳ reload — o pool só
+       se aloca uma vez, no build. Mesmo valor de hoje (MAX_PEOPLE=80), fica como fallback em
+       crowd.js. `densityPerM2` (abaixo) continua a decidir quantas pessoas estão ativas dentro do
+       pool — nunca pode passar de `maxPeople`. */
+    maxPeople: 80,               // knob 'vultos: pool' (⟳ reload)
     densityPerM2: 0.30,          // knob 'vultos: densidade (p/m²)' — 0,30 × ~103 m² ≈ 31 pessoas
     lum: 1.0,                    // knob 'vultos: luminosidade' — quanto a luz da sala os revela
     opacity: 1.0,                // knob 'vultos: opacidade' — 1 = opacos (alpha do material)
