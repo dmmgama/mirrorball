@@ -1607,7 +1607,12 @@ function fireStrobe(why, n) {
   // §RAJADA: um disparo isolado sai às vezes como 3-4 flashadas seguidas (o David: 'como num clube')
   if ((n | 0) <= 1 && S.burstN && RNG2() < (S.burstChance || 0)) n = Math.round(rng2Range(S.burstN));
   const k = Math.max(1, n | 0), lv = () => S.level[0] + RNG2() * (S.level[1] - S.level[0]);
-  for (let i = 0; i < k; i++) { if (i === 0) MB.strobe({ level: lv() }); else setTimeout(() => MB.strobe({ level: lv() }), i * 360); }
+  /* `fromMotor:true` — auditoria de sync (2026-09-01). Sem a flag, o `motorAllowed()` da bola
+     (v2/main.js) devolvia SEMPRE true e o disjuntor 'focos+flashes: motor manda' não filtrava nada
+     vindo daqui: o estrobo do motor passava com o disjuntor a 0. A flag só marca a ORIGEM — o
+     estrobo que o David dispara da consola continua a passar, como sempre. */
+  const fireOne = () => MB.strobe({ level: lv(), fromMotor: true });
+  for (let i = 0; i < k; i++) { if (i === 0) fireOne(); else setTimeout(fireOne, i * 360); }
   state.strobeCount = (state.strobeCount || 0) + 1;
 }
 function fireFlash(why, n) {
@@ -1617,8 +1622,13 @@ function fireFlash(why, n) {
   if (now - state.lastFlashT < F.minGapMs) return;
   const k = Math.max(1, n | 0);
   for (let i = 0; i < k; i++) { // rajada: o 1º agora, os outros escalonados ≥ minGapMs (nunca > 3 Hz)
+    /* `fromMotor:true` — auditoria de sync (2026-09-01): sem a flag o `motorAllowed()` da bola
+       devolvia sempre true e o disjuntor do painel não filtrava os flashes do motor. Aqui a guarda
+       `spotsMotor === false` acima (:1615) já cortava, mas a redundância é intencional (brief F5:
+       disjuntor dos DOIS lados) e é o que faz a flag valer nos outros caminhos. */
     const fire = () => MB.flash({ intensity: F.intensity[0] + RNG2() * (F.intensity[1] - F.intensity[0]),
-                                   len: (F.lenMs[0] + RNG2() * (F.lenMs[1] - F.lenMs[0])) / 1000 });
+                                   len: (F.lenMs[0] + RNG2() * (F.lenMs[1] - F.lenMs[0])) / 1000,
+                                   fromMotor: true });
     if (i === 0) fire(); else setTimeout(fire, i * F.minGapMs * 1.05);
   }
   state.lastFlashT = now + (k - 1) * F.minGapMs * 1.05; state.flashCount++;
@@ -2106,8 +2116,18 @@ function applyToBall(o, gestInfo) {
   const opDip = o.opacity * (1 - MUSIC.hat.opacityDip * (state.hatLevel || 0));
   const opAcc = opDip + (1 - opDip) * MUSIC.snare.opacityKick * (state.snareAccent || 0);
   if (C.opacityMotor !== false) C.sphereOpacity = clamp(opAcc, MUSIC.outMin.opacity, 1);   // override do painel d ('opacidade: motor manda' = 0)
-  C.spotFadeMix = 0;   // §3.6: os fades internos (11/17/13 s) não são períodos musicais
-  if (C.choreo) C.choreo.flashRate = 0; // os flashes Poisson internos da bola (0.6/s, aleatórios) não são música: em music só o motor dispara
+  /* §3.6: com o motor a mandar nos focos, os relógios INTERNOS da bola calam-se — os fades
+   * (11/17/13 s) não são períodos musicais e os flashes Poisson (0.6/s) não são música; em `music`
+   * quem dispara é o motor.
+   * ⚠ Auditoria de sync (2026-09-01): estes dois writes eram INCONDICIONAIS e corriam a 60 Hz, por
+   * isso apagavam o que o David pusesse nos knobs 'focos: fade mix' / 'flash: por s' 60 vezes por
+   * segundo — o slider mexia e o valor evaporava-se. Passam para trás do MESMO disjuntor dos
+   * vizinhos (`spotsMotor`, o de :2147 e o de `fireFlash`): com 'focos+flashes: motor manda' a 0
+   * quem manda é o painel, incluindo nestes dois. Com o disjuntor ON (default) nada muda. */
+  if (C.spotsMotor !== false) {
+    C.spotFadeMix = 0;
+    if (C.choreo) C.choreo.flashRate = 0;
+  }
   // ⚠ NADA de setSkinAuto aqui (§0.1 ponto 1): a skin é do utilizador, ponto final.
   if (MB.setHealth && MB.getHealth() !== state.health) MB.setHealth(state.health);
 

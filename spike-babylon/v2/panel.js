@@ -86,6 +86,9 @@ const RENAMED = {
   // F13 §2: deixou de ser um mostrador de runtime e passou a ser um knob a sério (persistido).
   // O nome antigo ("motor manda") mentia: com o disjuntor a 0 quem manda é ele, o slider.
   'sphereOpacity (motor manda)': 'bola: opacidade (0-1)',
+  // Auditoria de knobs (2026-09-01): é um SELETOR e o nome não dizia o que os números querem dizer.
+  // Passa a trazer a legenda, como os outros seletores do painel.
+  'estrelato: chapéus gesto': 'estrelato: chapéus gesto (0=juntos/1=seq/2=alt)',
 };
 function migrate(obj) {
   if (!obj || typeof obj !== 'object') return {};
@@ -122,6 +125,8 @@ export async function initPanel(CONFIG, hooks = {}) {
   // F11: geometria do mikado (mikado.rebuild() ao vivo) e toggle da bola (esconde a bola E regenera
   // o mikado, porque a clareira depende de a bola estar montada ou não — spec §4).
   const onMikadoGeomChanged = hooks.onMikadoGeomChanged || noop;
+  // só o agrupamento dos flashes ('mikado: tam. bloco') — não re-sorteia a disposição das barras
+  const onMikadoRegroup = hooks.onMikadoRegroup || noop;
   const onBallToggleChanged = hooks.onBallToggleChanged || noop;
   // F12 §3: altura da bola ao vivo — regenera a clareira do mikado e refresca o probe (a bola
   // mudou de sítio, o reflexo tem de ser recalculado a partir da cota nova).
@@ -198,7 +203,14 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['cone: largura máx', 1, 3, 0.1, v => CONFIG.incidentMaxWidth = v, () => CONFIG.incidentMaxWidth],
     ['cone: teto (raios)', 0.03, 0.4, 0.01, v => CONFIG.incidentMaxPx = v, () => CONFIG.incidentMaxPx],
     ['feixes: fração máx (motor modula)', 0, 1, 0.05, v => { CONFIG.beamFractionMax = v; CONFIG.beamFraction = v; }, () => CONFIG.beamFractionMax],
-    ['feixes: compr. 3D (fase 3)', 0.5, 8, 0.1, v => CONFIG.beamLen3D = v, () => CONFIG.beamLen3D],
+    /* ⚠ REMOVIDO na auditoria de knobs (2026-09-01): 'feixes: compr. 3D (fase 3)' (CONFIG.beamLen3D).
+       Era um knob MORTO. `beams.js:277` lê-o só como FALLBACK de `beamLen` — e `config.js` define
+       sempre `beamLen: 6`, por isso o fallback nunca disparava: mexer no slider não fazia nada
+       (provado ao vivo: beamLen3D=12 → zero efeito; beamLen=2 → efeito imediato). Quem faz o
+       trabalho é 'feixes: comprimento'. `CONFIG.beamLen3D` FICA no config (o `?mini` de main.js:1040
+       usa-o como semente, e a bola Canvas 2D também) — o que desaparece é só o slider.
+       Regra 9(c): um `mb2.knobs`/preset antigo que traga esta chave é IGNORADO sem partir o load
+       (o `knobsSet` itera os sliders conhecidos, não as chaves do ficheiro). */
     ['feixes: largura°', 0.1, 4, 0.05, v => CONFIG.beamWidthDeg = v, () => CONFIG.beamWidthDeg],
     ['feixes: base ×', 0.1, 2, 0.05, v => CONFIG.beamBaseMul = v, () => CONFIG.beamBaseMul],
     ['feixes: dispersão', 0, 1, 0.02, v => CONFIG.beamSoft = v, () => CONFIG.beamSoft],
@@ -235,6 +247,13 @@ export async function initPanel(CONFIG, hooks = {}) {
       // e voltava ao valor do config — parecia que "não dava para fixar". Com o disjuntor a 0 este
       // é um knob de afinação como outro qualquer, e um knob de afinação grava-se.
       'bola: opacidade (0-1)',
+      /* Auditoria de knobs (2026-09-01): PASSA A PERSISTIR. O corte `slice(0, rotationIdx)` é
+         EXCLUSIVO, por isso o próprio 'rotationRpm' — que é um dos 7 FAVORITES, o knob mais mexido
+         do painel — caía fora do PERSIST e voltava ao default a cada reload. Mesmo argumento da
+         'bola: opacidade' acima: com 'feixes+haze: motor manda' a 0 quem manda é o slider, e um
+         knob de afinação grava-se. ('health (motor manda)' fica DE FORA de propósito: é runtime
+         puro do motor/health, não uma afinação do David.) */
+      'rotationRpm (motor manda)',
     ])
   );
 
@@ -426,7 +445,10 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['mikado: flash Hz', 0.2, 3, 0.1, v => CONFIG.mikado.hz = Math.min(3, v), () => CONFIG.mikado.hz],
     ['mikado: flashes/rajada', 1, 8, 1, v => CONFIG.mikado.burst = v, () => CONFIG.mikado.burst],
     ['mikado: modo (0=todas/1=blocos)', 0, 1, 1, v => CONFIG.mikado.mode = v, () => CONFIG.mikado.mode],
-    ['mikado: tam. bloco', 1, 12, 1, v => { CONFIG.mikado.blockSize = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.blockSize],
+    /* ⚠ `onMikadoRegroup`, NÃO `onMikadoGeomChanged` (auditoria de knobs, 2026-09-01): o tamanho do
+       bloco é do AGRUPAMENTO dos flashes, não da geometria. Com o hook de geometria, arrastar este
+       slider chamava `rebuild()` → `generate()` e re-sorteava a disposição inteira das barras. */
+    ['mikado: tam. bloco', 1, 12, 1, v => { CONFIG.mikado.blockSize = v; onMikadoRegroup(); }, () => CONFIG.mikado.blockSize],
     ['mikado: cor (0=rot)', 0, 3, 1, v => CONFIG.mikado.color = v, () => CONFIG.mikado.color],
     ['mikado: luz sala ×', 0, 3, 0.05, v => CONFIG.mikado.lightMul = v, () => CONFIG.mikado.lightMul],
     // triggers musicais (spec §7)
@@ -458,7 +480,8 @@ export async function initPanel(CONFIG, hooks = {}) {
     // chapéus sob comando do estrelato. ⚠ 'chapéus Hz' TEM teto 3 — regra invariável da sala.
     ['estrelato: chapéus Hz', 0.2, 3, 0.1,
       v => CONFIG.stardom.hatsHz = Math.min(3, v), () => CONFIG.stardom.hatsHz],
-    ['estrelato: chapéus gesto', 0, 2, 1, v => CONFIG.stardom.hatsGesture = v, () => CONFIG.stardom.hatsGesture],
+    // legenda no nome (padrão dos outros seletores do painel) — auditoria de knobs, 2026-09-01
+    ['estrelato: chapéus gesto (0=juntos/1=seq/2=alt)', 0, 2, 1, v => CONFIG.stardom.hatsGesture = v, () => CONFIG.stardom.hatsGesture],
     ['estrelato: chapéus aux /min', 0, 60, 1, v => CONFIG.stardom.auxPerMin = v, () => CONFIG.stardom.auxPerMin],
 
     /* ---- F15 (David, 2026-09-01, docs/f15-vultos.md): VULTOS — pessoas a dançar ----
@@ -579,7 +602,7 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['Névoa & Feixes', [
       'haze máx (motor modula)', 'feixes: fração máx (motor modula)', 'feixes: intensidade',
       'feixes: largura°', 'feixes: dispersão', 'feixes: comprimento', 'feixes: base ×',
-      'feixes: glow z', 'feixes: glow ×', 'feixes: compr. 3D (fase 3)', 'cone incidente',
+      'feixes: glow z', 'feixes: glow ×', 'cone incidente',
       'cone: alcance', 'cone: largura máx', 'cone: teto (raios)', 'auréola',
     ]],
     ['Sala', [
@@ -630,7 +653,7 @@ export async function initPanel(CONFIG, hooks = {}) {
       'estrelato: viés bola', 'estrelato: viés mikado', 'estrelato: viés chapéus',
       'estrelato: viés smooth', 'estrelato: não repetir',
       'estrelato: frase (compassos)', 'estrelato: rampa s', 'estrelato: auto s',
-      'estrelato: chapéus Hz', 'estrelato: chapéus gesto', 'estrelato: chapéus aux /min',
+      'estrelato: chapéus Hz', 'estrelato: chapéus gesto (0=juntos/1=seq/2=alt)', 'estrelato: chapéus aux /min',
     ]],
     ['Pós & Skin', [
       'bloom: força', 'bloom: limiar', 'bloom: raio px', 'grão', 'vinheta',

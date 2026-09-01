@@ -475,14 +475,37 @@ export function createMikado(scene, CONFIG) {
       out.push({ x: cx, y, z: cz, yaw, pitch, len });
     }
 
-    /* BLOCOS: grupos CONSECUTIVOS de `blockSize` barras (spec §5: "grupos de 4-6 barras"). O índice
-       de bloco fixa-se aqui (não muda por frame) — o modo "blocos" acende um bloco de cada vez. */
-    const bs = clamp(Math.round(num(cfg.blockSize, 5)), 1, 12);
-    for (let i = 0; i < out.length; i++) out[i].block = Math.floor(i / bs) % MAX_BLOCKS;
-
     generated = out;
     lastArea = areaM2;
+    regroup(false);   // atribui `block` a cada barra (ver `regroup()` abaixo)
     return out;
+  }
+
+  /* ---- BLOCOS: grupos CONSECUTIVOS de `blockSize` barras (spec §5: "grupos de 4-6 barras") ----
+     O índice de bloco é fixo (não muda por frame) — o modo "blocos" acende um bloco de cada vez.
+
+     ⚠ Isto é DELIBERADAMENTE separado do `generate()`. Auditoria de knobs (2026-09-01): o knob
+     'mikado: tam. bloco' chamava `onMikadoGeomChanged()` → `rebuild()` → `generate()`, e o
+     `generate()` re-sorteia a disposição TODA (posições, ângulos, comprimentos). Arrastar um knob
+     que só devia mudar o AGRUPAMENTO dos flashes re-sorteava o mikado inteiro a cada passo do
+     slider. `blockSize` não entra na geometria de barra nenhuma: só decide quem acende com quem.
+     Agora o knob chama `regroup()` — reescreve `.block` sobre as barras que já lá estão.
+
+     `resetCursor` só é `true` quando quem chama é o KNOB (a máquina de flashes já existe). No
+     arranque o `generate()` chama-o com `false`: o `st` é um `const` declarado mais abaixo (:626) e
+     o primeiro `rebuild()` (:619) corre ANTES disso — tocar-lhe aqui dava TDZ (e `typeof` não
+     salva: sobre um `const` na TDZ o próprio `typeof` atira ReferenceError). Mesma armadilha
+     documentada no `enabledPlan` (:495). */
+  function regroup(resetCursor) {
+    const bs = clamp(Math.round(num(M().blockSize, 5)), 1, 12);
+    for (let i = 0; i < generated.length; i++) generated[i].block = Math.floor(i / bs) % MAX_BLOCKS;
+    /* O cursor e o bloco aceso referem-se à numeração ANTIGA — com menos blocos ficariam a apontar
+       para um bloco que já não existe (o `update()` compara `bar.block === st.litBlock`, e um
+       litBlock órfão deixava o mikado apagado até à rajada seguinte). Repõe-se o estado neutro. */
+    if (resetCursor) {
+      st.blockCursor = 0;
+      if (st.litBlock >= nBlocks()) st.litBlock = -1;
+    }
   }
 
   /* ---- aplicar a geometria gerada às meshes do pool (só no rebuild, nunca por frame) ----
@@ -817,8 +840,14 @@ export function createMikado(scene, CONFIG) {
     lights,
     update,
     rebuild,
+    // só o AGRUPAMENTO dos flashes (knob 'mikado: tam. bloco'), sem re-sortear a disposição
+    regroup: () => regroup(true),
     get barCount() { return generated.length; },
     get litBlock() { return st.litBlock; },
+    /* Diagnóstico (auditoria de knobs, 2026-09-01): o plano de blocos — `[block por barra]`. Serve
+       para verificar pela consola que 'mikado: tam. bloco' reagrupa SEM re-sortear a disposição
+       (as posições ficam iguais, este array muda). Cópia: ninguém escreve no `generated` de fora. */
+    get blockPlan() { return generated.map(g => g.block); },
     // F12 §1: área do miolo (m²) usada para derivar a contagem — o HUD mostra-a ao lado das barras,
     // para o David ver de onde vem o número quando muda a geometria da sala.
     get areaM2() { return lastArea; },

@@ -1,7 +1,7 @@
 // v2/main.js — esqueleto do spike v2 (Fase 1): engine, sala, câmara, luzes mínimas, loop/HUD, painel `d`.
 // A malha da bola é responsabilidade do Opus (v2/ball.js); aqui só se importa dinamicamente com stub de recurso.
 import { buildRoom } from './room.js?v=4';
-import { initPanel } from './panel.js?v=16';
+import { initPanel } from './panel.js?v=17';
 import { applyColorToggle, hueToRgb } from './colorutil.js?v=1';
 
 const CONFIG = window.CONFIG;
@@ -162,7 +162,14 @@ function resetCameraPose() {
   camera.target.z = num(CONFIG.ballZEffective, 0);
   camera.target.y = num(CONFIG.ballYEffective, num(CONFIG.ballHeightM, 3.5) - 3.5);
 }
-addEventListener('keydown', (e) => { if (e.key === '0') resetCameraPose(); });
+/* Guard INPUT/TEXTAREA/SELECT (padrão de :1502-1505). Sem ele, escrever "0" num campo numérico do
+   painel saltava a câmara para a pose inicial — a auditoria de knobs (2026-09-01) apanhou isto. */
+addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = e.target && e.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (e.key === '0') resetCameraPose();
+});
 
 /* ---------------- F13.5: pose da câmara para os PRESETS ----------------
    Um preset grava `{alpha,beta,radius,ty}` e aplica-o com um LERP suave (default 1,2 s) — em modo
@@ -406,7 +413,7 @@ try {
    escrito o `bola (0/1)` do localStorage. Ver o bloco F11 lá em cima. */
 let mikado = null;
 try {
-  const mod = await import('./mikado.js?v=8');
+  const mod = await import('./mikado.js?v=9');
   mikado = mod.createMikado(scene, CONFIG);
   console.log('mikado.js carregado —', mikado.barCount, 'barras.');
   /* mesmo fix S9 "parede de luz" dos robots: as PointLight do flash do mikado são fortes e estão
@@ -1144,6 +1151,15 @@ const panelApi = await initPanel(CONFIG, {
       if (ball && ball.refreshProbe) ball.refreshProbe();
     } catch (e) { console.error('mikado.rebuild:', e); }
   },
+  /* Auditoria de knobs (2026-09-01): 'mikado: tam. bloco' NÃO é geometria — só decide que barras
+     acendem juntas no modo "blocos". Estava ligado ao `onMikadoGeomChanged` e portanto re-sorteava
+     a disposição inteira a cada passo do slider (as barras saltavam de sítio a arrastar um knob de
+     flashes). `regroup()` reescreve só o `.block` das barras que já lá estão — sem rebuild, sem
+     refreshProbe (nada se moveu, a reflexão da bola continua válida). */
+  onMikadoRegroup: () => {
+    try { if (mikado && mikado.regroup) mikado.regroup(); }
+    catch (e) { console.error('mikado.regroup:', e); }
+  },
   /* F11: 'bola (0/1)' — esconder/mostrar a bola muda TAMBÉM o mikado: com a bola montada abre-se a
      CLAREIRA à volta dela (spec §4, foto lux-barras2); sem bola, stack completo no centro. Por isso
      este toggle regenera o mikado. `applyBallVisibility()` corre no frame seguinte (loop). */
@@ -1336,7 +1352,12 @@ function setSkin(mode) {
   // S8: a skin é escolha do utilizador (Regra 1) — sobrevive ao reload (localStorage['mb2.toggles']).
   if (panelApi && panelApi.persistToggles) panelApi.persistToggles();
 }
+// Guard INPUT/TEXTAREA/SELECT (padrão de :1502-1505): escrever um "w" num campo de texto do painel
+// (nome de preset, p. ex.) trocava a skin. Auditoria de knobs, 2026-09-01.
 addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = e.target && e.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   if (e.key === 'w' || e.key === 'W') setSkin(CONFIG.skin === 'white' ? 'dark' : 'white');
 });
 if (skinBtn) { skinBtn.onclick = () => setSkin(CONFIG.skin === 'white' ? 'dark' : 'white'); syncSkinBtn(); }
@@ -1909,7 +1930,7 @@ console.log('MB2 pronto —', engine.isWebGPU ? 'WebGPU' : 'WebGL2');
       MUSIC_BASES[0] + ').');
     // Ids de DOM esperados pelos 3 scripts: só `#mus` (web/music.js:2388, HUD tecla `m`) — já existe
     // em v2/index.html, escondido por omissão (.on liga/desliga, mesmo padrão do Canvas 2D).
-    const files = ['core.js?v=1', 'music.js?v=58', 'tuner.js?v=1'];
+    const files = ['core.js?v=1', 'music.js?v=59', 'tuner.js?v=1'];
     let i = 0;
     function next() {
       if (i >= files.length) { console.log('[F5 music] core.js/music.js/tuner.js carregados.'); return; }
