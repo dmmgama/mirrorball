@@ -73,6 +73,10 @@ export async function initPanel(CONFIG, hooks = {}) {
   const onSpotsChanged = hooks.onSpotsChanged || noop;
   const onShadeChanged = hooks.onShadeChanged || noop;
   const onBgGreyChanged = hooks.onBgGreyChanged || noop;
+  // ---- Fase 8: wash/cor (ao vivo, sem rebuild) + dimensões da sala (exigem reload — ver painel) ----
+  const onWashChanged = hooks.onWashChanged || noop;
+  const onColorToggleChanged = hooks.onColorToggleChanged || noop;
+  const onRoomDimChanged = hooks.onRoomDimChanged || noop;
 
   const CH = CONFIG.choreo, AMB = CONFIG.ambient;
   // 'health' é mecânico (placeholder local) até o Opus criar window.MIRRORBALL.setHealth/getHealth
@@ -201,6 +205,32 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['explosão: alcance (radial)', 0.5, 4, 0.05, v => CONFIG.explode.radial = v, () => CONFIG.explode.radial],
     ['explosão: deriva s', 1, 14, 0.1, v => CONFIG.explode.driftSec = v, () => CONFIG.explode.driftSec],
     ['explosão: pausa s', 0, 6, 0.05, v => CONFIG.explode.hold = v, () => CONFIG.explode.hold],
+    // ---- Fase 8 (Sonnet, 2026-08-31): sala real do Lux Frágil — dimensões, wash, chapéus, cor ----
+    // dimensões: mudar exige RELOAD (a sala/pilares/chapéus só se constroem uma vez no arranque —
+    // não há rebuild ao vivo da geometria da sala, ao contrário de 'espelhos: filas' que só
+    // reconstrói a bola). `onRoomDimChanged` avisa no #err, não faz onRebuildBall.
+    ['sala: largura (m)', 4, 30, 0.5,
+      v => { CONFIG.roomWidthM = v; CONFIG.room.halfW = v / 2; onRoomDimChanged(); }, () => CONFIG.roomWidthM],
+    ['sala: comprimento (m)', 4, 40, 0.5,
+      v => { CONFIG.roomDepthM = v; CONFIG.room.back = -v / 2; onRoomDimChanged(); }, () => CONFIG.roomDepthM],
+    ['sala: pé-direito (m)', 3, 10, 0.1,
+      v => { CONFIG.roomHeightM = v; CONFIG.room.ceil = v - (3.5); onRoomDimChanged(); }, () => CONFIG.roomHeightM],
+    // cor: geral (afeta wash/chapéus/chão/pilares — a bola/espelhos/feixes continuam sempre
+    // greyscale, regra 6 do CLAUDE.md). Default 1 (decisão do David 2026-08-31).
+    ['cor (0/1)', 0, 1, 1, v => { CONFIG.colorOn = v >= 0.5; onColorToggleChanged(); }, () => (CONFIG.colorOn === false ? 0 : 1)],
+    // wash ambiente azul profundo
+    ['sala: wash (0-1)', 0, 1, 0.02, v => { CONFIG.wash.intensity = v; onWashChanged(); }, () => CONFIG.wash.intensity],
+    ['sala: wash matiz', 0, 360, 2, v => { CONFIG.wash.hue = v; onWashChanged(); }, () => CONFIG.wash.hue],
+    // chapéus de latão
+    ['chapéus (0/1)', 0, 1, 1, v => { CONFIG.hats.on = v >= 0.5; }, () => (CONFIG.hats.on === false ? 0 : 1)],
+    ['chapéus: quantos', 0, 12, 1, v => CONFIG.hats.count = v, () => CONFIG.hats.count],
+    ['chapéus: brilho', 0, 2, 0.02, v => CONFIG.hats.glow = v, () => CONFIG.hats.glow],
+    ['chapéus: flash /min', 0, 30, 0.5, v => CONFIG.hats.flashPerMin = v, () => CONFIG.hats.flashPerMin],
+    // altura da BASE (boca) do chapéu ao chão — F8 autoritativo: 2,5 m (o doc mede a base).
+    ['chapéus: altura (m)', 1.5, 5, 0.05, v => CONFIG.hats.heightM = v, () => CONFIG.hats.heightM],
+    // robots de teto (F8, 2026-09-01): 4 corpos à face do teto, cone estreito vermelho para a pista.
+    ['robots (0/1)', 0, 1, 1, v => { CONFIG.robots.on = v >= 0.5; }, () => (CONFIG.robots.on === false ? 0 : 1)],
+    ['robots: luz', 0, 1.5, 0.02, v => CONFIG.robots.intensity = v, () => CONFIG.robots.intensity],
   ];
   for (const s of newSliders) { sliders.push(s); PERSIST.add(s[0]); }
 
@@ -222,6 +252,10 @@ export async function initPanel(CONFIG, hooks = {}) {
     'espelhos: alinhados (0/1)', 'espelhos: junta larg. (real)', 'espelhos: junta var. (real)',
     'corrente (0/1)', 'corrente: elo (raios)',
   ]);
+  // ⟳ = slider que exige RELOAD da página (F8: dimensões da sala — a geometria só se constrói uma
+  // vez no arranque, não há rebuild ao vivo). Marcado à parte de REBUILD (⏫, que só reconstrói a
+  // malha da bola) para não prometer um efeito imediato que o slider não dá.
+  const RELOAD = new Set(['sala: largura (m)', 'sala: comprimento (m)', 'sala: pé-direito (m)']);
   const spotHueNames = [];
   for (let i = 0; i < 6; i++) spotHueNames.push('spot' + i + ': matiz°');
   const GROUPS = [
@@ -253,6 +287,11 @@ export async function initPanel(CONFIG, hooks = {}) {
       'pontos na parede (densidade)', 'pontos: escala', 'pontos: queda', 'pontos: teto cinza',
       'luz indireta', 'indireta: área°', 'indireta: luz ×', 'corpos (0/1)', 'corpos: escala',
       'corpos: lente ×', 'corpos: haste (0/1)', 'fundo: claridade (dark)',
+      // ---- Fase 8: dimensões (RELOAD), wash, chapéus, cor ----
+      'sala: largura (m)', 'sala: comprimento (m)', 'sala: pé-direito (m)', 'cor (0/1)',
+      'sala: wash (0-1)', 'sala: wash matiz',
+      'chapéus (0/1)', 'chapéus: quantos', 'chapéus: brilho', 'chapéus: flash /min', 'chapéus: altura (m)',
+      'robots (0/1)', 'robots: luz',
     ]],
     ['Pós & Skin', [
       'bloom: força', 'bloom: limiar', 'bloom: raio px', 'grão', 'vinheta',
@@ -387,8 +426,10 @@ export async function initPanel(CONFIG, hooks = {}) {
   function mkRow(name, mn, mx, st, set, get, { fav } = {}) {
     const lab = document.createElement('label');
     if (REBUILD.has(name)) lab.classList.add('rebuild');
+    if (RELOAD.has(name)) lab.classList.add('rebuild'); // mesmo destaque visual do ⏫ (amarelo) — só muda o ícone/tooltip
     const span = document.createElement('span'); span.textContent = name;
     if (REBUILD.has(name)) { const rb = document.createElement('span'); rb.className = 'rb'; rb.textContent = ' ⏫'; rb.title = 'reconstrói a malha'; span.appendChild(rb); }
+    if (RELOAD.has(name)) { const rl = document.createElement('span'); rl.className = 'rb'; rl.textContent = ' ⟳'; rl.title = 'exige recarregar a página (F5)'; span.appendChild(rl); }
     const val = document.createElement('input');
     val.type = 'number'; val.step = st; val.min = mn; val.max = mx;
     val.value = fmt(get(), st);

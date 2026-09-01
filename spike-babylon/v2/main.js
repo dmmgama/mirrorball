@@ -1,7 +1,8 @@
 // v2/main.js — esqueleto do spike v2 (Fase 1): engine, sala, câmara, luzes mínimas, loop/HUD, painel `d`.
 // A malha da bola é responsabilidade do Opus (v2/ball.js); aqui só se importa dinamicamente com stub de recurso.
-import { buildRoom } from './room.js';
-import { initPanel } from './panel.js?v=2';
+import { buildRoom } from './room.js?v=2';
+import { initPanel } from './panel.js?v=4';
+import { applyColorToggle, hueToRgb } from './colorutil.js?v=1';
 
 const CONFIG = window.CONFIG;
 const canvas = document.getElementById('rc');
@@ -80,8 +81,37 @@ function resetCameraPose() {
 }
 addEventListener('keydown', (e) => { if (e.key === '0') resetCameraPose(); });
 
-/* ---------------- sala implícita: 5 planos ---------------- */
+/* ---------------- sala implícita: 5 planos + F8 pilares/chão de madeira ---------------- */
 const room = buildRoom(scene, CONFIG);
+
+/* ---------------- F8: chapéus de latão — import dinâmico (v2/hats.js) ----------------
+   Carregado AQUI (antes do ball.js/attachProbe mais abaixo) para os meshes existirem a tempo de
+   entrarem na renderList do ReflectionProbe — é o coração da F8: a bola TEM de os espelhar. */
+let hats = null;
+try {
+  const mod = await import('./hats.js?v=5');
+  hats = mod.createHats(scene, CONFIG);
+  console.log('hats.js carregado.');
+} catch (err) {
+  moduleFail('hats.js', err);
+}
+
+/* ---------------- F8: robots de teto — import dinâmico (v2/robots.js) ----------------
+   Como os chapéus, carregados ANTES do ball.js/attachProbe para os corpos entrarem na renderList do
+   ReflectionProbe (a bola espelha o rig do teto). Ver o cabeçalho de robots.js para as regras. */
+let robots = null;
+try {
+  const mod = await import('./robots.js?v=2');
+  robots = mod.createRobots(scene, CONFIG);
+  console.log('robots.js carregado.');
+  /* fix S9 "parede de luz" aplicado aos robots: um cone estreito e intenso a bater no chão/parede
+     torra o plano inteiro para branco (albedo baixo × I alto = saturação). Os 5 planos ficam de fora;
+     pilares e chapéus NÃO (objetos estreitos a meio da sala — o cone tocar-lhes é realismo, e não há
+     "parede" atrás deles para se torrar). A BOLA é excluída mais abaixo (excludeBallFromRobots). */
+  for (const L of robots.lights) L.excludedMeshes.push(...room.planes);
+} catch (err) {
+  moduleFail('robots.js', err);
+}
 
 /* ---------------- luzes mínimas ----------------
    Para i < spotCount: SpotLight na posição dirFromAzEl(az,el)·spotDist, apontada ao centro.
@@ -204,6 +234,30 @@ function updateShadeLight() {
   hemi.direction = dirFromAzEl(CONFIG.shade.az, CONFIG.shade.el).scale(-1);
   hemi.intensity = CONFIG.shade.key * 0.25;
 }
+
+/* ---------------- F8: wash ambiente azul profundo (grupo Sala, 'sala: wash'/'sala: wash matiz') ----
+   Luz própria da SALA (distinta da "luz indireta" `ambient0-2` acima, que é a coreografia de focos
+   largos que a bola reflete) — banha paredes/pilares/chão o suficiente para se LEREM os espelhos da
+   bola no escuro (feedback S9: "as salas têm luz — ela não vem só dos focos que atingem a bola").
+   1 HemisphericLight fraca com direção fixa de cima (cobre toda a sala, barata) tingida a azul
+   profundo (hue default 230, ref. ~#1a2a66) — sujeita ao toggle 'cor (0/1)' via applyColorToggle. */
+const washHemi = new BABYLON.HemisphericLight('washHemi', new BABYLON.Vector3(0, 1, 0), scene);
+washHemi.groundColor = new BABYLON.Color3(0, 0, 0);
+washHemi.specular = new BABYLON.Color3(0, 0, 0); // só luz difusa ambiente — não marca glint (regra 6 é da bola, mas evita "estourar" os espelhos)
+function updateWash() {
+  const W = CONFIG.wash || {};
+  const inten = Math.max(0, num(W.intensity, 0.35));
+  const [r, g, b] = applyColorToggle(CONFIG, ...hueToRgb(num(W.hue, 230), 0.55, 1));
+  // escala calibrada a olho no Chrome (tab visível, screenshot real): com albedo ~0.05-0.10 das
+  // paredes/pilares/chão, `×0.6` (tentativa inicial) ficava indistinguível do fundo (bgGrey=7,
+  // quase preto) — o David pediu explicitamente luz que se LEIA nas paredes/espelhos (feedback S9).
+  // `×3.4` no default (0.35) dá um wash moderado mas nitidamente visível; a 1.0 (topo do knob)
+  // fica bem mais forte, ainda sem lavar a bola (que não recebe luz própria, regra 6).
+  washHemi.intensity = inten * 3.4;
+  washHemi.diffuse.set(r, g, b);
+  room.applyFloorColor(); // 'cor (0/1)' também recolapsa o tom de madeira do chão
+}
+updateWash();
 
 /* ---------------- luz indireta: 3 RectAreaLight (ambient.n) ----------------
    Posicionadas em dirFromAzEl(az,el)·(spotDist+1), viradas para a bola, largura/altura
@@ -329,7 +383,13 @@ try {
   const mod = await import('./ball.js');
   ball = mod.createBall(scene, CONFIG);
   console.log('ball.js carregado —', ball && ball.tiles, 'tiles');
-  if (ball.attachProbe) ball.attachProbe(room.planes); // sala refletida nos espelhos (ONCE)
+  // F8: pilares + chapéus + robots de teto entram na renderList do probe — a bola tem de espelhar a
+  // sala real (paredes+pilares+chapéus+rig), não só as 5 paredes. Meshes desligados
+  // (setEnabled(false), sem hats montados ainda) também podem entrar: o probe só desenha o que está
+  // enabled no refresh ONCE.
+  const probeList = [...room.planes, ...(room.pillars || []), ...((hats && hats.meshes) || []),
+    ...((robots && robots.meshes) || [])];
+  if (ball.attachProbe) ball.attachProbe(probeList); // sala refletida nos espelhos (ONCE)
 } catch (err) {
   moduleFail('ball.js', err);
   const stubMat = new BABYLON.PBRMaterial('stubMat', scene);
@@ -346,6 +406,41 @@ try {
   };
 }
 window.__MB2_ball = ball; // para o painel chamar rebuild() sem import circular
+
+/* ---------------- F8 (regra do David, 2026-08-31): "nenhum foco inferior" ----------------
+   Toda a incidência de luz na bola tem de vir de um corpo REAL montado em posição FIXA (teto/
+   estrutura); nunca de baixo do equador para cima. Os chapéus (hats.js) têm a base a 2,5 m (centro
+   ~3,0 m) — ABAIXO do centro da bola (3,5 m) — logo o PointLight de flash de cada chapéu, se atingisse a bola,
+   seria exatamente esse foco inferior proibido (o chapéu está fisicamente por baixo do equador).
+   Os chapéus são luz de AMBIENTE DE SALA (o brilho dourado contínuo/flash é lido pela bola só via o
+   ReflectionProbe — reflexo do MATERIAL emissivo, não da PointLight), não focos dedicados à bola:
+   por isso a PointLight de flash exclui explicitamente a bola (mesh/core/bone/chain), preservando o
+   efeito na sala (pilares/chão/paredes) sem violar a regra.
+   Idempotente e chamada TODOS os frames (barato: só `Set.has` + push condicional) porque `ball.chain`/
+   `ball.chainHook` só se materializam no 1º `buildChain()` (dentro do 1º `ball.update()`, que corre
+   DEPOIS deste ponto do módulo) — um único disparo aqui apanhava a bola/core mas perdia a corrente.
+
+   F8 (2026-09-01): a MESMA exclusão aplica-se aos ROBOTS DE TETO (robots.js) — esses vêm de CIMA,
+   mas também não são focos da bola: são luz de PISTA. Se iluminassem a bola diretamente, somavam-se
+   à incidência dos `CONFIG.spots` e lavavam os espelhos com uma fonte que o rig real não aponta à
+   bola. A bola vê-os só como CORPOS refletidos no probe (que é o que se vê nas fotos). */
+const ballExcluded = new Map(); // luz -> Set de meshes já excluídas dessa luz
+function excludeBallFrom(lights) {
+  if (!lights || !ball) return;
+  const parts = [ball.mesh, ball.core, ball.bone, ball.chain, ball.chainHook].filter(Boolean);
+  for (const L of lights) {
+    let seen = ballExcluded.get(L);
+    if (!seen) { seen = new Set(); ballExcluded.set(L, seen); }
+    const fresh = parts.filter(m => !seen.has(m));
+    if (!fresh.length) continue;
+    for (const m of fresh) seen.add(m);
+    L.excludedMeshes.push(...fresh);
+  }
+}
+function excludeBallFromRoomLights() {
+  if (hats && hats.lights) excludeBallFrom(hats.lights);
+  if (robots && robots.lights) excludeBallFrom(robots.lights);
+}
 
 /* ---------------- feixes refletidos + cone incidente: import dinâmico (API do Opus/Sonnet) ----------------
    beams.js pode ainda não existir (Opus em paralelo) — tolera com try/catch, tal como o ball.js. */
@@ -478,12 +573,35 @@ function beamCount() {
 /* ---------------- painel `d` ---------------- */
 // S8: `initPanel` é async (carrega `knobs-default.json` — camada de defaults do spike fora do código,
 // prioridade localStorage > knobs-default.json > config.js). main.js é um módulo com top-level await.
+let panelReady = false; // ver onRoomDimChanged: a reposição inicial de localStorage não deve avisar "recarrega a página"
 const panelApi = await initPanel(CONFIG, {
   onRebuildBall: () => { try { ball && ball.rebuild && ball.rebuild(); } catch (e) { console.error(e); } },
   onSpotsChanged: () => { rebuildSpotLights(); },
   onShadeChanged: () => { updateShadeLight(); },
   onBgGreyChanged: () => { applyBgGrey(); },
+  // F8: wash/cor atuam AO VIVO (sem rebuild) — 'cor (0/1)' também recolapsa o chão de madeira.
+  onWashChanged: () => { updateWash(); },
+  onColorToggleChanged: () => { updateWash(); },
+  // F8: dimensões da sala (largura/comprimento/pé-direito) só se aplicam num RELOAD — a geometria
+  // da sala/pilares/chapéus só se constrói uma vez no arranque (sem rebuild ao vivo, ver comentário
+  // em config.js). Avisa alto no #err (mesmo padrão do moduleFail) em vez de silenciosamente não
+  // fazer nada — o David mexe o slider, vê logo porque "não aconteceu nada".
+  onRoomDimChanged: () => {
+    // ⚠ o painel chama `set()` para TODOS os knobs persistidos no arranque (para repor localStorage
+    // — mesmo padrão de onSpotsChanged/onShadeChanged), o que dispararia este aviso mesmo sem o
+    // David ter tocado em nada. `panelReady` (mais abaixo) só fica true depois do painel terminar
+    // essa reposição inicial — antes disso, ignora-se em silêncio.
+    if (!panelReady) return;
+    try {
+      const d = document.getElementById('err');
+      if (d && !/dimensões da sala mudaram/.test(d.textContent)) {
+        d.style.display = 'block';
+        d.textContent = 'dimensões da sala mudaram — recarrega a página (F5) para aplicar.\n' + d.textContent;
+      }
+    } catch (e) { /* sem DOM */ }
+  },
 });
+panelReady = true;
 // bónus (§7 do brief F4): sliders re-lêem CONFIG quando escrito pela consola — `MB2.refreshPanel()`.
 function refreshPanel() { if (panelApi && panelApi.refresh) panelApi.refresh(); }
 
@@ -825,6 +943,7 @@ let frameEma = 16, dotDensityLive = num(CONFIG.dotDensity, 0.8);
    entra no caminho da explosão. */
 const E = { spotGain: 1, rotationRpm: CONFIG.rotationRpm, sphereOpacity: CONFIG.sphereOpacity, haze: CONFIG.haze, skinMix: 0,
   choreoGain: [], flashes: choreo.flashes, exS: 0, exFloat: 0, angle0: 0 };
+let hatsProbeRefreshed = false; // F8: força um refresh extra do probe assim que os chapéus se posicionam (ver hats.update abaixo)
 scene.registerBeforeRender(() => {
   const now = performance.now();
   const dt = Math.min(0.1, (now - lastFrame) / 1000);
@@ -892,6 +1011,22 @@ scene.registerBeforeRender(() => {
   if (fixtures && fixtures.update) {
     try { fixtures.update(ball && ball.mountedSpots, E); }
     catch (e) { console.error('fixtures.update:', e); }
+  }
+  if (hats && hats.update) {
+    try { hats.update(tSec, dt); }
+    catch (e) { console.error('hats.update:', e); }
+  }
+  if (robots && robots.update) {
+    try { robots.update(); }
+    catch (e) { console.error('robots.update:', e); }
+  }
+  excludeBallFromRoomLights(); // F8 (regra "nenhum foco inferior" + robots) — idempotente, ver acima
+  // F8: chapéus e robots só ficam posicionados/ativados DEPOIS do 1º update() acima (attachProbe
+  // correu antes disso, com os meshes ainda em posição/estado por omissão) — força mais UM refresh
+  // do probe assim que souberem onde estão, para a bola os espelhar na posição certa desde já.
+  if (!hatsProbeRefreshed && (hats || robots)) {
+    hatsProbeRefreshed = true;
+    if (ball && ball.refreshProbe) ball.refreshProbe();
   }
   updateHalo(E);
   updatePostFx(dk);

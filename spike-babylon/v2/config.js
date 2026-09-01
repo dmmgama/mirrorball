@@ -1,5 +1,10 @@
 // v2/config.js — CONFIG copiado verbatim de web/index-v2.html (linhas 69-165) + chaves novas do spike Babylon.
 // window.CONFIG global (script normal, carregado antes de main.js type=module) — mesmo padrão do spike v1 (SPIKE_CFG).
+//
+// ---- ESCALA FÍSICA (F8, fixada 2026-08-31) ----
+// 1 raio da bola (mundo Babylon) = 1 METRO. Bola Ø 2,0 m (raio 1 = 1 m), fundo a 2,5 m do chão
+// (centro a 3,5 m = `room.floor` a -3.5), corrente ~1 m até ao teto. Todo o `CONFIG.room`/`spotDist`/
+// dimensões de sala abaixo estão em metros == raios da bola (docs/f8-sala-lux.md).
 window.CONFIG = {
   ballSizeVH: 0.52,          // diâmetro da bola em fração da altura do viewport
   ballCenter: [0.5, 0.53],   // posição do centro (fração da largura/altura)
@@ -7,17 +12,25 @@ window.CONFIG = {
   rotationRpm: 1.0,          // rotação real de uma bola (0.5–3 rpm)
   spots: [                   // pinspots FORA do ecrã; az/el em graus a partir da câmara; radius = raio do foco na
                              // superfície (em raios da bola, DIÂMETRO CONSTANTE — não pulsa com a intensidade)
-    // Rig realista (docs/lighting-design-research.md): 2 pinspots OPOSTOS ao nível/ligeiramente acima do
-    // equador (el 30-45°), nunca do lado do público (az≈0 é atrás da câmara) nem de cima; miram o equador.
+    // Rig realista (docs/lighting-design-research.md): 2 pinspots OPOSTOS ao nível do equador,
+    // nunca do lado do público (az≈0 é atrás da câmara) nem de cima; miram o equador.
     // A sala é 3D e a bola é o centro: az=0 é a direção do público (câmara). Fontes nos LADOS da sala, à frente
     // do plano da bola (|az| 40-60°), quase ao nível do equador — assim os espelhos da frente refletem para nós.
-    { az:  -52, el: 14, intensity: 1.00, radius: 0.16, period: 13, aim: [0, 0.03], on: true, hue: 210 },   // esquerda-frente
-    { az:   52, el: 12, intensity: 0.95, radius: 0.15, period: 17, aim: [0, 0.03], on: true, hue: 210 },   // direita-frente (oposto)
+    //
+    // ---- F8 (David, 2026-09-01): "focos que incidem na bola a H = 3,5 m = altura do EQUADOR" ----
+    // O corpo do foco fica em dirFromAzEl(az,el)·spotDist (main.js/ball.js), logo Y = sin(el)·spotDist.
+    // Com spotDist 6 e centro da bola a 3,5 m do chão, a altura FÍSICA da fonte é 3,5 + sin(el)·6:
+    //   el=0° → 3,50 m (equador, incidência horizontal — o "beam a rasar a bola" dos screenshots)
+    //   el=8° → 4,33 m · el=12° → 4,75 m · el=15° → 5,05 m (ainda abaixo do teto, 5,5 m)
+    // Por isso el fica em 0-15°: acima disso a fonte sairia pelo teto (el=30° → 6,5 m, impossível).
+    // el NUNCA negativo — foco inferior é proibido (não existe no rig real; regra do David).
+    { az:  -52, el:  6, intensity: 1.00, radius: 0.16, period: 13, aim: [0, 0.03], on: true, hue: 210 },   // esquerda-frente (fonte a ~4,1 m)
+    { az:   52, el:  4, intensity: 0.95, radius: 0.15, period: 17, aim: [0, 0.03], on: true, hue: 210 },   // direita-frente (oposto, ~3,9 m)
     // 3º/4º: nos LADOS (|az|≈82°), não atrás — a ±125° a mancha caía no hemisfério invisível e "não apareciam"
-    { az:  -82, el: 20, intensity: 0.80, radius: 0.15, period: 11, aim: [0, 0.05], on: true, hue: 210 },   // esquerda-lado (3º, opcional)
-    { az:   82, el: 20, intensity: 0.80, radius: 0.15, period: 19, aim: [0, 0.05], on: true, hue: 210 },   // direita-lado (4º, opcional)
-    { az:  -30, el: 30, intensity: 0.75, radius: 0.14, period: 23, aim: [0, 0], on: true, hue: 210 },      // 5º/6º: mais altos, só se o David quiser
-    { az:   30, el: 30, intensity: 0.75, radius: 0.14, period: 29, aim: [0, 0], on: true, hue: 210 },
+    { az:  -82, el: 10, intensity: 0.80, radius: 0.15, period: 11, aim: [0, 0.05], on: true, hue: 210 },   // esquerda-lado (~4,5 m)
+    { az:   82, el: 10, intensity: 0.80, radius: 0.15, period: 19, aim: [0, 0.05], on: true, hue: 210 },   // direita-lado (~4,5 m)
+    { az:  -30, el: 15, intensity: 0.75, radius: 0.14, period: 23, aim: [0, 0], on: true, hue: 210 },      // 5º/6º: os mais altos do rig (~5,05 m, junto ao teto)
+    { az:   30, el: 15, intensity: 0.75, radius: 0.14, period: 29, aim: [0, 0], on: true, hue: 210 },
   ],
   spotCount: 2,              // quantos pinspots estão montados (0-6; 0 = só luz indireta + flashes) — knob no painel d
   spotRadiusMul: 1.0,        // multiplicador global do raio dos focos — knob no painel d
@@ -27,7 +40,10 @@ window.CONFIG = {
     retarget: false,         // pinspots reais têm aim FIXO: o técnico trabalha o dimmer, não move o foco. Knob liga saltos.
     dwell: [4.0, 12.0],      // (se retarget) s que um foco fica no mesmo sítio antes de saltar
     move: 0.08,              // s do apagar e do acender na troca de sítio (o foco NUNCA anda: apaga, salta, acende)
-    azRange: [35, 130], elRange: [5, 30], aimMax: 0.35, // poses plausíveis: |az| lateral/traseiro (sinal sorteado), el 22-48°, mira perto do equador
+    // poses plausíveis: |az| lateral/traseiro (sinal sorteado), mira perto do equador.
+    // F8 (2026-09-01): elRange topo 30°→15° — com spotDist 6 e centro a 3,5 m, el=30° punha a fonte
+    // a 6,5 m, acima do teto (5,5 m). 0-15° = 3,5-5,05 m, dentro do pé-direito. Nunca negativo.
+    azRange: [35, 130], elRange: [0, 15], aimMax: 0.35,
     flashRate: 0.6,          // flashes/s em média (disparos curtos de posições plausíveis)
     flashLen: [0.09, 0.22],  // s de cada flash
     flashRadius: [0.10, 0.18], flashIntensity: [0.6, 1.0], flashSlots: 4,
@@ -82,7 +98,21 @@ window.CONFIG = {
   litSideGain: 0.55,         // facetas viradas para os spots refletem sala um pouco mais clara
   glintK: 24,                // expoente do pow(N·H, k) do brilho especular dentro do foco
   camDistance: 7.0,          // distância da câmara em raios da bola (perspetiva ligeira)
-  room: { halfW: 5.2, ceil: 4.2, floor: -5.0, back: -7.0 }, // sala implícita em raios
+  /* F8: sala real do Lux Frágil em METROS = raios da bola (docs/f8-sala-lux.md §"Dimensões
+     AUTORITATIVAS", David 2026-09-01: planta 15 × 10 m, pé-direito 5,5 m, bola ao CENTRO).
+
+     ---- MAPEAMENTO doc → Babylon (a única conversão; tudo o resto deriva daqui) ----
+     O doc usa coordenadas de CANTO: X ao longo do comprimento (0..15), Y ao longo da largura (0..10).
+     O mundo Babylon tem origem no CENTRO DA BOLA, que fica no centro da planta = doc (7,5 · 5,0):
+        Babylon Z = doc_X - 7.5   → Z ∈ [-7.5, +7.5]  (comprimento 15 m)
+        Babylon X = doc_Y - 5.0   → X ∈ [-5.0, +5.0]  (largura 10 m)
+        Babylon Y = altura_física - 3.5 (centro da bola a 3,5 m do chão)
+
+     Largura (X) 10 m → halfW 5.0. Pé-direito 5,5 m: floor -3.5 (chão), ceil +2.0 → 5,5 m de altura.
+     Comprimento (Z) 15 m: a sala é SIMÉTRICA em Z (room.js: roomD = |back|·2 e os planos chão/teto/
+     laterais centram-se em z=0), portanto back -7.5 → 15 m com a bola exatamente ao meio.
+     `roomWidthM/roomDepthM/roomHeightM` são os knobs do painel `d` (grupo Sala) — mudar exige reload. */
+  room: { halfW: 5.0, ceil: 2.0, floor: -3.5, back: -7.5 },
   dotFalloff: 0.028,         // atenuação dos pontos com a distância (1/(1+k·t²))
   grain: 0.032,              // grão de filme (alpha)
   vignette: 0.55,            // força da vinheta
@@ -152,4 +182,77 @@ window.CONFIG = {
   fixtureScale: 1.0,         // escala global do corpo (lata Ø0.12·isto, comprimento 0.18·isto) — knob 'corpos: escala'
   lensGain: 1.0,             // × intensidade do spot → emissiveColor da lente ("a lente segue o dimmer") — knob 'corpos: lente ×'
   fixtureStemOn: true,       // haste/yoke até ao teto/parede — knob 'corpos: haste (0/1)'
+
+  // ---- Fase 8 (Sonnet, 2026-08-31): sala real do Lux Frágil — dimensões, pilares, wash azul,
+  // chapéus de latão. Ver docs/f8-sala-lux.md. `roomWidthM/roomDepthM/roomHeightM` refletem
+  // `CONFIG.room` em metros (knobs legíveis no painel `d`); mudar qualquer um exige RELOAD da página
+  // (a sala/pilares/chapéus só se constroem uma vez no arranque — não há rebuild ao vivo da
+  // geometria da sala, ao contrário de `espelhos: filas` que só reconstrói a BOLA). ----
+  roomWidthM: 10.0,          // largura X da sala (m) — knob 'sala: largura (m)' (RELOAD)
+  roomDepthM: 15.0,          // comprimento Z da sala (m) — knob 'sala: comprimento (m)' (RELOAD)
+  roomHeightM: 5.5,          // pé-direito (m) — knob 'sala: pé-direito (m)' (RELOAD)
+
+  colorOn: true,             // 'cor (0/1)' — knob geral: 1 = wash/chapéus/chão/pilares a cor real;
+                             // 0 = tudo colapsa para luminância (grey = 0.2126r+0.7152g+0.0722b),
+                             // via util core.toGrey() aplicada quando a cor é ESCRITA (atua ao vivo,
+                             // sem rebuild). Default 1 (decisão do David 2026-08-31: cor é permitida,
+                             // greyscale passa a TOGGLE — a bola/espelhos/feixes continuam sempre
+                             // greyscale, regra 6 do CLAUDE.md; isto só afeta luzes/materiais da SALA).
+
+  /* pilares (F8 autoritativo, David 2026-09-01): **6** = 2 filas × **3**, secção **0,5 × 0,5 m**,
+     chão-teto. Doc: filas a 2,5 m das paredes laterais → doc_Y = 2,5 e 7,5 → Babylon X = ∓2.5
+     (halfX 2.5); 5 m entre eixos → doc_X = 2,5 / 7,5 / 12,5 → Babylon Z = -5 / 0 / +5 (spacingZ 5,
+     3 filas centradas em z=0 → o pilar do MEIO de cada fila fica ao nível da bola, como na planta). */
+  pillars: {
+    on: true, halfX: 2.5, section: 0.5, rows: 3, spacingZ: 5.0, albedo: [0.05, 0.05, 0.05],
+  },
+  floorWoodColor: [0.10, 0.075, 0.055], // tom de madeira escura do chão — knob 'sala: chão madeira' (RGB fixo, sem knob de cor individual; sujeito a colorOn)
+
+  // wash ambiente azul profundo — banha paredes/pilares/chão; é o que permite LER os espelhos da
+  // bola (feedback S9). Reaproveita as RectAreaLight `ambient0-2` já existentes (main.js) MAIS uma
+  // HemisphericLight fraca dedicada (`washHemi`) para cobrir sombras que as RectArea não alcançam.
+  wash: {
+    intensity: 0.35,          // knob 'sala: wash (0-1)'
+    hue: 230,                 // knob 'sala: wash matiz' (0-360, default azul profundo ~230, ref #1a2a66)
+  },
+
+  /* chapéus de latão: refletores parabólicos PENDURADOS DO TETO por haste/cabo visível, interior
+     dourado quente, piscam raramente (Poisson, NÃO contínuo). Ver v2/hats.js.
+
+     ---- F8 autoritativo (David, 2026-09-01) — mudou de anel oval para DUAS LINHAS RETAS ----
+     "12 chapéus, 6 por corredor lateral, em 2 linhas retas a 1 m de cada parede lateral,
+      igualmente espaçados ao longo dos 15 m, lâmpada Ø 1,0 m, base a 2,5 m do chão."
+     Doc: linhas em doc_Y = 1 e 9 → Babylon X = ∓4.0 (lineX 4.0, halfW 5.0 - 1 m da parede);
+     doc_X ≈ 1,25 / 3,75 / 6,25 / 8,75 / 11,25 / 13,75 (passo 2,5 m, meio-passo das pontas)
+     → Babylon Z = -6.25 / -3.75 / -1.25 / +1.25 / +3.75 / +6.25 (spacingZ 2.5, 6 por linha
+     centradas em z=0 — a mesma fórmula dos pilares).
+     `heightM` = altura da BASE (boca) do chapéu ao chão, 2,5 m (o doc mede a base, não o centro);
+     `lampDiameter` 1,0 m é a lâmpada/refletor. `tiltDeg` mantém-se para os inclinar para a pista. */
+  hats: {
+    on: true,                  // knob 'chapéus (0/1)'
+    count: 12,                 // knob 'chapéus: quantos' (0-12; 12 = 6 por linha)
+    glow: 0.35,                // knob 'chapéus: brilho' (emissivo contínuo, dourado quente ~#d9a640)
+    flashPerMin: 8,            // knob 'chapéus: flash /min' (0 = nunca; Poisson no CONJUNTO TODO, não por chapéu)
+    heightM: 2.5,              // knob 'chapéus: altura (m)' — altura da BASE (boca) ao chão
+    lineX: 4.0,                // |X| das 2 linhas (1 m de cada parede lateral, halfW 5.0)
+    spacingZ: 2.5,             // passo entre chapéus ao longo de Z (15 m / 6 = 2,5 m)
+    lampDiameter: 1.0,         // Ø da lâmpada/refletor (m)
+    tiltDeg: 25,               // inclinação a apontar para dentro/baixo (para a pista)
+  },
+
+  /* robots de teto (F8, David 2026-09-01 — confirmados nos screenshots 010406/010437/010531):
+     fixtures LED compactos montados PRATICAMENTE À FACE DO TETO (lente a ≤ 0,5 m do teto → Y do
+     corpo ≈ ceil - 0.35), aos PARES dos dois lados da bola, a projetar cones estreitos (vermelho nas
+     fotos) para a PISTA, inclinados ~20-30° da vertical (para dentro, na direção da bola/centro).
+     4 corpos: (X, Z) = (±3.5, ±3.5). Ver v2/robots.js.
+     A BOLA é excluída destes SpotLights (não são focos da bola; a bola vê-os só via o probe). */
+  robots: {
+    on: true,                  // knob 'robots (0/1)'
+    intensity: 0.45,           // knob 'robots: luz' (intensidade de cada SpotLight)
+    hue: 0,                    // matiz default VERMELHO (0°) — obedece ao toggle 'cor (0/1)'
+    halfX: 3.5, halfZ: 3.5,    // posição dos 4 corpos (±halfX, ±halfZ)
+    tiltDeg: 25,               // inclinação da vertical, a apontar para dentro (20-30°)
+    coneDeg: 12,               // meia-abertura do cone (estreito, "beam" e não wash)
+    dropM: 0.35,               // quanto o corpo desce do teto (lente fica a ≤0,5 m do teto)
+  },
 };

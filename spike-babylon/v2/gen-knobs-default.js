@@ -6,8 +6,10 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const V2 = path.resolve(__dirname, '../../../../../../David/AI/Projects/David/David - Projects/Ativos/MirrorBall/spike-babylon/v2');
-const ROOT = process.argv[2] || V2;
+// o script vive DENTRO de v2/ — `__dirname` já é a pasta certa. (Antes havia aqui uma cadeia
+// relativa `../../../../../..` para um caminho absoluto do disco do David, que rebentava com ENOENT
+// assim que se corria de outro cwd; 2026-09-01.)
+const ROOT = process.argv[2] || __dirname;
 
 const configSrc = fs.readFileSync(path.join(ROOT, 'config.js'), 'utf8');
 let panelSrc = fs.readFileSync(path.join(ROOT, 'panel.js'), 'utf8');

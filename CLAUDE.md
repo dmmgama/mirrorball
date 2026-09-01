@@ -36,8 +36,13 @@ MirrorBall-Start.bat / -Stop.bat            bola manual/câmara em :8080 (python
 3. **Bombo por banda** (`sub` 40-120 Hz + `subOnset`), **agudos por banda** (`hat` ≥6 kHz → feixes e tique de opacidade).
 4. **Densidade espectral → atividade**: muita informação = mais feixes/marcas/velocidade; pouca = subtil e lento (rpm exceto).
 5. **Gestos teatrais** nos breakdowns/builds (freeze, ghost, blind-spin, single-beam, fog, strobe-slow, breath), `all-on` no drop. Criatividade bem-vinda; "subtil" lê-se como "fraco".
-6. Tetos invioláveis da bola: `beamIntensity ≤ 0.18`, nada > 3 Hz, greyscale, a bola não emite luz.
+6. Tetos invioláveis da bola: `beamIntensity ≤ 0.18`, nada > 3 Hz, a bola não emite luz. **Cor é
+   permitida** (decisão F8, 2026-08-31): a sala/luzes têm cor real (Lux); greyscale passa a ser um
+   **toggle** — tem de existir sempre e funcionar, mas já não é o modo obrigatório.
 7. `NaN` mata feixes em silêncio (aconteceu): todo o knob novo em `state` tem de ter valor inicial.
+8. **Registo obrigatório na repo**: todos os dados técnicos da sala (dimensões, luzes) e as
+   afinações que forem sendo fixadas (chapéus, bola, wash, etc.) vão para `docs/f8-sala-lux.md`
+   (ou docs/ seguinte) na mesma sessão em que se decidem — nada fica só em memória/conversa.
 
 ## Memória durável — Hindsight bank `claude-code::MirrorBall`
 

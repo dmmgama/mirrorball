@@ -1,5 +1,14 @@
-// v2/room.js — sala implícita de 5 planos (mesmas medidas do CONFIG.room), material mate escuro.
-// ES module. buildRoom(scene, CONFIG) -> { planes }
+// v2/room.js — sala implícita de 5 planos (mesmas medidas do CONFIG.room) + F8: 2 filas de 3
+// pilares e chão de madeira escura. material mate escuro (paredes/teto/pilares) + material próprio
+// (chão). ES module. buildRoom(scene, CONFIG) -> { planes, pillars, material, floorMaterial }
+//
+// GEOMETRIA (F8 autoritativo, David 2026-09-01 — docs/f8-sala-lux.md): planta 15 (Z) × 10 (X) m,
+// pé-direito 5,5 m, BOLA AO CENTRO da planta (origem do mundo em XZ). A sala é simétrica em Z:
+// `roomD = |R.back|·2` e os planos chão/teto/laterais centram-se em z=0 — logo `back = -7.5` dá
+// Z ∈ [-7.5,+7.5] = 15 m com a bola exatamente ao meio. Não há plano frontal (z=+7.5): a frente
+// fica aberta para a câmara (o público), como já era antes desta fase.
+import { toGrey } from './colorutil.js?v=1';
+
 export function buildRoom(scene, CONFIG) {
   const R = CONFIG.room;
   const roomMat = new BABYLON.PBRMaterial('roomMat', scene);
@@ -22,37 +31,104 @@ export function buildRoom(scene, CONFIG) {
      que ela própria é). Corta o ciclo, mantém o PBR (a mesma resposta à luz de antes, sem as poças
      ovais que o StandardMaterial fazia) e ainda tira trabalho ao frame:
      medido nesta cena, render 143 ms → 20 ms. */
-  {
-    const px = new Uint8Array([10, 10, 10, 255]); // sala escura, constante em todas as direções
+  // helper partilhado: todo o PBRMaterial NOVO desta sala (chão, pilares) segue a MESMA regra —
+  // reflectionTexture PRÓPRIA quase preta, NUNCA cair no scene.environmentTexture (comentário acima).
+  function makeDarkCubeTexture(rgb) {
+    const px = new Uint8Array([rgb[0], rgb[1], rgb[2], 255]);
     try {
-      roomMat.reflectionTexture = new BABYLON.RawCubeTexture(
+      return new BABYLON.RawCubeTexture(
         scene, [px, px, px, px, px, px], 1,
         BABYLON.Engine.TEXTUREFORMAT_RGBA, BABYLON.Engine.TEXTURETYPE_UNSIGNED_BYTE,
         false, false, BABYLON.Texture.NEAREST_SAMPLINGMODE);
     } catch (e) {
-      // sem RawCubeTexture o ciclo volta — avisa alto, senão o sintoma é só "está tudo preto"
-      console.error('[MB2] room.js: RawCubeTexture falhou — a sala vai cair no scene.environmentTexture ' +
+      console.error('[MB2] room.js: RawCubeTexture falhou — o material vai cair no scene.environmentTexture ' +
         'e em WebGPU o frame fica preto (ver comentário em v2/room.js):', e);
+      return null;
     }
   }
+  roomMat.reflectionTexture = makeDarkCubeTexture([10, 10, 10]);
 
-  function plane(name, w, h, pos, rot) {
+  function plane(name, w, h, pos, rot, mat) {
     const p = BABYLON.MeshBuilder.CreatePlane(name, { width: w, height: h, sideOrientation: BABYLON.Mesh.DOUBLESIDE }, scene);
     p.position = pos;
     if (rot) p.rotation = rot;
-    p.material = roomMat;
+    p.material = mat || roomMat;
     p.receiveShadows = true;
     return p;
   }
 
   const roomW = R.halfW * 2, roomH = R.ceil - R.floor, roomD = Math.abs(R.back) * 2;
+
+  /* ---- F8: chão de madeira escura — tom próprio (ligeiramente quente), sujeito ao toggle
+     'cor (0/1)' (CONFIG.colorOn). Como o toggle tem de atuar AO VIVO sem rebuild da sala,
+     `floorMaterial` guarda o RGB "cor" original e `applyFloorColor()` escreve o albedo (cor ou
+     luminância) — chamado uma vez aqui e de novo pelo main.js sempre que o knob muda. */
+  const floorMat = new BABYLON.PBRMaterial('roomFloorMat', scene);
+  floorMat.metallic = 0;
+  floorMat.roughness = 0.85;
+  floorMat.backFaceCulling = false;
+  floorMat.maxSimultaneousLights = 12;
+  floorMat.reflectionTexture = makeDarkCubeTexture([12, 10, 8]);
+  const FLOOR_RGB = (CONFIG.floorWoodColor && CONFIG.floorWoodColor.length === 3)
+    ? CONFIG.floorWoodColor : [0.10, 0.075, 0.055];
+  function applyFloorColor() {
+    const on = CONFIG.colorOn !== false;
+    const [r, g, b] = on ? FLOOR_RGB : toGrey(FLOOR_RGB[0], FLOOR_RGB[1], FLOOR_RGB[2]);
+    floorMat.albedoColor.set(r, g, b);
+  }
+  floorMat.albedoColor = new BABYLON.Color3(0, 0, 0);
+  applyFloorColor();
+
   const planes = [
     plane('room_back',  roomW, roomH, new BABYLON.Vector3(0, (R.ceil + R.floor) / 2, R.back)),
-    plane('room_floor', roomW, roomD, new BABYLON.Vector3(0, R.floor, 0), new BABYLON.Vector3(Math.PI / 2, 0, 0)),
+    plane('room_floor', roomW, roomD, new BABYLON.Vector3(0, R.floor, 0), new BABYLON.Vector3(Math.PI / 2, 0, 0), floorMat),
     plane('room_ceil',  roomW, roomD, new BABYLON.Vector3(0, R.ceil, 0),  new BABYLON.Vector3(-Math.PI / 2, 0, 0)),
     plane('room_left',  roomD, roomH, new BABYLON.Vector3(-R.halfW, (R.ceil + R.floor) / 2, 0), new BABYLON.Vector3(0, Math.PI / 2, 0)),
     plane('room_right', roomD, roomH, new BABYLON.Vector3( R.halfW, (R.ceil + R.floor) / 2, 0), new BABYLON.Vector3(0, -Math.PI / 2, 0)),
   ];
 
-  return { planes, material: roomMat };
+  /* ---- F8: pilares — 2 filas de 3 caixas (secção 0,5×0,5 m, chão-teto), a ±halfX=2.5 em X (2,5 m
+     das paredes laterais, halfW 5.0), espaçadas spacingZ=5 m em Z e CENTRADAS na sala: com rows=3 o
+     `zSpan/2` põe os eixos em Z = -5 / 0 / +5, ou seja o pilar do MEIO de cada fila fica ao nível da
+     bola — exatamente a planta do doc (doc_X = 2,5/7,5/12,5, doc_Y = 2,5/7,5). Material próprio
+     escuro (PBR albedo ~0.05) — MESMA regra da reflectionTexture própria (ver acima). Os pilares
+     entram no array `pillars` devolvido: (a) o main.js junta-os a `room.planes` para a bola os
+     espelhar (ReflectionProbe — é o coração da F8, o David quer os espelhos a mostrarem a sala real);
+     (b) NÃO entram em `light.excludedMeshes` dos SpotLights — ao contrário dos 5 planos (fix S9
+     "parede de luz": o pinspot continuava até à parede oposta e torrava-a), os pilares são objetos
+     estreitos a meio da sala — um pinspot pode legitimamente iluminar a face de um pilar que
+     atravessa (realismo: sombra/mancha no pilar), e não há "parede" a torrar-se por trás deles. */
+  const pillarMat = new BABYLON.PBRMaterial('pillarMat', scene);
+  const PA = (CONFIG.pillars && CONFIG.pillars.albedo) || [0.05, 0.05, 0.05];
+  pillarMat.albedoColor = new BABYLON.Color3(PA[0], PA[1], PA[2]);
+  pillarMat.metallic = 0;
+  pillarMat.roughness = 0.9;
+  pillarMat.maxSimultaneousLights = 8;
+  pillarMat.reflectionTexture = makeDarkCubeTexture([8, 8, 8]);
+
+  const pillars = [];
+  const PC = CONFIG.pillars || {};
+  if (PC.on !== false) {
+    const halfX = num(PC.halfX, 2.5), sec = num(PC.section, 0.5);
+    const rows = Math.max(1, Math.round(num(PC.rows, 3))), spacingZ = num(PC.spacingZ, 5.0);
+    const pillarH = roomH;
+    const cy = (R.ceil + R.floor) / 2;
+    const zSpan = (rows - 1) * spacingZ;
+    const z0 = -zSpan / 2;
+    for (let side = -1; side <= 1; side += 2) {
+      for (let row = 0; row < rows; row++) {
+        const z = z0 + row * spacingZ;
+        const box = BABYLON.MeshBuilder.CreateBox('pillar_' + (side < 0 ? 'L' : 'R') + row,
+          { width: sec, depth: sec, height: pillarH }, scene);
+        box.position.set(side * halfX, cy, z);
+        box.material = pillarMat;
+        box.receiveShadows = true;
+        pillars.push(box);
+      }
+    }
+  }
+
+  function num(v, d) { return Number.isFinite(v) ? v : d; }
+
+  return { planes, pillars, material: roomMat, floorMaterial: floorMat, applyFloorColor };
 }
