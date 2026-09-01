@@ -5,3 +5,5 @@ node_modules/
 # só, não gita — recriar com `cmd /c mklink /J web\spike spike-babylon` (PowerShell) se preciso.
 web/spike
 spike-fases/
+
+.claude/worktrees/
