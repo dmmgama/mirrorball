@@ -60,7 +60,19 @@ import { applyColorToggle, toGrey } from './colorutil.js?v=1';
 function num(v, d) { return Number.isFinite(v) ? v : d; }
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
-const MAX_BARS = 48;          // pool fixo (o knob 'mikado: barras' vai até 44; folga para não realocar)
+/* Pool FIXO de barras. F12 §1: a contagem já não é um knob direto — deriva de `mikado: barras/m²`
+   × área do miolo (ver `generate()`), e este teto é o limite FÍSICO do pool (nunca se realoca nada).
+   48 (F11) chegava para a sala nominal, mas com a sala esticada nos knobs ⟳ a densidade pedia mais
+   e ficava silenciosamente cortada — o "escala uniforme" deixava de ser verdade e o David não tinha
+   como saber porquê. 96 cobre a sala nominal (~52 m²) até à densidade máxima do knob (1,6) e uma
+   sala grande (~110 m²) até ~0,65. Custo: 6 meshes pequenas por barra, criadas UMA vez no arranque
+   e desligadas quando não usadas (regra 2 — `setEnabled` acompanha sempre a contagem), mais 12
+   materiais de tubo partilhados que não mudam; NENHUMA luz nova (o pool de PointLight do mikado
+   continua a ser 4, fixo). Parou-se em 72 e não mais: as barras entram TODAS na renderList do
+   ReflectionProbe (a bola tem de as espelhar) e cada uma custa 6 draws por face do cubo.
+   Quando a densidade pede mais do que o pool, o `generate()` avisa na consola em vez de cortar em
+   silêncio — a alternativa era o knob dizer uma coisa e a sala mostrar outra. */
+const MAX_BARS = 72;
 const MIN_GAP_S = 1 / 3;      // teto ABSOLUTO de 3 Hz entre flashes (regra invariável da sala)
 
 /* Paleta fixada na spec: vermelho, branco, azul. Ordem = índice do knob 'mikado: cor (0=rot)'.
@@ -85,6 +97,15 @@ function makeRng(seed) {
 
 export function createMikado(scene, CONFIG) {
   const M = () => CONFIG.mikado || {};
+  /* F12 §5: multiplicador do ESTRELATO (v2/stardom.js). 1 = neutro (comportamento da F11); perto
+     de 0 = o mikado está a servir outra peça e recolhe. Afeta a PROBABILIDADE de a rajada arrancar
+     e o brilho de REPOUSO — nunca o teto de 3 Hz, que é invariável e continua clampado no
+     agendador. Se o stardom não existir (módulo desligado/ausente) devolve 1: o mikado corre como
+     antes, sem saber que o sistema existe. */
+  const starGain = () => {
+    const g = CONFIG.stardom && CONFIG.stardom.gain;
+    return g ? clamp(num(g.mikado, 1), 0, 2) : 1;
+  };
 
   /* ---- materiais (regra 1: reflectionTexture PRÓPRIA em TODOS) ---- */
   function makeDarkCube(rgb) {
@@ -221,6 +242,8 @@ export function createMikado(scene, CONFIG) {
          menos de (raio da bola + margem) do centro da bola. É isso que abre o buraco da
          lux-barras2. Com a bola OFF a rejeição não se aplica → stack completo. */
   let generated = [];   // [{ x,y,z, yaw, pitch, len, block }]
+  let lastArea = 0;      // F12 §1: área (m²) do miolo do último `generate()` — HUD/diagnóstico
+  let warnedPool = false; // F12 §1: já avisou que a densidade estourou o pool? (avisa uma vez só)
 
   // distância mínima de um SEGMENTO 3D ao centro da bola (para a clareira)
   function segDistToBall(p0, p1, c) {
@@ -257,7 +280,29 @@ export function createMikado(scene, CONFIG) {
     const yCenter = Math.min(yCenterRaw, ceilY - spread / 2 - 0.18);
 
     const layers = Math.max(1, Math.round(num(cfg.layers, 5)));
-    const nWant = clamp(Math.round(num(cfg.count, 36)), 0, MAX_BARS);
+
+    /* ---- F12 §1: a CONTAGEM deriva da DENSIDADE (barras/m² da zona central) ----
+       Antes o knob era uma contagem ABSOLUTA: ao mexer nos knobs ⟳ da sala (vão entre filas / passo
+       na fila), o miolo crescia ou encolhia e as mesmas 40 barras ficavam ora esparsas ora
+       entulhadas — a malha mudava de leitura sem o David ter tocado no mikado. Com barras/m² a
+       leitura fica INVARIANTE: a área do retângulo dos pilares (já com a folga `inset` aplicada, que
+       é a zona onde as barras podem mesmo nascer) multiplica a densidade e dá a contagem.
+       Com o default 6 m × 10 m de miolo menos a folga → ~52 m², e `densidade` 0,77 dá as MESMAS ~40
+       barras do default da F11 (continuidade visual: quem não mexer em nada vê o mesmo mikado).
+       `MAX_BARS` continua a ser o teto do pool — a densidade nunca pode estourá-lo.
+       O determinismo da semente NÃO muda: o RNG é consumido pela mesma ordem, só o número de
+       sorteios aceites é diferente; com a mesma sala e a mesma semente, a disposição é a mesma. */
+    const areaM2 = Math.max(0.5, (2 * halfX) * (2 * halfZ));
+    const dens = Math.max(0, num(cfg.densityPerM2, 0.77));
+    const nRaw = Math.round(areaM2 * dens);
+    const nWant = clamp(nRaw, 0, MAX_BARS);
+    // teto do pool atingido: avisa UMA vez (senão a densidade mentia em silêncio — ver MAX_BARS)
+    if (nRaw > MAX_BARS && !warnedPool) {
+      warnedPool = true;
+      console.warn('[MB2] mikado: a densidade pedia ' + nRaw + ' barras (' + dens.toFixed(2) +
+        '/m² × ' + areaM2.toFixed(0) + ' m²) mas o pool tem ' + MAX_BARS +
+        ' — a malha fica MAIS ESPARSA do que o knob diz. Baixa "mikado: barras/m²".');
+    }
     const lenMin = Math.max(0.5, num(cfg.lenMinM, 3.0));
     const lenMax = Math.max(lenMin, num(cfg.lenMaxM, 7.0));
     const pitchMax = clamp(num(cfg.pitchDeg, 6), 0, 30) * Math.PI / 180;
@@ -266,7 +311,20 @@ export function createMikado(scene, CONFIG) {
        Raio de rejeição = raio da bola (1 m = 1 raio) + margem do knob (default 0,5 m). */
     const ballOn = CONFIG.ballOn !== false;
     const clearR = ballOn ? Math.max(0, 1 + num(cfg.ballClearM, 0.5)) : -1;
-    const ballC = { x: 0, y: 0, z: 0 };   // a bola está na origem do mundo Babylon
+    /* F12 §3: a bola já não está fixa na origem — o slider 'bola: altura (m)' desloca-a em Y, e a
+       CLAREIRA tem de acompanhar. Sem isto, subir a bola para dentro do mikado fazia-a atravessar
+       as barras (e descê-la deixava um buraco no ar onde já não está nada).
+       ⚠ Lê-se `CONFIG.ballYEffective` (a cota JÁ CLAMPADA que o ball.js publica), NUNCA o knob em
+       cru: o ball.js impede a bola de sair da sala, e derivar a cota do knob dava um valor
+       diferente sempre que esse clamp entrasse. Medido antes da correção: com pé-direito 5 m e o
+       knob a 4,2 m, a bola parava em +0,25 mas a clareira abria a +0,70 → barras a ATRAVESSAR a
+       bola (distância mínima 0,85 quando o exigido era 1,50).
+       Fallback para o knob só enquanto o ball.js ainda não correu (arranque). */
+    const ballC = {
+      x: 0,
+      y: num(CONFIG.ballYEffective, num(CONFIG.ballHeightM, 3.5) - 3.5),
+      z: 0,
+    };
 
     const out = [];
     let guard = 0;
@@ -319,6 +377,7 @@ export function createMikado(scene, CONFIG) {
     for (let i = 0; i < out.length; i++) out[i].block = Math.floor(i / bs) % MAX_BLOCKS;
 
     generated = out;
+    lastArea = areaM2;
     return out;
   }
 
@@ -472,6 +531,13 @@ export function createMikado(scene, CONFIG) {
     const cfg = M();
     if (tSec - st.lastFlashAt < MIN_GAP_S) return false;
     if (st.burstLeft > 0) return false;                      // já há rajada a decorrer
+    /* F12 §5: o ESTRELATO decide se o mikado tem palco agora. É um filtro PROBABILÍSTICO no
+       arranque da rajada (e não um mute do resultado) por duas razões: uma rajada começada nunca é
+       cortada a meio — lê-se como avaria —, e com ganho intermédio o mikado rareia em vez de
+       enfraquecer, que é como um técnico o usaria. Com ganho 0 (estrelato dos chapéus: exclusão
+       mútua) não arranca rajada nenhuma. */
+    const sg = starGain();
+    if (sg < 1 && Math.random() >= sg) return false;
     st.burstLeft = clamp(Math.round(num(cfg.burst, 2)), 1, 8);
     st.nextAt = tSec;
     // COR: fixa (1-3) ou rotação (0) — a rotação avança UMA vez por rajada, nunca dentro dela
@@ -598,7 +664,10 @@ export function createMikado(scene, CONFIG) {
        o mikado apagado da lux-barras2, que também é um estado legítimo).
        O toggle 'cor (0/1)' passa por `applyColorToggle` — em greyscale o mikado fica branco/cinza,
        como manda o brief. */
-    const idle = Math.max(0, num(cfg.idle, 0.12));
+    /* F12 §5: o repouso também recolhe com o estrelato — mas nunca até zero (`0.35 + 0.65·g`): as
+       barras têm de continuar a ler-se como objetos no teto quando outra peça é a estrela, senão o
+       mikado DESAPARECE da sala e a sala parece ter mudado de geometria. */
+    const idle = Math.max(0, num(cfg.idle, 0.12)) * (0.35 + 0.65 * starGain());
     const gain = Math.max(0, num(cfg.flashGain, 2.6));
     const base = PALETTE[st.colorIdx % PALETTE.length];
     const [cr, cg, cb] = applyColorToggle(CONFIG, base[0], base[1], base[2]);
@@ -646,5 +715,8 @@ export function createMikado(scene, CONFIG) {
     rebuild,
     get barCount() { return generated.length; },
     get litBlock() { return st.litBlock; },
+    // F12 §1: área do miolo (m²) usada para derivar a contagem — o HUD mostra-a ao lado das barras,
+    // para o David ver de onde vem o número quando muda a geometria da sala.
+    get areaM2() { return lastArea; },
   };
 }

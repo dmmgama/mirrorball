@@ -84,6 +84,9 @@ export async function initPanel(CONFIG, hooks = {}) {
   // o mikado, porque a clareira depende de a bola estar montada ou não — spec §4).
   const onMikadoGeomChanged = hooks.onMikadoGeomChanged || noop;
   const onBallToggleChanged = hooks.onBallToggleChanged || noop;
+  // F12 §3: altura da bola ao vivo — regenera a clareira do mikado e refresca o probe (a bola
+  // mudou de sítio, o reflexo tem de ser recalculado a partir da cota nova).
+  const onBallHeightChanged = hooks.onBallHeightChanged || noop;
 
   const CH = CONFIG.choreo, AMB = CONFIG.ambient;
   // 'health' é mecânico (placeholder local) até o Opus criar window.MIRRORBALL.setHealth/getHealth
@@ -260,7 +263,16 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['chapéus (0/1)', 0, 1, 1, v => { CONFIG.hats.on = v >= 0.5; }, () => (CONFIG.hats.on === false ? 0 : 1)],
     ['chapéus: quantos', 0, 12, 1, v => CONFIG.hats.count = v, () => CONFIG.hats.count],
     ['chapéus: brilho', 0, 2, 0.02, v => CONFIG.hats.glow = v, () => CONFIG.hats.glow],
-    ['chapéus: flash /min', 0, 30, 0.5, v => CONFIG.hats.flashPerMin = v, () => CONFIG.hats.flashPerMin],
+    /* F12 §4: os chapéus a SÉRIO. `flash /min` continua a ser a frequência de uso (agora também a
+       do motor, via estrelato); a FORÇA passa a knob (o flash da F8 era "levezinho" — David); o
+       MODO escolhe o gesto: sozinhos (o Poisson da F8), todos juntos, ou a sequência ponta-a-ponta
+       SIMÉTRICA nas duas filas. `sequência ms/passo` tem piso 334 ms = teto de 3 Hz da sala. */
+    ['chapéus: flash /min', 0, 60, 0.5, v => CONFIG.hats.flashPerMin = v, () => CONFIG.hats.flashPerMin],
+    ['chapéus: força do flash', 0, 10, 0.1, v => CONFIG.hats.flashGain = v, () => CONFIG.hats.flashGain],
+    ['chapéus: flash ms', 40, 600, 10, v => CONFIG.hats.flashMs = v, () => CONFIG.hats.flashMs],
+    ['chapéus: modo (0=só/1=juntos/2=seq)', 0, 2, 1, v => CONFIG.hats.flashMode = v, () => CONFIG.hats.flashMode],
+    ['chapéus: sequência ms/passo', 334, 1200, 2,
+      v => CONFIG.hats.seqStepMs = Math.max(334, v), () => CONFIG.hats.seqStepMs],
     // altura da BASE (boca) do chapéu ao chão — F8 autoritativo: 2,5 m (o doc mede a base).
     ['chapéus: altura (m)', 1.5, 5, 0.05, v => CONFIG.hats.heightM = v, () => CONFIG.hats.heightM],
     // F8-b: graus a partir da VERTICAL (0 = a apagar direto para o chão). Faixa pedida 10-20°.
@@ -281,9 +293,18 @@ export async function initPanel(CONFIG, hooks = {}) {
        disposição AO VIVO (sem reload — ao contrário das dimensões da sala, a geração do mikado é
        barata e não há materiais a recriar). Os knobs de EFEITO atuam direto, sem rebuild. */
     ['bola (0/1)', 0, 1, 1, v => { CONFIG.ballOn = v >= 0.5; onBallToggleChanged(); }, () => (CONFIG.ballOn === false ? 0 : 1)],
+    /* F12 §3: altura da BOLA — ao vivo (a corrente encurta/alonga, os focos re-miram sem se mexer,
+       o mikado refaz a clareira à volta da cota nova). `onBallHeightChanged` regenera o mikado e
+       refresca o probe, como o toggle da bola. Faixa: 2,0-4,6 m do CENTRO ao chão (o ball.js ainda
+       clampa contra o pé-direito real, para a bola nunca sair da sala). */
+    ['bola: altura (m)', 2.0, 4.6, 0.05,
+      v => { CONFIG.ballHeightM = v; onBallHeightChanged(); }, () => CONFIG.ballHeightM],
     ['mikado (0/1)', 0, 1, 1, v => { CONFIG.mikado.on = v >= 0.5; }, () => (CONFIG.mikado.on === false ? 0 : 1)],
     // geometria (rebuild ao vivo)
-    ['mikado: barras', 0, 44, 1, v => { CONFIG.mikado.count = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.count],
+    /* F12 §1: a contagem passou a DENSIDADE (barras/m² do miolo) — muda a geometria da sala e a
+       malha escala uniforme. 0,77 ≈ as 40 barras do default da F11 na sala nominal (~52 m²). */
+    ['mikado: barras/m²', 0, 1.6, 0.01,
+      v => { CONFIG.mikado.densityPerM2 = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.densityPerM2],
     // altura do MIKADO INTEIRO ao chão (spec §3: default 4,0 m, ao vivo)
     ['mikado: altura (m)', 2.5, 5.2, 0.05, v => { CONFIG.mikado.heightM = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.heightM],
     ['mikado: espalha (m)', 0, 2, 0.05, v => { CONFIG.mikado.spreadM = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.spreadM],
@@ -312,6 +333,31 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['mikado: drop (0/1)', 0, 1, 1, v => { CONFIG.mikado.dropOn = v >= 0.5; }, () => (CONFIG.mikado.dropOn === false ? 0 : 1)],
     ['mikado: drop rajada ×', 1, 4, 0.5, v => CONFIG.mikado.dropBurstMul = v, () => CONFIG.mikado.dropBurstMul],
     ['mikado: auto /min', 0, 30, 0.5, v => CONFIG.mikado.autoPerMin = v, () => CONFIG.mikado.autoPerMin],
+
+    /* ---- F12 §5: ESTRELATO (v2/stardom.js) ----
+       Em cada momento UMA peça conta a história (bola · mikado · chapéus) ou nenhuma (smooth). A
+       EXCLUSÃO MÚTUA mikado↔chapéus é estrutural (só há uma estrela de cada vez), não um knob.
+       As trocas só acontecem em fronteiras musicais: transição de FSM, drop, ou fim de frase
+       (`frase (compassos)`). Sem motor de música, alterna pelo relógio `auto s`.
+       Os três VIÉS são o pedido explícito do David ("calibrar mais mikado / mais bola / mais
+       chapéus"): são pesos relativos no sorteio, não percentagens. Pôr um a 0 tira essa peça do
+       estrelato sem a desligar da sala. Um elemento DESLIGADO no painel deixa de ser elegível e o
+       peso dele redistribui-se sozinho — o motor nunca liga/desliga nada. */
+    ['estrelato (0/1)', 0, 1, 1, v => { CONFIG.stardom.on = v >= 0.5; }, () => (CONFIG.stardom.on === false ? 0 : 1)],
+    ['estrelato: força', 0, 1, 0.05, v => CONFIG.stardom.strength = v, () => CONFIG.stardom.strength],
+    ['estrelato: viés bola', 0, 3, 0.05, v => CONFIG.stardom.biasBall = v, () => CONFIG.stardom.biasBall],
+    ['estrelato: viés mikado', 0, 3, 0.05, v => CONFIG.stardom.biasMikado = v, () => CONFIG.stardom.biasMikado],
+    ['estrelato: viés chapéus', 0, 3, 0.05, v => CONFIG.stardom.biasHats = v, () => CONFIG.stardom.biasHats],
+    ['estrelato: viés smooth', 0, 3, 0.05, v => CONFIG.stardom.biasSmooth = v, () => CONFIG.stardom.biasSmooth],
+    ['estrelato: não repetir', 0, 1, 0.05, v => CONFIG.stardom.noRepeat = v, () => CONFIG.stardom.noRepeat],
+    ['estrelato: frase (compassos)', 2, 32, 1, v => CONFIG.stardom.holdBars = v, () => CONFIG.stardom.holdBars],
+    ['estrelato: rampa s', 0.05, 3, 0.05, v => CONFIG.stardom.rampSec = v, () => CONFIG.stardom.rampSec],
+    ['estrelato: auto s', 2, 60, 1, v => CONFIG.stardom.autoSec = v, () => CONFIG.stardom.autoSec],
+    // chapéus sob comando do estrelato. ⚠ 'chapéus Hz' TEM teto 3 — regra invariável da sala.
+    ['estrelato: chapéus Hz', 0.2, 3, 0.1,
+      v => CONFIG.stardom.hatsHz = Math.min(3, v), () => CONFIG.stardom.hatsHz],
+    ['estrelato: chapéus gesto', 0, 2, 1, v => CONFIG.stardom.hatsGesture = v, () => CONFIG.stardom.hatsGesture],
+    ['estrelato: chapéus aux /min', 0, 60, 1, v => CONFIG.stardom.auxPerMin = v, () => CONFIG.stardom.auxPerMin],
   ];
   for (const s of newSliders) { sliders.push(s); PERSIST.add(s[0]); }
 
@@ -397,8 +443,11 @@ export async function initPanel(CONFIG, hooks = {}) {
       'sala: wash (0-1)', 'sala: wash matiz',
       // ---- F10: refletividade por superfície (ao vivo) ----
       'refl: chão', 'refl: teto', 'refl: paredes fundo', 'refl: paredes laterais',
-      'chapéus (0/1)', 'chapéus: quantos', 'chapéus: brilho', 'chapéus: flash /min', 'chapéus: altura (m)',
+      'chapéus (0/1)', 'chapéus: quantos', 'chapéus: brilho', 'chapéus: altura (m)',
       'chapéus: inclinação°', 'chapéus: corte da pala°',
+      // F12 §4: os chapéus a sério — força/duração/modo do flash + cadência da sequência
+      'chapéus: flash /min', 'chapéus: força do flash', 'chapéus: flash ms',
+      'chapéus: modo (0=só/1=juntos/2=seq)', 'chapéus: sequência ms/passo',
       'robots (0/1)', 'robots: luz', 'robots: inclinação°',
     ]],
     // F8-b: grupo próprio para os 6 pilares individuais ("tapar e ligar" — David).
@@ -408,8 +457,8 @@ export async function initPanel(CONFIG, hooks = {}) {
        'bola (0/1)' vive AQUI, ao lado de 'mikado (0/1)': são o par que o David usa para escolher a
        peça central da sala (bola ↔ mikado ↔ as duas), e é o gesto que a spec §4 descreve. */
     ['Mikado & Bola', [
-      'bola (0/1)', 'mikado (0/1)',
-      'mikado: barras', 'mikado: altura (m)', 'mikado: espalha (m)', 'mikado: camadas',
+      'bola (0/1)', 'bola: altura (m)', 'mikado (0/1)',
+      'mikado: barras/m²', 'mikado: altura (m)', 'mikado: espalha (m)', 'mikado: camadas',
       'mikado: barra min (m)', 'mikado: barra máx (m)', 'mikado: Ø tubo (m)', 'mikado: inclinação°',
       'mikado: viés eixo', 'mikado: folga pilares (m)', 'mikado: clareira bola (m)', 'mikado: semente',
       'mikado: repouso', 'mikado: flash força', 'mikado: flash ms', 'mikado: flash Hz',
@@ -417,6 +466,15 @@ export async function initPanel(CONFIG, hooks = {}) {
       'mikado: cor (0=rot)', 'mikado: luz sala ×',
       'mikado: tarola (0/1)', 'mikado: tarola sens.', 'mikado: drop (0/1)', 'mikado: drop rajada ×',
       'mikado: auto /min',
+    ]],
+    /* F12 §5: grupo próprio para o estrelato — é um SISTEMA (decide quem é a estrela), não um
+       efeito de uma peça, por isso não cabia em "Mikado & Bola" nem em "Sala". */
+    ['Estrelato', [
+      'estrelato (0/1)', 'estrelato: força',
+      'estrelato: viés bola', 'estrelato: viés mikado', 'estrelato: viés chapéus',
+      'estrelato: viés smooth', 'estrelato: não repetir',
+      'estrelato: frase (compassos)', 'estrelato: rampa s', 'estrelato: auto s',
+      'estrelato: chapéus Hz', 'estrelato: chapéus gesto', 'estrelato: chapéus aux /min',
     ]],
     ['Pós & Skin', [
       'bloom: força', 'bloom: limiar', 'bloom: raio px', 'grão', 'vinheta',

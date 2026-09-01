@@ -124,7 +124,12 @@ export function createIncident(scene, CONFIG) {
   const tmpDir = new BABYLON.Vector3();
   const tmpQuat = new BABYLON.Quaternion();
 
-  function update(mountedSpots, E, camera) {
+  /* F12 §3 (bola móvel): `ballY` = cota do centro da bola no mundo (0 = a posição nominal da F8).
+     A geometria do cone é toda calculada no referencial da BOLA (a esfera de raio 1 na origem); a
+     única coisa que muda é a translação final da mesh, que leva `+ballY`. O parâmetro é opcional —
+     sem ele o comportamento é exatamente o anterior. */
+  function update(mountedSpots, E, camera, ballY) {
+    const by = num(ballY, 0);
     // F7: `haze` já traz o fator da explosão — o cone incidente desvanece-se com `×(1 − 0.8·exS)`
     // (index-v2.html:517). Com a bola partida não há uma esfera a intercetar o feixe, só cacos.
     const exS = Math.min(1, Math.max(0, num(E && E.exS, 0)));
@@ -138,14 +143,14 @@ export function createIncident(scene, CONFIG) {
       const sp = spots[i];
       let show = false;
       if (sp && sp.S && !sp.wide) {
-        show = setupSpot(perSpot, sp, haze, cp);
+        show = setupSpot(perSpot, sp, haze, cp, by);
       }
       if (!show) for (let w = 0; w < perSpot.length; w++) perSpot[w].setEnabled(false);
     }
   }
 
   // devolve true se desenhou (pelo menos alpha0 > teto mínimo e geometria válida)
-  function setupSpot(perSpot, sp, haze, camPos) {
+  function setupSpot(perSpot, sp, haze, camPos, ballY) {
     const I = num(sp.I, 0);
     // a0 = incidentAlpha·E.haze·min(1,I) — verbatim :517 (sem exS/dk: Fase 3 não tem explosão nem skin
     // dark/white ligados ainda; ficam ⚠ documentados em PARITY quando essas fases existirem).
@@ -159,7 +164,10 @@ export function createIncident(scene, CONFIG) {
     if (!Number.isFinite(tIn)) return false;
     const hit = [C[0] + S[0] * tIn, C[1] + S[1] * tIn, C[2] + S[2] * tIn];
     const far = CONFIG.incidentLen;
-    const src = [hit[0] + S[0] * far, hit[1] + S[1] * far, hit[2] + S[2] * far];
+    /* `hit`/`src` nascem no referencial da BOLA (esfera de raio 1 na origem). F12 §3: leva-se `src`
+       já para o MUNDO com `+ballY`, porque tanto o teste contra a câmara abaixo como a translação
+       da mesh são em coordenadas absolutas. A DIREÇÃO (S) não muda com a translação. */
+    const src = [hit[0] + S[0] * far, hit[1] + S[1] * far + num(ballY, 0), hit[2] + S[2] * far];
 
     // não desenhar se a fonte cai perto/atrás da câmara (:523) — o original testa `src.z > camD-2.5`
     // no espaço de câmara fixa em +Z; aqui a câmara orbita, então usa-se a distância euclidiana real

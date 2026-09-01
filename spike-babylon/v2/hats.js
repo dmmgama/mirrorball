@@ -318,12 +318,111 @@ export function createHats(scene, CONFIG) {
     flashLights.push(L);
   }
 
-  // estado de flash por chapéu: {age, life} ou null. Poisson NO ANEL TODO (não por chapéu) — um
-  // único acumulador, `flashPerMin` é a taxa TOTAL do anel (docs/f8-sala-lux.md, pedido do David:
-  // "piscam só às vezes", default ~1 flash a cada 4-8 s = 7.5-15/min; CONFIG default 8/min).
+  /* ================= F12 §4: MÁQUINA DE FLASHES DOS CHAPÉUS =================
+     A F8 tinha só um Poisson que acendia UM chapéu ao calhas. O David pediu (docs/f12-estrelato.md
+     §4/§5): flash mais FORTE (knob), FREQUÊNCIA controlável pelo motor, e dois gestos de conjunto —
+     "todos juntos" e "sequência de uma ponta da sala à outra, SIMÉTRICA dos dois lados".
+
+     Estado por chapéu continua a ser `{age, life}` (envelope 1→0), porque é isso que dá o flash
+     seco; o que muda é QUEM se acende:
+       modo 0 (sozinhos)  — Poisson da F8, um chapéu livre à sorte. É o repouso da sala.
+       modo 1 (juntos)    — todos os `n` chapéus montados no mesmo instante.
+       modo 2 (sequência) — um PASSO de cada vez: em cada passo acendem os DOIS chapéus (um por
+                            fila) que estão à mesma distância do topo da sala. As filas avançam em
+                            ESPELHO — visto da pista, uma onda que atravessa a sala de ponta a ponta.
+                            Ao chegar ao fim inverte o sentido (vai-e-vem), que é o que se lê como
+                            "varrimento" e não como "reinício brusco".
+
+     TETO DE 3 Hz (regra invariável da sala) — clamp DUPLO, como no mikado.js:
+       - por FIXTURE: `MIN_GAP_S` entre dois flashes do MESMO chapéu;
+       - no GESTO: `SEQ_MIN_MS` entre passos da sequência e entre disparos de "todos juntos".
+     Os knobs também estão clampados no painel; este é o cinto de segurança para escritas por fora. */
   const flashState = new Array(N).fill(null);
   let flashAcc = 0;
-  const FLASH_LIFE = [0.10, 0.30]; // s (brief §3: 0.1-0.3 s)
+  // (a faixa fixa 0,10-0,30 s da F8 foi substituída pelo knob `flashMs` + jitter — ver flashLifeOf)
+  const MIN_GAP_S = 1 / 3;          // teto ABSOLUTO por fixture (3 Hz)
+  const SEQ_MIN_MS = 334;           // teto ABSOLUTO entre passos do gesto (3 Hz)
+  const lastFlashAt = new Array(N).fill(-1e9);  // último flash de cada chapéu (guarda dos 3 Hz)
+  /* ---- F12 §4: TETO de PointLight de chapéu SIMULTÂNEAS ----
+     ⚠ Custou um erro de shader, apanhado ao vivo em WebGL2 com o modo "todos juntos":
+     `VERTEX shader uniform block count exceeds GL_MAX_VERTEX_UNIFORM_BUFFERS (12)`, repetido a
+     cada frame. Na F8 os chapéus flashavam UM de cada vez (Poisson) e o pico da cena era ~13 luzes
+     ativas; com 12 a acender juntos passava a ~27, e o WebGL2 rebentava a compilar o shader dos
+     materiais com `maxSimultaneousLights: 12` (bola, núcleo, corrente). Em WebGPU não dá erro, mas
+     é na mesma trabalho pago por nada.
+     O que se limita é só a luz que PINTA A SALA: o EMISSIVO de todos os chapéus continua a flashar
+     (é isso que se vê). Com 12 focos dourados a bater no mesmo chão, a diferença entre 4 e 12
+     PointLight não se lê — e mantém a cena dentro do orçamento de luzes de qualquer backend. */
+  const MAX_LIVE_LIGHTS = 4;
+  const liveLightRank = new Array(N).fill(false);  // quais podem acender luz NESTE frame
+  /* estado da sequência ponta-a-ponta. `cursor` = índice do PAR (0..perLine-1), `dir` = sentido.
+     Regra 7 (NaN-safe): tudo nasce com valor. */
+  const seq = { cursor: 0, dir: 1, nextAt: -1e9, lastGestAt: -1e9 };
+
+  /* acende UM chapéu (respeitando o teto de 3 Hz por fixture). `life` em segundos. */
+  function igniteHat(i, tSec, life) {
+    if (i < 0 || i >= N) return false;
+    if (tSec - lastFlashAt[i] < MIN_GAP_S) return false;
+    lastFlashAt[i] = tSec;
+    flashState[i] = { age: 0, life: Math.max(0.02, life) };
+    return true;
+  }
+  /* duração de um flash a partir do knob (±40% de jitter — flashes todos iguais soam a máquina). */
+  function flashLifeOf(cfg) {
+    const base = Math.max(30, num(cfg.flashMs, 180)) / 1000;
+    return base * (0.6 + Math.random() * 0.8);
+  }
+
+  /* ---- API para o motor (F12 §5): o estrelato dos chapéus dispara gestos daqui ----
+     `pulse(kind)` — 'all' = todos juntos · 'seq' = UM passo da sequência · 'one' = um chapéu.
+     Devolve true se alguma coisa acendeu (o estrelato usa isso só para o HUD).
+     ⚠ O motor NUNCA liga/desliga chapéus (`chapéus (0/1)`/`quantos` são do David): se estiverem
+     desligados, isto não faz nada e o estrelato redistribui — ver stardom.js. */
+  function pulse(kind, tSec) {
+    const cfg = H();
+    if (cfg.on === false) return false;
+    const n = clamp(Math.round(num(cfg.count, 12)), 0, N);
+    if (!n) return false;
+    const t = Number.isFinite(tSec) ? tSec : 0;
+    const life = flashLifeOf(cfg);
+
+    if (kind === 'all') {
+      if (t - seq.lastGestAt < SEQ_MIN_MS / 1000) return false;
+      seq.lastGestAt = t;
+      let any = false;
+      for (let i = 0; i < n; i++) if (igniteHat(i, t, life)) any = true;
+      return any;
+    }
+    if (kind === 'seq') {
+      if (t - seq.lastGestAt < SEQ_MIN_MS / 1000) return false;
+      seq.lastGestAt = t;
+      return stepSequence(n, t, life);
+    }
+    // 'one' (ou desconhecido): um chapéu livre à sorte — o gesto discreto da F8
+    const free = [];
+    for (let i = 0; i < n; i++) if (!flashState[i]) free.push(i);
+    if (!free.length) return false;
+    return igniteHat(free[(Math.random() * free.length) | 0], t, life);
+  }
+
+  /* UM passo da sequência ponta-a-ponta. As duas filas são espelho uma da outra: `positions()`
+     numera 0..perLine-1 na fila X negativo e perLine..n-1 na fila X positivo, ambas ordenadas por Z
+     crescente — logo o par simétrico do passo `k` é (k, perLine + k). Quando a contagem é ímpar a
+     fila da direita tem menos um; o índice que não existe é simplesmente ignorado. */
+  function stepSequence(n, t, life) {
+    const perLine = Math.ceil(n / 2);
+    if (perLine <= 0) return false;
+    const k = ((seq.cursor % perLine) + perLine) % perLine;
+    let any = false;
+    if (igniteHat(k, t, life)) any = true;                       // fila X negativo
+    const mirror = perLine + k;
+    if (mirror < n && igniteHat(mirror, t, life)) any = true;    // fila X positivo (o espelho)
+    // avança em vai-e-vem: ao chegar a uma ponta, volta para trás (varrimento contínuo)
+    seq.cursor += seq.dir;
+    if (seq.cursor >= perLine) { seq.cursor = Math.max(0, perLine - 2); seq.dir = -1; }
+    else if (seq.cursor < 0) { seq.cursor = Math.min(perLine - 1, 1); seq.dir = 1; }
+    return any;
+  }
 
   /* posições — F8 AUTORITATIVO (David, 2026-09-01): DUAS LINHAS RETAS, não um anel.
      `n` chapéus divididos pelas 2 linhas (n/2 por linha, ímpar → a linha X=-lineX leva o extra);
@@ -369,26 +468,74 @@ export function createHats(scene, CONFIG) {
     if (!on || !n) {
       // setEnabled acompanha SEMPRE a contagem (bug S9 nº1) — inclui a haste, que não é filha do root.
       for (let i = 0; i < N; i++) { hats[i].root.setEnabled(false); hats[i].stem.setEnabled(false); flashLights[i].setEnabled(false); }
+      /* F12: limpar o estado ao desligar (o par liga/desliga tem de ser SIMÉTRICO — armadilha da
+         F11). Sem isto, voltar a ligar retomava um flash a meio da vida ou uma sequência no meio do
+         percurso, e o David via um arranque estranho ao carregar no toggle. O ramo "ligado" volta a
+         posicionar/ativar tudo no loop abaixo, por isso não há nada a repor à mão. */
+      for (let i = 0; i < N; i++) { flashState[i] = null; liveLightRank[i] = false; }
+      flashAcc = 0; seq.cursor = 0; seq.dir = 1; seq.nextAt = -1e9;
       return;
     }
     const glow = clamp(num(cfg.glow, 0.35), 0, 3);
     const goldRgb = applyColorToggle(CONFIG, ...hueToRgb(GOLD_HUE, 0.72, 1));
     const pos = positions(n, cfg);
 
-    // Poisson: taxa TOTAL do anel (flashPerMin/60 flashes/s), não por chapéu.
+    /* F12 §5: força do flash DESTE frame = knob × ganho do ESTRELATO (1 = neutro; ~0,45 quando os
+       chapéus são só auxiliares da bola; 0 quando o mikado é a estrela — exclusão mútua). Aqui é um
+       GANHO (e não um filtro de disparo como no mikado) porque o papel auxiliar é precisamente
+       "flashes LIGEIROS de suporte" (spec §5a): a mesma cadência, menos peso.
+       Calculado UMA vez por frame, fora do loop dos 12 chapéus. Sem stardom → 1. */
+    const starHats = (() => {
+      const g = CONFIG.stardom && CONFIG.stardom.gain;
+      return g ? clamp(num(g.hats, 1), 0, 2) : 1;
+    })();
+    const flashGainNow = Math.max(0, num(cfg.flashGain, 4.2)) * starHats;
+
+    /* ---- F12 §4: agendador AUTÓNOMO dos chapéus ----
+       `flashPerMin` continua a ser a taxa TOTAL do conjunto (Poisson), agora com um `modo` que
+       decide o GESTO de cada disparo. É este caminho que corre sem motor de música (e o que o David
+       vê ao mexer nos knobs em silêncio); com motor, o estrelato (stardom.js) chama `pulse()` por
+       cima disto — os dois convivem porque `igniteHat` impõe o teto de 3 Hz por fixture.
+       Modo 2 (sequência) NÃO usa o Poisson para o ritmo: a sequência tem cadência PRÓPRIA
+       (`seqStepMs`), senão os passos vinham irregulares e não se lia como uma onda; o Poisson passa
+       a decidir só quando é que a onda ARRANCA. Para simplificar e ficar previsível para o David,
+       em modo 2 a onda corre em contínuo enquanto `flashPerMin > 0`. */
+    const t = Number.isFinite(tSec) ? tSec : 0;
+    const mode = Math.round(num(cfg.flashMode, 0));
     const rate = Math.max(0, num(cfg.flashPerMin, 8)) / 60;
-    flashAcc += dt * rate;
-    if (flashAcc > 8) flashAcc = 8; // guarda: dt gigante não deve gerar rajada
-    while (flashAcc >= 1) {
-      flashAcc -= 1;
-      // escolhe um chapéu sem flash vivo (se todos ocupados, ignora este disparo)
-      const free = [];
-      for (let i = 0; i < n; i++) if (!flashState[i]) free.push(i);
-      if (free.length) {
-        const idx = free[(Math.random() * free.length) | 0];
-        const life = FLASH_LIFE[0] + Math.random() * (FLASH_LIFE[1] - FLASH_LIFE[0]);
-        flashState[idx] = { age: 0, life };
+
+    if (mode === 2) {
+      if (rate > 0) {
+        const stepS = Math.max(SEQ_MIN_MS, num(cfg.seqStepMs, 380)) / 1000;
+        if (t >= seq.nextAt) {
+          seq.nextAt = t + stepS;
+          stepSequence(n, t, flashLifeOf(cfg));
+        }
       }
+    } else {
+      flashAcc += dt * rate;
+      if (flashAcc > 8) flashAcc = 8; // guarda: dt gigante não deve gerar rajada
+      while (flashAcc >= 1) {
+        flashAcc -= 1;
+        if (mode === 1) pulse('all', t);   // todos juntos
+        else pulse('one', t);              // o gesto discreto da F8
+      }
+    }
+
+    /* ---- pré-passo: QUAIS os chapéus que podem acender uma PointLight neste frame ----
+       (ver o comentário longo em `MAX_LIVE_LIGHTS`, mais abaixo no loop). Ordena-se por "quão
+       fresco está o flash" — `1 − age/life`, o mesmo `flashT` que o loop vai calcular — e ficam os
+       `MAX_LIVE_LIGHTS` primeiros. Barato: um sort de ≤12 elementos, e só quando há flashes vivos. */
+    liveLightRank.fill(false);
+    {
+      const alive = [];
+      for (let i = 0; i < n; i++) {
+        const s = flashState[i];
+        if (s) alive.push([i, 1 - clamp(s.age / s.life, 0, 1)]);
+      }
+      if (alive.length > MAX_LIVE_LIGHTS) alive.sort((a, b) => b[1] - a[1]);
+      const k = Math.min(alive.length, MAX_LIVE_LIGHTS);
+      for (let j = 0; j < k; j++) liveLightRank[alive[j][0]] = true;
     }
 
     for (let i = 0; i < n; i++) {
@@ -437,13 +584,21 @@ export function createHats(scene, CONFIG) {
         flashT = 1 - clamp(st.age / st.life, 0, 1); // 1→0 ao longo da vida (sem envelope suave: curto e seco, como um flash real)
         if (st.age >= st.life) flashState[i] = null;
       }
-      const emit = glow + flashT * 2.2; // flash soma-se ao brilho contínuo
+      /* F12 §4: a FORÇA do flash passa a knob (`chapéus: força do flash`). Antes eram 2,2 fixos no
+         código e uma PointLight a ×8 — o David chamou-lhe "levezinho". O default 4,2 quase duplica
+         o pico visível; a luz de sala acompanha na mesma proporção, senão o chapéu ficava brilhante
+         mas sem pintar nada à volta (que é o que o faz ler como um flash a sério). */
+      const fGain = flashGainNow;
+      const emit = glow + flashT * fGain; // flash soma-se ao brilho contínuo
       fx.innerMat.emissiveColor.set(goldRgb[0] * emit, goldRgb[1] * emit, goldRgb[2] * emit);
 
+      // luz de sala só para os `MAX_LIVE_LIGHTS` flashes mais frescos (ver o bloco lá em cima)
       const L = flashLights[i];
-      if (flashT > 0.01) {
+      if (flashT > 0.01 && liveLightRank[i]) {
         L.position.set(p.x, p.y - LAMP_D * 0.5, p.z); // à boca do chapéu (lâmpada Ø 1 m → meio diâmetro abaixo do centro)
-        L.intensity = flashT * 8; // fraca (regra 6 é da BOLA; ainda assim mantém-se discreto — luz de sala, não estroboscópio)
+        // ×3.6 por unidade de `flashGain` ⇒ o default 4,2 dá ~15 (a F8 dava 8 fixo). Regra 6 é da
+        // BOLA (esta luz nem lhe toca: `excludeBallFromRoomLights`), mas mantém-se luz de SALA.
+        L.intensity = flashT * fGain * 3.6;
         L.diffuse.set(goldRgb[0], goldRgb[1], goldRgb[2]);
         L.specular.set(goldRgb[0], goldRgb[1], goldRgb[2]);
         L.setEnabled(true);
@@ -468,5 +623,15 @@ export function createHats(scene, CONFIG) {
     meshes: flatMeshes,
     lights: flashLights,
     update,
+    /* F12 §4/§5: porta do MOTOR para os chapéus. 'all' = todos juntos · 'seq' = um passo da
+       sequência ponta-a-ponta simétrica · 'one' = um chapéu (flash auxiliar discreto).
+       O motor NUNCA liga/desliga chapéus — se o David os tiver desligados, isto devolve false. */
+    pulse,
+    // quantos chapéus estão MONTADOS agora (o estrelato usa isto para saber se são elegíveis)
+    get mountedCount() {
+      const cfg = H();
+      if (cfg.on === false) return 0;
+      return clamp(Math.round(num(cfg.count, 12)), 0, N);
+    },
   };
 }

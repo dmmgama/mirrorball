@@ -202,6 +202,58 @@ export function createBall(scene, CONFIG) {
   const root = new BJS.TransformNode('ball', scene);
   core.parent = root;
 
+  /* ================= F12 §3: ALTURA DA BOLA (`ballY`) =================
+     O spike inteiro foi escrito assumindo a bola na ORIGEM do mundo (raio 1, centro em (0,0,0)):
+     a normal de um tile É a sua posição, os feixes nascem dela, os pontos na parede são a
+     interseção da reflexão com os planos da sala — tudo em coordenadas absolutas. Mover a bola
+     obrigaria a reescrever essas contas… ou a fazer o contrário, que é o que se faz aqui:
+
+       O CÁLCULO CONTINUA TODO NO REFERENCIAL DA BOLA. O que se desloca é a SALA (−ballY nos
+       planos, ao entrar) e o RESULTADO (+ballY nas posições que saem para o mundo).
+
+     São só 4 sítios: (1) os 4 planos da sala em `computeColors`; (2) a saída dos dots (`Yw`);
+     (3) a saída dos feixes (`beamP.y`); (4) a direção bola→câmara (`updateCamDir`, que passa a
+     medir a partir do centro da bola e não da origem). Fora disso nada sabe que a bola mudou de
+     sítio — que é exatamente o objetivo, porque é onde estão os bugs.
+
+     `ballY` = 0 reproduz BIT A BIT o comportamento anterior (o default `ballHeightM` 3,5 dá 0).
+
+     CLAMP: o fundo da bola nunca abaixo de 1 m do chão e o topo sempre com espaço para pelo menos
+     um elo de corrente abaixo do teto — senão a bola atravessava o chão ou colava-se ao teto e a
+     corrente desaparecia sem explicação. */
+  const BALL_NOMINAL_M = 3.5;   // altura física do centro da bola na sala nominal (docs/f8-sala-lux.md)
+  let ballY = 0;
+  function computeBallY() {
+    const R = cfg('room') || BALL_DEFAULTS.room;
+    const floorY = num(R.floor, -3.5), ceilY = num(R.ceil, 2.0);
+    const h = num(C.ballHeightM, BALL_NOMINAL_M);
+    let y = (Number.isFinite(h) ? h : BALL_NOMINAL_M) - BALL_NOMINAL_M;
+    // fundo da bola (y − 1) nunca abaixo de floor + 1 m
+    const yMin = floorY + 1 + 1;
+    // topo da bola (y + 1) com pelo menos 0,25 m até ao teto (espaço para o gancho + 1 elo)
+    const yMax = ceilY - 1 - 0.25;
+    if (yMin <= yMax) y = clamp(y, yMin, yMax);
+    else y = 0;                                  // sala impossível: fica na cota nominal
+    return Number.isFinite(y) ? y : 0;           // regra 7: NaN nunca chega ao mundo
+  }
+  /* Aplica a cota às meshes que vivem no MUNDO. A corrente e o gancho são reconstruídos (o número
+     de elos muda com a distância ao teto — é isto que faz a corrente "encurtar/alongar"). */
+  function applyBallY(rebuildChainToo) {
+    const prev = ballY;
+    ballY = computeBallY();
+    /* F12 §3: publica-se a cota EFETIVA (já clampada) no CONFIG, porque quem precisa dela e não
+       tem acesso ao `ball` — em concreto o `mikado.js`, que abre a CLAREIRA à volta da bola —
+       tinha de a recalcular a partir do knob e ficava com um valor DIFERENTE sempre que o clamp
+       entrasse (medido: com pé-direito 5 m e o knob a 4,2, a bola parava em +0,25 mas o mikado
+       abria a clareira a +0,70 → barras a atravessar a bola).
+       Fonte de verdade ÚNICA: quem quiser saber onde a bola está lê `CONFIG.ballYEffective`
+       (ou `ball.centerY`, que é o mesmo número), nunca o knob em cru. */
+    C.ballYEffective = ballY;
+    root.position.y = ballY;
+    if (rebuildChainToo || Math.abs(prev - ballY) > 1e-9) buildChain();
+    if (probe) probe.position.y = ballY;
+  }
+
   /* ================= geometria ================= */
   const tiles = [];
   let mesh = null;
@@ -372,6 +424,13 @@ export function createBall(scene, CONFIG) {
      como a própria bola, senão aparecia refletida nos espelhos de onde está pendurada. */
   const CHAIN_PX_TO_RADII = 0.045 / 11;   // ver acima: 11 px de Canvas ≈ 0.045 raios da bola
   let chain = null, chainHook = null, chainMat = null;
+  /* F12 §3: contador de gerações da corrente. Com o slider de altura, `buildChain()` passa a correr
+     ao vivo e as meshes da corrente/gancho são SUBSTITUÍDAS. Quem as tinha em cache (o
+     `applyBallVisibility` do main.js, que memoriza o estado por contagem de partes, e o
+     `excludeBallFromRoomLights`, que memoriza que meshes já excluiu de cada luz) ficaria a apontar
+     para meshes mortas — a corrente nova nascia visível com a bola desligada, e sem exclusão das
+     luzes de sala. Este contador é o sinal de invalidação; ver `main.js`. */
+  let chainGen = 0;
   let chainCount = 0;
   let chainColors = null;                  // Float32Array(n·4): instance color por elo (greyscale)
   const chainMatrices = [];                // matrizes fixas (só a cor muda por frame)
@@ -380,12 +439,19 @@ export function createBall(scene, CONFIG) {
     if (chain) { chain.dispose(false, false); chain = null; }
     if (chainHook) { chainHook.dispose(false, false); chainHook = null; }
     chainCount = 0;
+    chainGen++;   // F12 §3: meshes novas — invalida as caches do main.js (ver acima)
     if (!cfg('chainOn')) return;
 
     // comprimento de um elo em raios da bola: knob direto, com a conversão de px como recurso
     const L = Math.max(0.005, num(cfg('chainLink'), num(cfg('chainLinkPx'), 11) * CHAIN_PX_TO_RADII));
     const R = cfg('room') || { ceil: 4.2 };
-    const ceil = num(R.ceil, 4.2);
+    /* F12 §3: a corrente vive no MUNDO mas é desenhada no referencial da BOLA (as matrizes abaixo
+       são absolutas, mas partem de `yTop = 1` = topo da bola). Com a bola a `ballY`, o teto fica a
+       `ceil − ballY` DESSE referencial: subir a bola encurta a corrente, descê-la alonga-a — que é
+       o pedido ("a corrente encurta/alonga em conformidade"). As matrizes levam `+ballY` no fim,
+       para a corrente ficar no sítio certo do mundo (ela NÃO é filha do `root`, por isso não herda
+       a translação — ver o comentário grande acima). */
+    const ceil = num(R.ceil, 4.2) - ballY;
     const yTop = 1;                                  // topo da bola (raio 1)
     const step = L * 0.82;                           // :719 — `y -= L * 0.82`
     if (!(ceil > yTop + step)) return;               // teto abaixo do topo: sem corrente
@@ -417,7 +483,7 @@ export function createBall(scene, CONFIG) {
     for (let y = yTop + L * 0.4; y < ceil; y += step, i++) {
       const rotY = (i % 2 === 0) ? 0 : Math.PI / 2;
       const m = BJS.Matrix.RotationYawPitchRoll(rotY, Math.PI / 2, 0);
-      m.setTranslationFromFloats(0, y, 0);
+      m.setTranslationFromFloats(0, y + ballY, 0);   // F12 §3: do referencial da bola para o mundo
       m.copyToArray(buf, buf.length);
       chainMatrices.push(m);
     }
@@ -438,7 +504,7 @@ export function createBall(scene, CONFIG) {
     }, scene);
     chainHook.material = chainMat;
     chainHook.rotation.x = Math.PI / 2;
-    chainHook.position.y = yTop + L * 0.25;
+    chainHook.position.y = yTop + L * 0.25 + ballY;   // F12 §3: idem (o gancho também é solto no mundo)
     chainHook.isPickable = false;
     chainHook.alwaysSelectAsActiveMesh = true;
   }
@@ -472,6 +538,10 @@ export function createBall(scene, CONFIG) {
     const list = renderList || scene.meshes.filter(m => !skip(m) && m.isEnabled());
     for (const m of list) if (!skip(m)) probe.renderList.push(m);
     probe.refreshRate = BJS.RenderTargetTexture.REFRESHRATE_RENDER_ONCE;
+    // F12 §3: o probe é a "câmara" da sala vista de dentro da bola — tem de estar NO centro dela.
+    // Se a bola sobe e o probe fica em baixo, os espelhos refletem a sala do sítio errado (o chão
+    // aparece onde devia estar a parede). `applyBallY` volta a escrever isto quando a cota muda.
+    probe.position.y = ballY;
     mat.reflectionTexture = probe.cubeTexture;
     /* O cubo do probe é o ambiente da cena (é ele que dá a luz de ambiente ao PBR dos espelhos: sem
        `scene.environmentTexture` a bola desenha-se PRETA — testado). */
@@ -685,8 +755,12 @@ export function createBall(scene, CONFIG) {
     const cam = scene.activeCamera;
     if (cam && cam.globalPosition) {
       const p = cam.globalPosition;
-      const l = Math.hypot(p.x, p.y, p.z) || 1;
-      camDir.x = p.x / l; camDir.y = p.y / l; camDir.z = p.z / l;
+      // F12 §3: direção BOLA→câmara, medida a partir do CENTRO DA BOLA (não da origem do mundo).
+      // Com a bola deslocada, usar a origem dava um `camDir` torto e os feixes que "vêm para nós"
+      // (R·camDir) eram escolhidos errados — o efeito lê-se como feixes a apagar do lado errado.
+      const py = p.y - ballY;
+      const l = Math.hypot(p.x, py, p.z) || 1;
+      camDir.x = p.x / l; camDir.y = py / l; camDir.z = p.z / l;
     } else { camDir.x = 0; camDir.y = 0; camDir.z = 1; }
   }
 
@@ -736,8 +810,13 @@ export function createBall(scene, CONFIG) {
     const dotFalloffV = Math.max(0, num(cfg('dotFalloff'), 0.028));
     const dotScaleV = Math.max(0, num(cfg('dotScale'), 0.32));
     const roomCfg = cfg('room') || BALL_DEFAULTS.room;
-    const roomHalfW = num(roomCfg.halfW, 5.2), roomCeil = num(roomCfg.ceil, 4.2);
-    const roomFloor = num(roomCfg.floor, -5.0), roomBack = num(roomCfg.back, -7.0);
+    /* F12 §3: os planos entram no referencial da BOLA (−ballY em Y). Todo o raycast abaixo continua
+       a partir de `P` = a normal do tile (esfera de raio 1 na origem local); o resultado volta ao
+       mundo com `+ballY` no `Yw` (ver mais abaixo). X e Z não mexem — a bola só sobe e desce. */
+    const roomHalfW = num(roomCfg.halfW, 5.2);
+    const roomCeil = num(roomCfg.ceil, 4.2) - ballY;
+    const roomFloor = num(roomCfg.floor, -5.0) - ballY;
+    const roomBack = num(roomCfg.back, -7.0);
     const emitDots = dotX !== null && dm > 0 && dotDensityLiveClamped > 0;
     dotCount = 0;
 
@@ -879,7 +958,9 @@ export function createBall(scene, CONFIG) {
                 // graze (|N·R̂|, ângulo rasante) recalcula-se em dots.js a partir de N/R — evita
                 // guardar mais um float por ponto aqui.
                 const d3 = dotCount * 3;
-                dotX[d3] = Xw; dotX[d3 + 1] = Yw; dotX[d3 + 2] = Zw;
+                // F12 §3: de volta ao MUNDO (o `dots.js` desenha discos em coordenadas absolutas).
+                // `Yw` foi calculado no referencial da bola, com os planos já deslocados de −ballY.
+                dotX[d3] = Xw; dotX[d3 + 1] = Yw + ballY; dotX[d3 + 2] = Zw;
                 dotN[d3] = nrmX; dotN[d3 + 1] = nrmY; dotN[d3 + 2] = nrmZ;
                 dotR[d3] = Rx; dotR[d3 + 1] = Ry; dotR[d3 + 2] = Rz3;
                 dotI[dotCount] = dotCone * (0.6 + 0.4 * dm) * NdS * sp.I / (1 + dotFalloffV * best * best);
@@ -913,7 +994,9 @@ export function createBall(scene, CONFIG) {
               // P = ponto do tile na superfície = a própria normal (esfera de raio 1), no MUNDO.
               // F7: com a bola partida, `P` é o centro do estilhaço — o feixe nasce onde o caco
               // está e varre a sala com ele (fonte única: este loop).
-              beamP[b3] = px; beamP[b3 + 1] = py; beamP[b3 + 2] = pz;
+              // F12 §3: `+ballY` leva o ponto de partida do feixe ao MUNDO (o beams.js coloca lá os
+              // cones); `px/py/pz` são coordenadas do referencial da bola, como o resto do loop.
+              beamP[b3] = px; beamP[b3 + 1] = py + ballY; beamP[b3 + 2] = pz;
               beamR[b3] = Rx; beamR[b3 + 1] = Ry; beamR[b3 + 2] = Rz3;
               beamI[beamRawCount] = Ival;
               beamRawCount++;
@@ -1074,6 +1157,12 @@ export function createBall(scene, CONFIG) {
     angleUsed = exOn ? angle + (a0 - angle) * exS : angle;
     root.rotation.y = angleUsed;
 
+    /* F12 §3: a altura da bola é um slider AO VIVO — lê-se por frame. `applyBallY` só faz trabalho
+       quando o valor muda de facto (compara com o `ballY` anterior); no caso normal é uma
+       subtração e uma comparação, custo nulo. Quando muda, reconstrói a corrente (é assim que ela
+       encurta/alonga) e reposiciona o probe. */
+    applyBallY(false);
+
     // cadeia primeiro (produz `boneNzTerm` e os spots montados), material/osso depois
     // F7: com a bola partida a cadeia CPU corre a cada frame (não a COLOR_HZ) — os estilhaços
     // movem-se depressa e a 20 Hz o reflexo/feixes ficavam a saltar atrás da geometria.
@@ -1086,11 +1175,28 @@ export function createBall(scene, CONFIG) {
   }
 
   rebuild();
+  /* F12 §3: cota inicial da bola. Tem de correr DEPOIS do `rebuild()` (que constrói a corrente com
+     ballY ainda a 0) e força o `buildChain()` para a corrente nascer já com o comprimento certo —
+     senão a bola arrancava na cota gravada mas com a corrente do sítio nominal. */
+  applyBallY(true);
 
   return {
     get mesh() { return mesh; },
     core,
     root,
+    /* F12 §3: cota do CENTRO da bola no mundo (0 = a posição nominal da F8, 3,5 m do chão).
+       É a fonte de verdade para quem precisa de saber onde a bola está: `main.js` (mira dos focos,
+       auréola, cone incidente) e `beams.js` (direção bola→câmara). */
+    get centerY() { return ballY; },
+    /* F12 §3: força a aplicação IMEDIATA da cota (normalmente feita no `update()` do frame
+       seguinte). O painel precisa disto: o `onBallHeightChanged` regenera o mikado, e a clareira lê
+       `CONFIG.ballYEffective` — sem esta chamada o mikado regenerava-se com a cota do frame
+       ANTERIOR e as barras ficavam mal colocadas à volta da bola até ao gesto seguinte
+       (medido: com o knob a 4,2 m a clareira saía a 1,31 em vez dos 1,50 pedidos). */
+    applyHeight() { applyBallY(false); return ballY; },
+    /* F12 §3: sobe a cada `buildChain()`. Quem tenha as meshes da corrente em cache tem de comparar
+       este número e reagir quando mudar — ver o comentário em `buildChain`. */
+    get chainGen() { return chainGen; },
     get bone() { return bone; },
     /* Corrente 3D (topo → teto). NÃO é filha de `root` (não roda com a bola) nem entra no probe. */
     get chain() { return chain; },

@@ -1,7 +1,7 @@
 // v2/main.js — esqueleto do spike v2 (Fase 1): engine, sala, câmara, luzes mínimas, loop/HUD, painel `d`.
 // A malha da bola é responsabilidade do Opus (v2/ball.js); aqui só se importa dinamicamente com stub de recurso.
 import { buildRoom } from './room.js?v=4';
-import { initPanel } from './panel.js?v=8';
+import { initPanel } from './panel.js?v=9';
 import { applyColorToggle, hueToRgb } from './colorutil.js?v=1';
 
 const CONFIG = window.CONFIG;
@@ -60,6 +60,30 @@ function moduleFail(file, err) {
   } catch (e) { /* sem DOM */ }
 }
 
+/* ---- F12 §6: EXPLOSÃO POR DEFAULT OFF (pedido do David: "ligo quando quiser") ----
+   ⚠ Armadilha conhecida deste spike (handoff S10): `localStorage` GANHA aos defaults novos. Mudar
+   só o default não chegava — quem já usou o spike tem `mb2.explode = 'on'` gravado e continuava a
+   ver a explosão, exatamente o problema que o brief avisa.
+   DECISÃO (registada em docs/f12-estrelato.md): migração PONTUAL versionada. A chave
+   `mb2.explodeDefault` marca que esta mudança de default já foi aplicada NESTA máquina; da primeira
+   vez força `off` (mesmo com `on` gravado) e marca. A partir daí o botão/tecla do David manda como
+   sempre — a migração não volta a correr nem lhe rouba a escolha. Para voltar a forçar um default
+   no futuro, incrementa-se `EXPLODE_DEFAULT_VERSION`.
+   ⚠ ORDEM: tem de correr ANTES do `setupXplButton` (F6) e do bloco F7 — os dois leem a chave. Por
+   isso vive aqui em cima, antes de tudo. */
+const XPL_KEY = 'mb2.explode';
+const XPL_DEFAULT_KEY = 'mb2.explodeDefault';
+const EXPLODE_DEFAULT_VERSION = 'f12-off';
+(function migrateExplodeDefault() {
+  try {
+    if (localStorage.getItem(XPL_DEFAULT_KEY) === EXPLODE_DEFAULT_VERSION) return;
+    localStorage.setItem(XPL_DEFAULT_KEY, EXPLODE_DEFAULT_VERSION);
+    localStorage.setItem(XPL_KEY, 'off');
+    console.log('[MB2] F12: explosão passou a OFF por defeito (migração única "' +
+      EXPLODE_DEFAULT_VERSION + '"). Liga-se no botão "explosões" ou com a tecla `x`.');
+  } catch (e) { /* sem storage: fica no default do código, que também é off */ }
+})();
+
 /* ---------------- engine: WebGPU quando existe, WebGL2 como recurso ----------------
    ?webgl=1 força WebGL2 — o WebGPU initAsync() pendura com o tab em segundo plano
    (Chrome em automação para screenshots), ver docs/babylon-reference.md §1 e §9. */
@@ -108,6 +132,10 @@ function resetCameraPose() {
   camera.beta = BETA0;
   camera.radius = CONFIG.camDistance;
   camera.fov = computeFov();
+  // F12 §3: repor a câmara volta a apontá-la ao centro da bola na cota em que ela está agora
+  // (o loop reescreve isto por frame; aqui é só para o gesto da tecla `0` ser imediato).
+  camera.target.x = 0; camera.target.z = 0;
+  camera.target.y = num(CONFIG.ballHeightM, 3.5) - 3.5;
 }
 addEventListener('keydown', (e) => { if (e.key === '0') resetCameraPose(); });
 
@@ -155,7 +183,51 @@ addEventListener('keydown', (e) => { if (e.key === '0') resetCameraPose(); });
      (Os outros knobs `mikado: *` de geometria não precisam: o painel chama `set()` de todos no
      arranque e o primeiro `onMikadoGeomChanged` refaz a disposição já com os valores gravados.) */
   if (fin(stored['bola (0/1)'])) CONFIG.ballOn = stored['bola (0/1)'] >= 0.5;
+  /* F12 §3: mesma razão do `bola (0/1)` — o `createMikado` corre ANTES do `ball.js` e a clareira
+     precisa de saber a que cota está a bola. Sem isto, quem tivesse a bola gravada noutra altura
+     via a clareira aberta na cota NOMINAL até mexer num knob. Aqui só se pré-calcula a estimativa
+     (o clamp real, contra o pé-direito, é do ball.js, que reescreve `ballYEffective` no arranque). */
+  if (fin(stored['bola: altura (m)'])) CONFIG.ballHeightM = stored['bola: altura (m)'];
+  CONFIG.ballYEffective = num(CONFIG.ballHeightM, 3.5) - 3.5;
 })();
+
+/* ---------------- F12 fix: o banner "dimensões da sala mudaram" era FALSO ALARME permanente ----------
+   Sintoma (screenshot do David, 2026-09-01): a faixa vermelha "dimensões da sala mudaram — recarrega
+   a página (F5)" ficava no fundo do ecrã em PERMANÊNCIA, sem ele ter tocado em nada.
+
+   DIAGNÓSTICO (medido ao vivo nesta sessão, a reproduzir com
+   `MB2.panel.knobsSet(MB2.panel.knobsGet(), false)`): qualquer reposição EM BLOCO de knobs chama o
+   `set()` de todos eles, e o `set()` dos knobs ⟳ chama `onRoomDimChanged()` INCONDICIONALMENTE —
+   mesmo quando reescreve exatamente o valor que já lá estava. Caminhos que fazem isso: "repor
+   ficheiro gravado", "↺ reset" do grupo, "carregar ficheiro", e (em ?src=music) o
+   `MIRRORBALL.knobs.set(j.ball)` que o music.js dispara ao carregar o music-config.json — este
+   último DEPOIS de `panelReady = true`, pelo que o guard do `panelReady` não o apanhava. A F11
+   tinha atribuído o sintoma à reabertura do grupo "Sala"; a causa real é mais geral e não depende
+   do grupo aberto.
+
+   CORREÇÃO (esta, e não mexer na ordem do painel): guarda-se aqui a fotografia da geometria com que
+   a sala foi REALMENTE construída (`BUILT_GEOM`, tirada logo a seguir ao `preApplyReloadKnobs`, antes
+   de `buildRoom`) e o aviso passa a comparar o CONFIG vivo com ela. Só há banner se houver uma
+   diferença de facto — e ele DESAPARECE sozinho se o valor voltar ao que a cena tem, que é o que
+   acontece quando o David desfaz o gesto. Isto não toca no caminho de reposição de knobs que a F10
+   consertou (`preApplyReloadKnobs` continua a ser quem aplica os ⟳ antes da geometria); só torna o
+   aviso honesto. */
+const BANNER_ROOM = 'dimensões da sala mudaram — recarrega a página (F5) para aplicar.\n';
+const BUILT_GEOM = {
+  halfX: CONFIG.pillars.halfX,
+  spacingZ: CONFIG.pillars.spacingZ,
+  section: CONFIG.pillars.section,
+  ceil: CONFIG.room.ceil,
+  cutDeg: CONFIG.hats.cutDeg,
+};
+function roomGeomDiffers() {
+  const eq = (a, b) => Math.abs(num(a, 0) - num(b, 0)) < 1e-6;
+  return !(eq(CONFIG.pillars.halfX, BUILT_GEOM.halfX)
+    && eq(CONFIG.pillars.spacingZ, BUILT_GEOM.spacingZ)
+    && eq(CONFIG.pillars.section, BUILT_GEOM.section)
+    && eq(CONFIG.room.ceil, BUILT_GEOM.ceil)
+    && eq(CONFIG.hats.cutDeg, BUILT_GEOM.cutDeg));
+}
 
 /* ---------------- sala implícita: 5 planos + F8 pilares/chão de madeira ---------------- */
 const room = buildRoom(scene, CONFIG);
@@ -165,7 +237,7 @@ const room = buildRoom(scene, CONFIG);
    entrarem na renderList do ReflectionProbe — é o coração da F8: a bola TEM de os espelhar. */
 let hats = null;
 try {
-  const mod = await import('./hats.js?v=12');
+  const mod = await import('./hats.js?v=14');
   hats = mod.createHats(scene, CONFIG);
   console.log('hats.js carregado.');
 } catch (err) {
@@ -199,7 +271,7 @@ try {
    escrito o `bola (0/1)` do localStorage. Ver o bloco F11 lá em cima. */
 let mikado = null;
 try {
-  const mod = await import('./mikado.js?v=2');
+  const mod = await import('./mikado.js?v=6');
   mikado = mod.createMikado(scene, CONFIG);
   console.log('mikado.js carregado —', mikado.barCount, 'barras.');
   /* mesmo fix S9 "parede de luz" dos robots: as PointLight do flash do mikado são fortes e estão
@@ -210,6 +282,22 @@ try {
   for (const L of mikado.lights) L.excludedMeshes.push(...room.planes);
 } catch (err) {
   moduleFail('mikado.js', err);
+}
+
+/* ---------------- F12 §5: ESTRELATO — import dinâmico (v2/stardom.js) ----------------
+   Decide, em fronteiras musicais, QUAL a peça que conta a história (bola · mikado · chapéus) ou se
+   é tudo smooth, e publica multiplicadores em `CONFIG.stardom.gain` que os módulos leem. A
+   exclusão mútua mikado↔chapéus é estrutural (só há uma estrela). Ver o cabeçalho de stardom.js.
+   Carregado DEPOIS dos chapéus (precisa de `hats.pulse` para os gestos) e antes do loop.
+   Como todos os módulos deste spike: se falhar, avisa no #err e o resto continua a funcionar —
+   os módulos leem `gain` com fallback 1 e correm como na F11. */
+let stardom = null;
+try {
+  const mod = await import('./stardom.js?v=2');
+  stardom = mod.createStardom(CONFIG, { hats });
+  console.log('stardom.js carregado.');
+} catch (err) {
+  moduleFail('stardom.js', err);
 }
 
 /* ---------------- luzes mínimas ----------------
@@ -265,6 +353,15 @@ function spotColor(sp) {
 function num(v, d) { return Number.isFinite(v) ? v : d; }
 const WHITE = new BABYLON.Color3(1, 1, 1);
 
+/* ---- F12 §3: onde está o CENTRO da bola neste frame ----
+   `ball.centerY` é a fonte de verdade (0 = a cota nominal da F8; o slider 'bola: altura (m)'
+   desloca-a). Devolve-se um Vector3 novo de propósito: quem chama faz `.subtract(pos)` e não pode
+   escrever num vetor partilhado. Sem `ball` (arranque/stub) devolve a origem = comportamento antigo. */
+function ballCenter() {
+  return new BABYLON.Vector3(0, num(ball && ball.centerY, 0), 0);
+}
+function ballCenterY() { return num(ball && ball.centerY, 0); }
+
 let activeSpotCount = 0, activeFlashCount = 0;
 function updateSpotLights() {
   /* `ball.mountedSpots` (F2) é a fonte única de verdade: já traz os focos com fade/spotFadeMix/
@@ -283,9 +380,13 @@ function updateSpotLights() {
       const light = spotLights[used];
       const I = num(m.I, 0);
       const S = new BABYLON.Vector3(m.S[0], m.S[1], m.S[2]);
+      /* ⚠ REGRA 3 (handoff S10, David): a POSIÇÃO do corpo montado NUNCA muda. Com a F12 a bola
+         sobe e desce ('bola: altura (m)'), mas o pinspot continua exatamente onde está pendurado
+         — o que muda é a MIRA. Por isso `pos` é sempre `S·spotDist` no mundo (independente da cota
+         da bola) e só a `direction` passa a apontar ao CENTRO REAL da bola (`ballCenter`). */
       const pos = S.scale(CONFIG.spotDist);
       light.position.copyFrom(pos);
-      light.direction = BABYLON.Vector3.Zero().subtract(pos).normalize();
+      light.direction = ballCenter().subtract(pos).normalize();
       // o raio de `mountedSpots` já tem (ou não, se for flash) o spotRadiusMul aplicado (ball.js)
       light.angle = 2 * Math.atan(Math.max(0.01, num(m.r, 0.15)) / CONFIG.spotDist) * 2.2;
       light.intensity = CONFIG.spotLightIntensity * I;
@@ -307,7 +408,7 @@ function updateSpotLights() {
       const pos = S.scale(CONFIG.spotDist);
       const I = num(sp.intensity, 0);
       light.position.copyFrom(pos);
-      light.direction = BABYLON.Vector3.Zero().subtract(pos).normalize();
+      light.direction = ballCenter().subtract(pos).normalize();   // F12 §3: mira segue a bola (posição não)
       light.angle = 2 * Math.atan((sp.radius * CONFIG.spotRadiusMul) / CONFIG.spotDist) * 2.2;
       light.intensity = CONFIG.spotLightIntensity * I;
       const col = spotColor(sp);
@@ -352,9 +453,26 @@ function updateWash() {
   // quase preto) — o David pediu explicitamente luz que se LEIA nas paredes/espelhos (feedback S9).
   // `×3.4` no default (0.35) dá um wash moderado mas nitidamente visível; a 1.0 (topo do knob)
   // fica bem mais forte, ainda sem lavar a bola (que não recebe luz própria, regra 6).
-  washHemi.intensity = inten * 3.4;
+  washHemi.intensity = inten * 3.4 * washStarMul();
   washHemi.diffuse.set(r, g, b);
   room.applyFloorColor(); // 'cor (0/1)' também recolapsa o tom de madeira do chão
+}
+/* F12 §5: "resto da sala EM BAIXO" no estrelato dos CHAPÉUS (spec §5b) — é o wash que recolhe.
+   Multiplicador vivo do stardom (1 = neutro). Nunca vai a 0: sem wash nenhum a sala fica preta e
+   deixa de se lerem os espelhos da bola, que foi o feedback S9 que originou o wash. */
+function washStarMul() {
+  const g = CONFIG.stardom && CONFIG.stardom.gain;
+  return g ? clamp(num(g.wash, 1), 0.25, 2) : 1;
+}
+let lastWashMul = -1;
+/* corre por frame, mas só toca na luz quando o multiplicador muda de facto (a rampa do stardom faz
+   isto mudar ~0,6 s por transição e ficar quieto o resto do tempo — custo praticamente nulo). */
+function updateWashStar() {
+  const m = washStarMul();
+  if (Math.abs(m - lastWashMul) < 0.002) return;
+  lastWashMul = m;
+  const W = CONFIG.wash || {};
+  washHemi.intensity = Math.max(0, num(W.intensity, 0.35)) * 3.4 * m;
 }
 updateWash();
 
@@ -471,6 +589,10 @@ function updateHalo(E) {
   const exS = clamp01(num(E.exS, 0));
   const a = 0.05 * num(CONFIG.halo, 0) * haze * spotGain * (0.35 + 0.65 * dk) * (1 - 0.75 * exS);
   haloMat.alpha = clamp01(a);
+  // F12 §3: a auréola é a névoa À VOLTA DA BOLA — tem de acompanhá-la quando ela sobe/desce
+  // (é um billboard solto no mundo, não é filho do root da bola).
+  const by = ballCenterY();
+  if (haloMesh.position.y !== by) haloMesh.position.y = by;
 }
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
@@ -479,7 +601,7 @@ function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
    Se ainda não existir (ou falhar), stub = esfera simples, só para se poder testar o resto. */
 let ball = null;
 try {
-  const mod = await import('./ball.js');
+  const mod = await import('./ball.js?v=3');
   ball = mod.createBall(scene, CONFIG);
   console.log('ball.js carregado —', ball && ball.tiles, 'tiles');
   // F8: pilares + chapéus + robots de teto entram na renderList do probe — a bola tem de espelhar a
@@ -491,6 +613,19 @@ try {
   const probeList = [...room.planes, ...(room.pillars || []), ...((hats && hats.meshes) || []),
     ...((robots && robots.meshes) || []), ...((mikado && mikado.meshes) || [])];
   if (ball.attachProbe) ball.attachProbe(probeList); // sala refletida nos espelhos (ONCE)
+  /* F12 §3: o `createMikado` correu ACIMA, com a cota ESTIMADA do `preApplyReloadKnobs`; o
+     `createBall` acabou de aplicar o CLAMP real (contra o pé-direito) e reescrever
+     `CONFIG.ballYEffective`. Se os dois números não baterem certo, a clareira do mikado está aberta
+     no sítio errado — regenera-se uma vez, aqui, e só nesse caso. */
+  if (mikado && mikado.rebuild && Number.isFinite(ball.centerY)) {
+    const est = num(CONFIG.ballHeightM, 3.5) - 3.5;
+    if (Math.abs(est - ball.centerY) > 1e-6) {
+      console.log('[MB2] F12: cota da bola clampada (' + est.toFixed(2) + ' → ' +
+        ball.centerY.toFixed(2) + ') — a regenerar a clareira do mikado.');
+      mikado.rebuild();
+      if (ball.refreshProbe) ball.refreshProbe();
+    }
+  }
 } catch (err) {
   moduleFail('ball.js', err);
   const stubMat = new BABYLON.PBRMaterial('stubMat', scene);
@@ -526,6 +661,7 @@ window.__MB2_ball = ball; // para o painel chamar rebuild() sem import circular
    à incidência dos `CONFIG.spots` e lavavam os espelhos com uma fonte que o rig real não aponta à
    bola. A bola vê-os só como CORPOS refletidos no probe (que é o que se vê nas fotos). */
 const ballExcluded = new Map(); // luz -> Set de meshes já excluídas dessa luz
+let lastExclChainGen = -1;
 function excludeBallFrom(lights) {
   if (!lights || !ball) return;
   const parts = [ball.mesh, ball.core, ball.bone, ball.chain, ball.chainHook].filter(Boolean);
@@ -538,7 +674,22 @@ function excludeBallFrom(lights) {
     L.excludedMeshes.push(...fresh);
   }
 }
+/* F12 §3: com a corrente a ser reconstruída ao vivo (slider de altura), as meshes VELHAS ficavam
+   para sempre nos `excludedMeshes` das luzes — e a arrastar o slider isso crescia sem limite (uma
+   fuga silenciosa que só se veria como perda de frame ao fim de uns minutos). Quando o `chainGen`
+   muda, purgam-se as meshes já destruídas de cada lista antes de acrescentar as novas. */
+function purgeDeadExclusions() {
+  const gen = num(ball && ball.chainGen, 0);
+  if (gen === lastExclChainGen) return;
+  lastExclChainGen = gen;
+  for (const [L, seen] of ballExcluded) {
+    for (const m of [...seen]) if (m.isDisposed && m.isDisposed()) seen.delete(m);
+    const keep = L.excludedMeshes.filter(m => !(m.isDisposed && m.isDisposed()));
+    if (keep.length !== L.excludedMeshes.length) L.excludedMeshes = keep;
+  }
+}
 function excludeBallFromRoomLights() {
+  purgeDeadExclusions();   // F12 §3: limpa a corrente antiga antes de registar a nova
   if (hats && hats.lights) excludeBallFrom(hats.lights);
   if (robots && robots.lights) excludeBallFrom(robots.lights);
   /* F11: o MIKADO está ACIMA da bola e não é um foco dela — a mesma regra dos robots. A bola vê o
@@ -561,10 +712,16 @@ let lastBallVisible = null;
 function applyBallVisibility() {
   const on = CONFIG.ballOn !== false;
   const parts = ball ? [ball.root, ball.chain, ball.chainHook].filter(Boolean) : [];
-  // re-aplica quando o estado muda OU quando aparecem meshes novas (corrente no 1º frame, rebuild)
+  /* re-aplica quando o estado muda OU quando aparecem meshes novas (corrente no 1º frame, rebuild).
+     F12 §3: a contagem de partes deixou de chegar como assinatura — com o slider 'bola: altura' a
+     corrente é RECONSTRUÍDA ao vivo e as meshes novas têm a mesma contagem que as velhas. Sem o
+     `chainGen` no cache-key, uma corrente nova nascia VISÍVEL com a bola desligada (o par
+     liga/desliga tem de ser simétrico — a armadilha da F11, noutra roupa). */
   const n = parts.length;
-  if (lastBallVisible === on + ':' + n) return;
-  lastBallVisible = on + ':' + n;
+  const gen = ball ? num(ball.chainGen, 0) : 0;
+  const key = on + ':' + n + ':' + gen;
+  if (lastBallVisible === key) return;
+  lastBallVisible = key;
   for (const m of parts) m.setEnabled(on);
   if (haloMesh) haloMesh.setEnabled(on);
 }
@@ -573,7 +730,7 @@ function applyBallVisibility() {
    beams.js pode ainda não existir (Opus em paralelo) — tolera com try/catch, tal como o ball.js. */
 let beams = null;
 try {
-  const mod = await import('./beams.js');
+  const mod = await import('./beams.js?v=2');
   beams = mod.createBeams(scene, CONFIG, ball);
   console.log('beams.js carregado.');
 } catch (err) {
@@ -582,7 +739,7 @@ try {
 
 let incident = null;
 try {
-  const mod = await import('./incident.js');
+  const mod = await import('./incident.js?v=2');
   incident = mod.createIncident(scene, CONFIG);
   console.log('incident.js carregado.');
 } catch (err) {
@@ -656,8 +813,10 @@ try {
     btn.id = 'xpl';
     ui.appendChild(btn);
   }
+  // F12 §6: default OFF (ver `migrateExplodeDefault` no topo do módulo — a migração já correu).
+  // A leitura passa a ser `=== 'on'`: sem valor gravado, a explosão está DESLIGADA.
   function getOn() {
-    try { return localStorage.getItem('mb2.explode') !== 'off'; } catch (e) { return true; }
+    try { return localStorage.getItem('mb2.explode') === 'on'; } catch (e) { return false; }
   }
   function setOn(on) {
     try { localStorage.setItem('mb2.explode', on ? 'on' : 'off'); } catch (e) { /* sem storage */ }
@@ -735,21 +894,49 @@ const panelApi = await initPanel(CONFIG, {
       if (ball && ball.refreshProbe) ball.refreshProbe();
     } catch (e) { console.error('onBallToggleChanged:', e); }
   },
+  /* F12 §3: 'bola: altura (m)' — a cota nova é aplicada pelo próprio `ball.update()` (que a lê por
+     frame e reconstrói a corrente), mas há duas coisas que o ball.js não pode fazer sozinho:
+       - o MIKADO tem de refazer a CLAREIRA à volta da posição nova (senão a bola sobe para dentro
+         das barras, ou fica um buraco no ar onde ela já não está);
+       - o PROBE tem de voltar a desenhar a sala a partir da cota nova.
+     Notar o que NÃO acontece aqui: os corpos dos focos não se mexem (regra 3 do handoff S10) — o
+     `updateSpotLights` re-mira-os no frame seguinte, sem lhes tocar na posição. */
+  onBallHeightChanged: () => {
+    try {
+      /* ⚠ ORDEM: primeiro a bola aplica (e CLAMPA) a cota nova e publica-a em
+         `CONFIG.ballYEffective`; só depois o mikado regenera, porque a clareira lê esse valor. Ao
+         contrário, o mikado usava a cota do frame anterior — medido: knob a 4,2 m dava clareira a
+         1,31 em vez de 1,50 (barras demasiado perto da bola). */
+      if (ball && ball.applyHeight) ball.applyHeight();
+      if (mikado && mikado.rebuild) mikado.rebuild();
+      if (ball && ball.refreshProbe) ball.refreshProbe();
+    } catch (e) { console.error('onBallHeightChanged:', e); }
+  },
   // F8: dimensões da sala (largura/comprimento/pé-direito) só se aplicam num RELOAD — a geometria
   // da sala/pilares/chapéus só se constrói uma vez no arranque (sem rebuild ao vivo, ver comentário
   // em config.js). Avisa alto no #err (mesmo padrão do moduleFail) em vez de silenciosamente não
   // fazer nada — o David mexe o slider, vê logo porque "não aconteceu nada".
+  /* F12: o aviso passa a ser comparado com a geometria REALMENTE construída (`BUILT_GEOM`), não
+     disparado por qualquer chamada ao setter. Ver o comentário longo do bloco `BUILT_GEOM` lá em
+     cima: reposições em bloco (repor ficheiro / ↺ reset / music-config) reescrevem os mesmos
+     valores e faziam nascer um banner permanente que o David não tinha como tirar.
+     Agora: aparece SÓ quando um knob ⟳ diverge de facto, e some quando volta ao valor da cena. */
   onRoomDimChanged: () => {
-    // ⚠ o painel chama `set()` para TODOS os knobs persistidos no arranque (para repor localStorage
-    // — mesmo padrão de onSpotsChanged/onShadeChanged), o que dispararia este aviso mesmo sem o
-    // David ter tocado em nada. `panelReady` (mais abaixo) só fica true depois do painel terminar
-    // essa reposição inicial — antes disso, ignora-se em silêncio.
+    // o painel chama `set()` para TODOS os knobs persistidos ao construir os grupos — antes de
+    // `panelReady` isso é reposição de localStorage, nunca um gesto do David.
     if (!panelReady) return;
     try {
       const d = document.getElementById('err');
-      if (d && !/dimensões da sala mudaram/.test(d.textContent)) {
+      if (!d) return;
+      const differs = roomGeomDiffers();
+      const shown = /dimensões da sala mudaram/.test(d.textContent);
+      if (differs && !shown) {
         d.style.display = 'block';
-        d.textContent = 'dimensões da sala mudaram — recarrega a página (F5) para aplicar.\n' + d.textContent;
+        d.textContent = BANNER_ROOM + d.textContent;
+      } else if (!differs && shown) {
+        // voltou ao valor com que a cena foi construída → o aviso deixou de fazer sentido
+        d.textContent = d.textContent.split(BANNER_ROOM).join('');
+        if (!d.textContent.trim()) d.style.display = 'none';
       }
     } catch (e) { /* sem DOM */ }
   },
@@ -949,8 +1136,11 @@ let skinAuto = 0;
    usa `mb.explode`).                                                                            */
 const exp = createExplode(CONFIG);
 
-const XPL_KEY = 'mb2.explode';
-let explodeEnabled = (() => { try { return localStorage.getItem(XPL_KEY) !== 'off'; } catch (e) { return true; } })();
+/* F12 §6: default OFF. A migração pontual já correu no topo do módulo (`migrateExplodeDefault`) —
+   aqui só se LÊ, e a leitura é `=== 'on'`: sem valor gravado, a explosão está desligada. */
+let explodeEnabled = (() => {
+  try { return localStorage.getItem(XPL_KEY) === 'on'; } catch (e) { return false; }
+})();
 exp.setEnabled(explodeEnabled);
 
 const xplBtn = document.getElementById('xpl');
@@ -1149,6 +1339,25 @@ scene.registerBeforeRender(() => {
   const ballMounted = CONFIG.ballOn !== false;
   if (!ballMounted) E.spotGain = 0;
 
+  /* ---- F12 §5: ESTRELATO ----
+     Corre ANTES do `ball.update` porque publica `CONFIG.stardom.gain`, que a bola (via `E.spotGain`,
+     já a seguir), o mikado, os chapéus e o wash leem no MESMO frame. Se corresse depois, cada peça
+     reagia ao estrelato do frame anterior — um frame de atraso não se vê, mas a ordem explícita
+     evita a próxima pessoa a pensar que é indiferente. */
+  if (stardom && stardom.update) {
+    try { stardom.update(tSec, dt); }
+    catch (e) { console.error('stardom.update:', e); }
+  }
+  /* O peso da BOLA no estrelato entra pelo MESMO canal que o `bola (0/1)` já usava: `E.spotGain`.
+     Não é um mute (a bola nunca pára nem apaga — regra 2 do CLAUDE.md): com o mikado ou os chapéus
+     como estrela a bola desce para ~0,45-0,55 do seu peso e passa a fundo, que é o que um técnico
+     faz quando quer que se olhe para outro lado. Com a bola desmontada, `E.spotGain` já é 0 acima
+     e a multiplicação mantém-no lá. */
+  if (stardom && CONFIG.stardom && CONFIG.stardom.on !== false) {
+    const gb = clamp(num(CONFIG.stardom.gain && CONFIG.stardom.gain.ball, 1), 0, 2);
+    E.spotGain = num(E.spotGain, 1) * gb;
+  }
+
   // ball.update primeiro: monta mountedSpots/ambientPoses deste frame (fonte única de verdade),
   // as SpotLight/RectAreaLight lêem-nos a seguir, no MESMO frame.
   if (ball && ball.update) {
@@ -1164,7 +1373,7 @@ scene.registerBeforeRender(() => {
     catch (e) { console.error('beams.update:', e); }
   }
   if (incident && incident.update) {
-    try { incident.update(ball && ball.mountedSpots, E, camera); }
+    try { incident.update(ball && ball.mountedSpots, E, camera, ballCenterY()); }   // F12 §3: cota da bola
     catch (e) { console.error('incident.update:', e); }
   }
   if (dots && dots.update) {
@@ -1187,7 +1396,17 @@ scene.registerBeforeRender(() => {
     try { mikado.update(tSec, dt); }
     catch (e) { console.error('mikado.update:', e); }
   }
+  updateWashStar();   // F12 §5: a sala recolhe quando os chapéus são a estrela (spec §5b)
   applyBallVisibility();   // F11: knob 'bola (0/1)' — só o David tira a bola da sala
+  /* F12 §3: a câmara aponta ao CENTRO da bola. Sem isto, subir a bola tirava-a do enquadramento (o
+     alvo da ArcRotateCamera ficava na origem) e o David via a bola a fugir para fora do ecrã em vez
+     de a ver subir. O `target` é o único que se mexe — o ângulo/raio de órbita são dele. */
+  {
+    const by = ballCenterY();
+    // ⚠ escreve-se `target.y` DIRETO, não `setTarget()`: em ArcRotateCamera o `setTarget` recalcula
+    // alpha/beta/radius a partir da posição atual e dava um salto de órbita a cada mudança de cota.
+    if (camera.target.y !== by) camera.target.y = by;
+  }
   excludeBallFromRoomLights(); // F8 (regra "nenhum foco inferior" + robots) — idempotente, ver acima
   // F8: chapéus e robots só ficam posicionados/ativados DEPOIS do 1º update() acima (attachProbe
   // correu antes disso, com os meshes ainda em posição/estado por omissão) — força mais UM refresh
@@ -1228,8 +1447,14 @@ scene.registerAfterRender(() => {
     `health ${health.toFixed(2)}  ·  rpm ${E.rotationRpm.toFixed(2)}  ·  flashes ${activeFlashCount}/${choreo.flashes.length}` +
     `  ·  estrobo ${CONFIG.strobe && CONFIG.strobe.enabled ? 'on' : 'off'}\n` +
     // F11: barras montadas + bloco aceso (−1 = todas) — o David vê logo se o mikado está a reagir
-    `mikado ${mikado ? (CONFIG.mikado.on === false ? 'off' : mikado.barCount + ' barras') : '—'}` +
-    `  ·  bola ${CONFIG.ballOn === false ? 'off' : 'on'}\n` +
+    // F12: barras + área do miolo (a contagem deriva da densidade) e a cota da bola
+    `mikado ${mikado ? (CONFIG.mikado.on === false ? 'off'
+      : `${mikado.barCount} barras (${(mikado.areaM2 || 0).toFixed(0)} m²)`) : '—'}` +
+    `  ·  bola ${CONFIG.ballOn === false ? 'off' : num(CONFIG.ballHeightM, 3.5).toFixed(2) + ' m'}\n` +
+    // F12 §5: estrela corrente + o gesto que os chapéus usam quando lhes toca
+    `estrela ${stardom ? (CONFIG.stardom.on === false ? 'off'
+      : `${stardom.star} (${stardom.changes} trocas${stardom.star === 'hats'
+        ? ', ' + (stardom.gain.hatsMode ? 'sequência' : 'juntos') : ''})`) : '—'}\n` +
     `[d]/[k] painel  ·  [h] HUD  ·  [w] skin  ·  [0] repor câmara  ·  rato: orbitar/zoom`;
 });
 
@@ -1251,6 +1476,11 @@ window.MB2 = {
   /* F11 (diagnóstico): o mikado, para inspeção/verificação pela consola — `MB2.mikado.rebuild()`
      regenera a disposição depois de escrever em `CONFIG.mikado.*` sem passar pelo painel. */
   get mikado() { return mikado; },
+  /* F12 (diagnóstico): o ESTRELATO (`MB2.stardom.star` = quem é a estrela agora, `.gain` = os
+     multiplicadores publicados) e os CHAPÉUS (`MB2.hats.pulse('all'|'seq'|'one', t)` dispara um
+     gesto à mão, para verificar a sequência ponta-a-ponta sem esperar pela música). */
+  get stardom() { return stardom; },
+  get hats() { return hats; },
   /* F5 (diagnóstico): coreografia e estado efetivo do frame. A API pública é `window.MIRRORBALL`. */
   get choreo() { return choreo; },
   get E() { return E; },

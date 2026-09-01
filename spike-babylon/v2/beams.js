@@ -285,6 +285,18 @@ export function createBeams(scene, CONFIG, ball) {
       const p = cam.globalPosition, l = Math.hypot(p.x, p.y, p.z) || 1;
       camDir.set(p.x / l, p.y / l, p.z / l);
     } else camDir.set(0, 0, 1);
+    /* F12 §3 (bola móvel): a direção é BOLA→câmara, não ORIGEM→câmara. Com o slider 'bola: altura'
+       longe do nominal, medir da origem dava um `camDir` inclinado e o teste `Rz` (feixe a vir para
+       nós → brilho aditivo) escolhia os feixes errados. Recalcula-se com o centro real da bola,
+       que o ball.js publica em `centerY`; sem essa propriedade (stub) o comportamento é o antigo. */
+    {
+      const by = num(ball && ball.centerY, 0);
+      if (by !== 0 && cam && cam.globalPosition) {
+        const p = cam.globalPosition, py = p.y - by;
+        const l2 = Math.hypot(p.x, py, p.z) || 1;
+        camDir.set(p.x / l2, py / l2, p.z / l2);
+      }
+    }
 
     const P = src.P, R = src.R, I = src.I;
     let nCone = 0, nGlow = 0;

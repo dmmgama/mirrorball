@@ -296,6 +296,27 @@ window.CONFIG = {
     count: 12,                 // knob 'chapéus: quantos' (0-12; 12 = 6 por linha)
     glow: 0.35,                // knob 'chapéus: brilho' (emissivo contínuo, dourado quente ~#d9a640)
     flashPerMin: 8,            // knob 'chapéus: flash /min' (0 = nunca; Poisson no CONJUNTO TODO, não por chapéu)
+
+    /* ---- F12 §4: os chapéus a SÉRIO (o flash da F8 era "levezinho" — David) ----
+       `flashGain` é a força do flash: multiplica o emissivo da calote E a PointLight que pinta a
+       sala. A F8 tinha 2,2 fixo no código e uma luz a ×8; o default sobe para 4,2 (quase o dobro
+       do que se via) e passa a ser knob, porque isto é afinação de sensação e o David vai querer
+       mexer nela ao vivo com música.
+       `flashMs` = duração de cada flash (a F8 sorteava 100-300 ms sem knob; o valor central fica
+       aqui, o sorteio mantém-se ±40% à volta dele para os flashes não soarem mecânicos).
+
+       MODOS (spec §4): 0 = SOZINHOS (o Poisson da F8: um chapéu ao calhas de vez em quando)
+                        1 = TODOS JUNTOS (a fila inteira acende de uma vez, é o gesto forte)
+                        2 = SEQUÊNCIA ponta-a-ponta, SIMÉTRICA nas duas filas — acende um par de
+                            cada vez (o chapéu k da fila esquerda E o chapéu k da direita, à mesma
+                            distância do topo), a percorrer a sala de X=−máx a X=+máx. As duas filas
+                            avançam EM ESPELHO, como pediu o David.
+       `seqStepMs` = tempo entre passos da sequência. TETO de 3 Hz da sala: mínimo 334 ms, clampado
+       no knob E no hats.js (`SEQ_MIN_MS`), como no mikado. */
+    flashGain: 4.2,            // knob 'chapéus: força do flash'
+    flashMs: 180,              // knob 'chapéus: flash ms'
+    flashMode: 0,              // knob 'chapéus: modo (0=sozinhos/1=juntos/2=sequência)'
+    seqStepMs: 380,            // knob 'chapéus: sequência ms/passo' (≥334 = teto de 3 Hz)
     heightM: 2.5,              // knob 'chapéus: altura (m)' — altura da BASE (boca) ao chão
     lineX: 4.5,                // |X| das 2 linhas (1 m de cada parede; F8-b: halfW 5.5 → 4.0→4.5)
     spacingZ: 2.5,             // passo entre chapéus ao longo de Z (15 m / 6 = 2,5 m)
@@ -336,6 +357,25 @@ window.CONFIG = {
      (stack completo). Mudar este knob REGENERA o mikado (main.js: onMikadoGeomChanged). */
   ballOn: true,                // knob 'bola (0/1)'
 
+  /* ---- F12 §3: ALTURA DA BOLA — slider ao vivo (sobe/desce, a corrente acompanha) ----
+     `ballHeightM` é a altura FÍSICA do CENTRO da bola ao CHÃO, na mesma unidade que o David usa em
+     todo o lado (docs/f8-sala-lux.md: 3,5 m = fundo a 2,5 m + raio 1 m). O mundo Babylon tem a
+     origem no centro da bola NOMINAL, portanto o deslocamento efetivo é
+        ballY = ballHeightM − 3.5      (0 = a bola nominal da F8, onde tudo foi calibrado)
+     `ball.js` publica esse `ballY` e desloca: a esfera, o núcleo, o osso, a auréola, a corrente
+     (que ENCURTA/ALONGA sozinha — nasce no topo da bola e morre no teto) e o ReflectionProbe.
+     Os pontos na parede e os feixes continuam a nascer da superfície da bola porque as contas de
+     interseção passam a ser feitas no referencial da BOLA (planos da sala deslocados de −ballY) e
+     o resultado é devolvido ao mundo com +ballY — ver `computeColors` em ball.js.
+
+     ⚠ REGRA 3 do handoff S10 (focos com posição FIXA): os corpos montados NÃO se mexem quando a
+     bola sobe. O que muda é a MIRA — a SpotLight passa a apontar ao novo centro. Isso está em
+     `main.js` (updateSpotLights / fixtures) e é deliberado: um foco real montado no teto não anda.
+
+     Faixa do knob: 2,0-4,6 m (fundo da bola nunca abaixo de 1 m do chão; topo + corrente mínima
+     sempre abaixo do teto — clampado em ball.js contra `room.ceil`). */
+  ballHeightM: 3.5,            // knob 'bola: altura (m)'
+
   /* ---- F11 — MIKADO DO TETO (v2/mikado.js) ----
      ~36 barras compridas e finas cruzadas em várias camadas, SÓ no miolo (dentro do retângulo dos
      pilares). Cada barra = tubo luminoso + perfil/calha metálica + terminais + 2 tirantes ao teto.
@@ -347,7 +387,12 @@ window.CONFIG = {
   mikado: {
     on: true,                  // knob 'mikado (0/1)'
     // ---- geometria (⟳ ao vivo via rebuild(), não exige reload) ----
-    count: 40,                 // knob 'mikado: barras' (0-44) — ~30-40 como nas fotos
+    /* F12 §1: DENSIDADE em barras/m² da zona central (retângulo dos pilares menos a folga), em vez
+       de uma contagem absoluta. Ao mexer na geometria da sala (vão/passo dos pilares) a malha
+       escala sozinha e mantém a mesma leitura — era o pedido do David. Com a sala default o miolo
+       dá ~49,3 m², logo 0,81 barras/m² = exatamente as 40 barras do default da F11 (nada muda visualmente para
+       quem não tocar no knob). Teto físico: MAX_BARS (48) no mikado.js. */
+    densityPerM2: 0.81,        // knob 'mikado: barras/m²'
     heightM: 4.0,              // knob 'mikado: altura (m)' — cota do CENTRO do mikado ao CHÃO (spec §3)
     spreadM: 0.85,             // knob 'mikado: espalha (m)' — banda de altura ocupada pelas camadas
     layers: 6,                 // knob 'mikado: camadas' — cotas distintas dentro da banda
@@ -375,5 +420,30 @@ window.CONFIG = {
     dropOn: true,              // knob 'mikado: drop (0/1)'
     dropBurstMul: 2,           // knob 'mikado: drop rajada ×' — o drop faz uma rajada mais longa
     autoPerMin: 4,             // knob 'mikado: auto /min' — rajadas sem motor (0 = só com música)
+  },
+
+  /* ---- F12 §5: ESTRELATO (v2/stardom.js) ----
+     Em cada momento UMA peça conta a história (bola · mikado · chapéus) ou nenhuma (smooth), e as
+     outras servem-na. A EXCLUSÃO MÚTUA mikado↔chapéus é estrutural: só há uma estrela de cada vez.
+     As trocas acontecem em FRONTEIRAS MUSICAIS (transição de FSM, drop, fim de frase) — nunca a
+     meio de nada. Ver o cabeçalho de stardom.js para o modelo completo.
+     O motor NUNCA liga/desliga elementos: um elemento desligado no painel deixa de ser elegível e o
+     peso dele redistribui-se pelos restantes. */
+  stardom: {
+    on: true,                  // knob 'estrelato (0/1)' — 0 devolve o spike ao comportamento da F11
+    strength: 1.0,             // knob 'estrelato: força' (0 = inerte, 1 = perfil cheio)
+    // VIÉS (spec §5: "knob para calibrar o viés de estrelato" — mais mikado / mais bola / mais chapéus)
+    biasBall: 1.0,             // knob 'estrelato: viés bola'
+    biasMikado: 1.0,           // knob 'estrelato: viés mikado'
+    biasHats: 1.0,             // knob 'estrelato: viés chapéus'
+    biasSmooth: 0.8,           // knob 'estrelato: viés smooth' (os vales que dão valor aos picos)
+    noRepeat: 0.75,            // knob 'estrelato: não repetir' (1 = nunca a mesma peça 2× seguidas)
+    holdBars: 8,               // knob 'estrelato: frase (compassos)' — troca no fim da frase
+    rampSec: 0.6,              // knob 'estrelato: rampa s' — entrada/saída de cada peça
+    autoSec: 12,               // knob 'estrelato: auto s' — cadência SEM motor de música
+    // chapéus sob comando do estrelato
+    hatsHz: 2.2,               // knob 'estrelato: chapéus Hz' (TETO 3 — regra invariável da sala)
+    hatsGesture: 2,            // knob 'estrelato: chapéus gesto' (0=juntos · 1=sequência · 2=alterna)
+    auxPerMin: 14,             // knob 'estrelato: chapéus aux /min' — apoio quando a BOLA é a estrela
   },
 };
