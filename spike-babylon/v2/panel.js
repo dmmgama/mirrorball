@@ -301,6 +301,9 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['pontos: escala', 0.05, 1, 0.01, v => CONFIG.dotScale = v, () => CONFIG.dotScale],
     ['pontos: queda', 0, 0.2, 0.002, v => CONFIG.dotFalloff = v, () => CONFIG.dotFalloff],
     ['pontos: teto cinza', 0, 255, 1, v => CONFIG.dotMaxGrey = v, () => CONFIG.dotMaxGrey],
+    /* V1 (research-realismo §2.1): 1 = losango (mancha com a silhueta da faceta), 0 = disco
+       redondo. Troca a mesh base do dots.js ao vivo, sem rebuild — o David compara a olho. */
+    ['pontos: losango (0/1)', 0, 1, 1, v => CONFIG.dotDiamond = (v >= 0.5 ? 1 : 0), () => (CONFIG.dotDiamond === 0 ? 0 : 1)],
     ['bloom: força', 0, 2, 0.05, v => CONFIG.bloomStrength = v, () => CONFIG.bloomStrength],
     ['bloom: limiar', 0, 1, 0.02, v => CONFIG.bloomThreshold = v, () => CONFIG.bloomThreshold],
     ['bloom: raio px', 1, 40, 1, v => CONFIG.bloomBlurPx = v, () => CONFIG.bloomBlurPx],
@@ -641,6 +644,7 @@ export async function initPanel(CONFIG, hooks = {}) {
       'feixes: base ×', 'feixes: glow z', 'feixes: glow ×',
       'feixes: fração máx (motor modula)', 'haze máx (motor modula)',
       'pontos: densidade (parede)', 'pontos: escala', 'pontos: queda', 'pontos: teto cinza',
+      'pontos: losango (0/1)',
       'cone incidente', 'cone: alcance', 'cone: largura máx', 'cone: teto (raios)', 'auréola',
     ]],
     // CHAPÉUS & ROBOTS — as luminárias do Lux (F8/F12), antes enterradas no fundo de "Sala".

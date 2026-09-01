@@ -1,7 +1,7 @@
 // v2/main.js — esqueleto do spike v2 (Fase 1): engine, sala, câmara, luzes mínimas, loop/HUD, painel `d`.
 // A malha da bola é responsabilidade do Opus (v2/ball.js); aqui só se importa dinamicamente com stub de recurso.
 import { buildRoom } from './room.js?v=4';
-import { initPanel } from './panel.js?v=18';
+import { initPanel } from './panel.js?v=19';
 import { applyColorToggle, hueToRgb } from './colorutil.js?v=1';
 
 const CONFIG = window.CONFIG;
@@ -1017,7 +1017,7 @@ try {
 /* ---------------- pontos na parede: import dinâmico (Fase 4) ---------------- */
 let dots = null;
 try {
-  const mod = await import('./dots.js');
+  const mod = await import('./dots.js?v=1');
   dots = mod.createDots(scene, CONFIG, ball);
   console.log('dots.js carregado.');
 } catch (err) {
