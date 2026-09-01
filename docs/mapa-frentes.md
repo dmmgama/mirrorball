@@ -350,6 +350,8 @@ Antes de tocar em qualquer frente:
 
 ## 4. Prioridades (leitura de 2026-09-01)
 
+**Plano de execução destas prioridades:** `docs/plan-s13-faseado.md` (3 pistas S/V/K, modelo por fase, ordem por sessão).
+
 1. **Debate do plano de sync (frente A → D).** Já decidido pelo David; é a maior dívida e a que
    determina o valor de tudo o resto — sem "quando", afinar luminárias é trabalho perdido. Entrada:
    `audit-sync-motor.md` + `research-lighting-pro.md` §4. Saída: um doc em `docs/` com o relógio
