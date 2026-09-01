@@ -34,7 +34,11 @@ export function buildRoom(scene, CONFIG) {
     m.maxSimultaneousLights = 12;
     return m;
   }
-  const BASE_ALBEDO = [0.055, 0.055, 0.055];
+  /* K1 (2026-09-01): antes [0.055,0.055,0.055] hardcoded. Escalar `CONFIG.baseAlbedo` (0-1)
+     aplicado às 3 componentes — ⟳ reload: `ceilMat`/`backMat`/`sideMat` só se criam uma vez aqui,
+     no build; o `reflMul.*` (já existente) continua a multiplicar isto ao vivo, sem tocar aqui. */
+  const baseA = Number.isFinite(CONFIG.baseAlbedo) ? CONFIG.baseAlbedo : 0.055;
+  const BASE_ALBEDO = [baseA, baseA, baseA];
   const ceilMat = makeSurfaceMat('roomCeilMat', BASE_ALBEDO);
   const backMat = makeSurfaceMat('roomBackMat', BASE_ALBEDO);
   const sideMat = makeSurfaceMat('roomSideMat', BASE_ALBEDO); // partilhado por room_left + room_right

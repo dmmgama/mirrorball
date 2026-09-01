@@ -1,7 +1,7 @@
 // v2/main.js — esqueleto do spike v2 (Fase 1): engine, sala, câmara, luzes mínimas, loop/HUD, painel `d`.
 // A malha da bola é responsabilidade do Opus (v2/ball.js); aqui só se importa dinamicamente com stub de recurso.
-import { buildRoom } from './room.js?v=4';
-import { initPanel } from './panel.js?v=18';
+import { buildRoom } from './room.js?v=5';
+import { initPanel } from './panel.js?v=19';
 import { applyColorToggle, hueToRgb } from './colorutil.js?v=1';
 
 const CONFIG = window.CONFIG;
@@ -273,6 +273,16 @@ addEventListener('pointercancel', () => { userPanning = false; }, { passive: tru
     CONFIG.room.ceil = CONFIG.roomHeightM - 3.5;
   }
   if (fin(stored['chapéus: corte da pala°'])) CONFIG.hats.cutDeg = stored['chapéus: corte da pala°'];
+  /* K1 (2026-09-01): knobs ⟳ dos POOLS/BUFFERS (mikado.js/crowd.js/hats.js/room.js — meshes e
+     materiais alocados uma vez no build). MESMA razão dos knobs de geometria acima: createMikado/
+     createCrowd/createHats/buildRoom correm ANTES do painel aplicar os sliders, por isso o valor
+     gravado tem de estar em CONFIG antes desse build. */
+  if (fin(stored['mikado: máx barras'])) CONFIG.mikado.maxBars = stored['mikado: máx barras'];
+  if (fin(stored['mikado: máx blocos'])) CONFIG.mikado.maxBlocks = stored['mikado: máx blocos'];
+  if (fin(stored['vultos: pool'])) CONFIG.crowd.maxPeople = stored['vultos: pool'];
+  if (fin(stored['chapéus: máx'])) CONFIG.hats.maxCount = stored['chapéus: máx'];
+  if (fin(stored['chapéus: luzes vivas máx'])) CONFIG.hats.maxLiveLights = stored['chapéus: luzes vivas máx'];
+  if (fin(stored['sala: albedo base'])) CONFIG.baseAlbedo = stored['sala: albedo base'];
   /* F11: 'bola (0/1)' TEM de estar aplicado antes de `createMikado` — a geração do mikado lê
      `CONFIG.ballOn` para decidir se abre a CLAREIRA à volta da bola (spec §4). Sem isto, quem
      tivesse a bola desligada em localStorage via na mesma o buraco no centro até mexer num knob.
@@ -390,7 +400,7 @@ const room = buildRoom(scene, CONFIG);
    entrarem na renderList do ReflectionProbe — é o coração da F8: a bola TEM de os espelhar. */
 let hats = null;
 try {
-  const mod = await import('./hats.js?v=14');
+  const mod = await import('./hats.js?v=15');
   hats = mod.createHats(scene, CONFIG);
   console.log('hats.js carregado.');
 } catch (err) {
@@ -424,7 +434,7 @@ try {
    escrito o `bola (0/1)` do localStorage. Ver o bloco F11 lá em cima. */
 let mikado = null;
 try {
-  const mod = await import('./mikado.js?v=9');
+  const mod = await import('./mikado.js?v=10');
   mikado = mod.createMikado(scene, CONFIG);
   console.log('mikado.js carregado —', mikado.barCount, 'barras.');
   /* mesmo fix S9 "parede de luz" dos robots: as PointLight do flash do mikado são fortes e estão
@@ -448,7 +458,7 @@ try {
    `createBall`, mais abaixo, compara o estimado com o CLAMPADO e regenera uma vez se diferirem. */
 let crowd = null;
 try {
-  const mod = await import('./crowd.js?v=4');
+  const mod = await import('./crowd.js?v=5');
   crowd = mod.createCrowd(scene, CONFIG);
   console.log('crowd.js carregado —', crowd.count, 'vultos.');
 } catch (err) {
@@ -808,7 +818,7 @@ function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
    Se ainda não existir (ou falhar), stub = esfera simples, só para se poder testar o resto. */
 let ball = null;
 try {
-  const mod = await import('./ball.js?v=7');
+  const mod = await import('./ball.js?v=8');
   ball = mod.createBall(scene, CONFIG);
   console.log('ball.js carregado —', ball && ball.tiles, 'tiles');
   // F8: pilares + chapéus + robots de teto entram na renderList do probe — a bola tem de espelhar a

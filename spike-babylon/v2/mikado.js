@@ -85,7 +85,7 @@ function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
    dívida registada na F12: a renderList é fixada com o pool inteiro no `attachProbe`). Fica na
    mesma dívida, agora maior; a correção é refazer a renderList no `rebuild()` — fora do âmbito
    fechado da F13, mas é o primeiro sítio a olhar se a perf incomodar. */
-const MAX_BARS = 112;
+const MAX_BARS_FALLBACK = 112;   // K1: fallback se CONFIG.mikado.maxBars faltar/for inválido (regra 7)
 const MIN_GAP_S = 1 / 3;      // teto ABSOLUTO de 3 Hz entre flashes (regra invariável da sala)
 
 /* Paleta fixada na spec: vermelho, branco, azul. Ordem = índice do knob 'mikado: cor (0=rot)'.
@@ -110,6 +110,9 @@ function makeRng(seed) {
 
 export function createMikado(scene, CONFIG) {
   const M = () => CONFIG.mikado || {};
+  /* K1 (2026-09-01): pool de barras — antes const MAX_BARS=112 hardcoded. ⟳ reload: lido UMA vez
+     aqui, no build (o pool de meshes aloca-se a seguir). Mesmo valor de hoje por defeito. */
+  const MAX_BARS = num((CONFIG.mikado || {}).maxBars, MAX_BARS_FALLBACK);
   /* F12 §5: multiplicador do ESTRELATO (v2/stardom.js). 1 = neutro (comportamento da F11); perto
      de 0 = o mikado está a servir outra peça e recolhe. Afeta a PROBABILIDADE de a rajada arrancar
      e o brilho de REPOUSO — nunca o teto de 3 Hz, que é invariável e continua clampado no
@@ -152,7 +155,9 @@ export function createMikado(scene, CONFIG) {
      modo "blocos" poder acender um grupo e deixar os outros apagados, com custo fixo de shaders.
      Escrever `.emissiveColor.set(...)` numa Color3 EXISTENTE (nunca reatribuir a propriedade —
      recompila o shader, ver a nota de perf do estrobo em main.js). */
-  const MAX_BLOCKS = 12;
+  // K1 (2026-09-01): antes const MAX_BLOCKS=12 hardcoded. ⟳ reload: os materiais por bloco só se
+  // criam uma vez aqui. Mesmo valor de hoje por defeito.
+  const MAX_BLOCKS = num((CONFIG.mikado || {}).maxBlocks, 12);
   const tubeMats = [];
   for (let b = 0; b < MAX_BLOCKS; b++) {
     const m = new BABYLON.PBRMaterial('mikadoTube' + b, scene);

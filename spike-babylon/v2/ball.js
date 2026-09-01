@@ -896,7 +896,10 @@ export function createBall(scene, CONFIG) {
   let lastColorT = -1;
   // termo `(0.4+0.6·smooth(0.5,0,nz))` do osso, médio sobre os tiles visíveis (ver buildBone)
   let boneNzTerm = 0.7;
-  const COLOR_HZ = 20;                 // cadeia a 20 Hz (o brief autoriza se pesar); rotação continua a 60
+  /* K1 (2026-09-01): antes const COLOR_HZ=20 hardcoded. Ao VIVO — lido a cada frame no loop de
+     update (abaixo), sem rebuild; piso 10 / teto 60 (knob 'bola: cadeia Hz'). Fallback 20 = valor
+     de hoje (regra 7). */
+  function colorHz() { return clamp(num(C.colorHz, 20), 10, 60); }
   /* F15: tabela de oclusão dos VULTOS já convertida para o referencial da bola e para RAIOS
      ([x, z, raio², yTop] por pessoa). Alocada uma vez e reutilizada — nunca por frame. Ver o bloco
      F15 em `computeColors` e docs/f15-vultos.md §Oclusão. */
@@ -1431,7 +1434,7 @@ export function createBall(scene, CONFIG) {
     // cadeia primeiro (produz `boneNzTerm` e os spots montados), material/osso depois
     // F7: com a bola partida a cadeia CPU corre a cada frame (não a COLOR_HZ) — os estilhaços
     // movem-se depressa e a 20 Hz o reflexo/feixes ficavam a saltar atrás da geometria.
-    if (exOn || lastColorT < 0 || (t - lastColorT) >= (1 / COLOR_HZ)) {
+    if (exOn || lastColorT < 0 || (t - lastColorT) >= (1 / colorHz())) {
       lastColorT = t;
       computeColors(t, spots, E);
       updateChainTone();   // depende de mountedSpots, que computeColors acabou de montar
