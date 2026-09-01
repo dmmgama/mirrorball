@@ -268,8 +268,13 @@ export function createBeams(scene, CONFIG, ball) {
     const wOuter = num(cfg('beamWidthDeg', 0.7), 0.7) * D2R * lerp(0.45, 1.8, soft);
     const widths = [wOuter, wOuter * 0.55, wOuter * 0.22];
     const aw = [lerp(0.04, 0.34, soft), lerp(0.12, 0.34, soft), lerp(0.84, 0.32, soft)];
-    // comprimento em raios: `beamLen3D · beamLength / 0.78` (:568), knob `beamLen` a sobrepor-se
-    const L3 = Math.max(0.05, num(cfg('beamLen', num(cfg('beamLen3D', 3.6), 3.6) * num(cfg('beamLength', 0.78), 0.78) / 0.78), 6));
+    /* comprimento em raios: `beamLen3D · beamLength / 0.78` (:568), knob `beamLen` a sobrepor-se.
+       F13 §3: o knob continua a valer RAIOS (é assim que está documentado e afinado), por isso
+       multiplica-se pelo raio vivo para dar metros. Uma bola maior lança feixes proporcionalmente
+       mais longos — que é o que acontece de facto: o feixe é a mancha do foco a divergir a partir
+       de um espelho maior. Com Ø 2,0 m `rBall` = 1 e nada muda. */
+    const rBall = clamp(num(cfg('ballR', 1), 1) || 1, 1.0, 1.5);
+    const L3 = Math.max(0.05, num(cfg('beamLen', num(cfg('beamLen3D', 3.6), 3.6) * num(cfg('beamLength', 0.78), 0.78) / 0.78), 6)) * rBall;
     const glowZ = clamp(num(cfg('beamGlowZ', 0.8), 0.8), 0.01, 0.999);
     // peso do brilho aditivo por cima do cone (0 = só cones). 0.25 medido de frente para o spot0:
     // com 40 feixes frontais o centro lê-se como espelhos a brilhar, não como um disco branco liso.
@@ -330,7 +335,9 @@ export function createBeams(scene, CONFIG, ball) {
         const t = (Rz - glowZ) / (1 - glowZ);       // 0 na fronteira → 1 a vir direito a nós
         const a = base * glowMul * t;
         if (a > 0.0005) {
-          const rad = 0.02 + 0.10 * t;              // raio como estava
+          // F13 §3: em raios da bola (o brilho é a imagem do espelho a vir direito à câmara),
+          // por isso acompanha o raio vivo. Com Ø 2,0 m `rBall` = 1 e o valor é o de sempre.
+          const rad = (0.02 + 0.10 * t) * rBall;    // raio como estava, × raio da bola
           // billboard: encara sempre a câmara
           BJS.Matrix.ScalingToRef(rad, rad, rad, mScale);
           quatFromZTo(camDir, qRot);

@@ -376,6 +376,31 @@ window.CONFIG = {
      sempre abaixo do teto — clampado em ball.js contra `room.ceil`). */
   ballHeightM: 3.5,            // knob 'bola: altura (m)'
 
+  /* ---- F13 §3: DIÂMETRO DA BOLA — knob 2,0-3,0 m em passos de 0,5 m ----
+     A bola nasceu Ø 2,0 m (raio 1) e o mundo é em METROS, portanto durante 12 fases "1 raio" e
+     "1 metro" foram a MESMA coisa e o spike encheu-se de literais `1` que são o raio da bola
+     disfarçado de metro. Este knob quebra essa identidade, e a regra passa a ser:
+
+       **`CONFIG.ballR` (= ballDiameterM/2) é a ÚNICA fonte de verdade do raio.** Tudo o que era
+       "1 raio" deriva daí; tudo o que era "1 metro de sala" fica literal.
+
+     Quem é quem (decidido e medido nesta fase, para não se reabrir):
+       ESCALA COM R — a esfera de espelhos, o núcleo, o osso, o topo da corrente (`yTop`), a
+         auréola, a largura do tile (base dos feixes), o raio/mira dos focos na superfície
+         (`spots[].radius`/`aim`), o alcance do feixe e do cone incidente, a entrada do cone na
+         esfera, a clareira do mikado, o clamp de altura (fundo/topo da bola), e a `camDistance`
+         (para o enquadramento não mudar quando a bola cresce).
+       NÃO ESCALA (fica em METROS) — as dimensões da sala, `spotDist` (um foco real montado em
+         treliça NÃO se afasta porque trocaram a bola — regra 3 do handoff S10), o comprimento do
+         ELO da corrente (um elo real não cresce), os corpos PAR36 (`fixtureScale`), os chapéus,
+         os robots, os pilares, e as folgas em metros (1 m do chão, 0,25 m do teto, folga das
+         paredes do mikado).
+
+     RELOAD? NÃO: muda ao vivo (`onBallDiameterChanged` em main.js) — refaz a bola, reaplica a
+     altura (o clamp depende do raio), regenera a clareira do mikado e refresca o probe. */
+  ballDiameterM: 2.0,          // knob 'bola: diâmetro (m)' — 2,0 / 2,5 / 3,0
+  ballR: 1.0,                  // DERIVADO (= ballDiameterM/2). Nunca se escreve à mão: ver ballR() no main.js
+
   /* ---- F11 — MIKADO DO TETO (v2/mikado.js) ----
      ~36 barras compridas e finas cruzadas em várias camadas, SÓ no miolo (dentro do retângulo dos
      pilares). Cada barra = tubo luminoso + perfil/calha metálica + terminais + 2 tirantes ao teto.
@@ -402,6 +427,18 @@ window.CONFIG = {
     pitchDeg: 6,               // knob 'mikado: inclinação°' — pitch raso (nas fotos quase à mesma cota)
     axisBias: 0.35,            // knob 'mikado: viés eixo' — 0 = azimutes uniformes, 1 = tudo ao comprido
     insetM: 0.35,              // knob 'mikado: folga pilares (m)' — as pontas não roçam os pilares
+    /* ---- F13 §1: MIKADO NA SALA TODA (toggle) ----
+       0 (default) = modo da F11: só o MIOLO, dentro do retângulo dos pilares (spec §2 original —
+           nada nos corredores; é o que as fotos do Lux mostram).
+       1 = a SALA TODA, até `wallMarginM` das paredes. A área salta de ~49 m² para ~117 m² na sala
+           nominal e a DENSIDADE (barras/m², F12 §1) faz a contagem acompanhar sozinha — não é
+           preciso mexer em mais nenhum knob.
+       INVARIANTES que se mantêm nos dois modos: a clareira da bola (`ballClearM` + raio), o clamp
+       ao teto (`layout()`), e — novo — as barras nunca ATRAVESSAM os pilares: no modo sala toda a
+       barra que cruza a planta de um pilar montado é REJEITADA (não encurtada; ver a decisão
+       documentada em mikado.js). Regenera ao vivo (onMikadoGeomChanged), sem reload. */
+    fullRoom: 0,               // knob 'mikado: sala toda (0/1)'
+    wallMarginM: 1.0,          // knob 'mikado: folga paredes (m)' — só no modo sala toda (David: 1 m)
     ballClearM: 0.5,           // knob 'mikado: clareira bola (m)' — margem além do raio da bola (1 m)
     seed: 7,                   // knob 'mikado: semente' — disposição estável e reproduzível
     // ---- efeito/flashes ----

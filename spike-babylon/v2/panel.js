@@ -47,6 +47,9 @@ const RENAMED = {
   'strobe: força (fase 4)': 'strobe: força',
   'strobe: dura ms (fase 4)': 'strobe: dura ms',
   'health (motor manda) (fase 5)': 'health (motor manda)',
+  // F13 §2: deixou de ser um mostrador de runtime e passou a ser um knob a sério (persistido).
+  // O nome antigo ("motor manda") mentia: com o disjuntor a 0 quem manda é ele, o slider.
+  'sphereOpacity (motor manda)': 'bola: opacidade (0-1)',
 };
 function migrate(obj) {
   if (!obj || typeof obj !== 'object') return {};
@@ -87,6 +90,9 @@ export async function initPanel(CONFIG, hooks = {}) {
   // F12 §3: altura da bola ao vivo — regenera a clareira do mikado e refresca o probe (a bola
   // mudou de sítio, o reflexo tem de ser recalculado a partir da cota nova).
   const onBallHeightChanged = hooks.onBallHeightChanged || noop;
+  // F13 §3: diâmetro da bola ao vivo — escala a bola, reaplica a cota (o clamp depende do raio),
+  // regenera a clareira do mikado e refresca o probe.
+  const onBallDiameterChanged = hooks.onBallDiameterChanged || noop;
 
   const CH = CONFIG.choreo, AMB = CONFIG.ambient;
   // 'health' é mecânico (placeholder local) até o Opus criar window.MIRRORBALL.setHealth/getHealth
@@ -150,8 +156,14 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['haze máx (motor modula)', 0, 1, 0.01, v => { CONFIG.hazeMax = v; CONFIG.haze = v; }, () => CONFIG.hazeMax],
     ['feixes+haze: motor manda (0/1)', 0, 1, 1, v => CONFIG.beamsMotor = !!v, () => CONFIG.beamsMotor ? 1 : 0],
     ['focos+flashes: motor manda (0/1)', 0, 1, 1, v => CONFIG.spotsMotor = !!v, () => CONFIG.spotsMotor ? 1 : 0],
+    /* ---- F13 §2: o par da OPACIDADE (o bug do David) ----
+       `opacidade: motor manda (0/1)` = 0 (default, e é o default desde a F5) → o motor de música NÃO
+       escreve `sphereOpacity` (guard em music.js:2108) E o preset DEAD do health deixa de morder a
+       opacidade (guard novo em main.js `effective()`). Nesse estado o slider abaixo é a SAÍDA, e a
+       1,00 a bola fica completamente opaca — que era exatamente o que não se conseguia.
+       Os dois PERSISTEM: o slider deixou de ser um mostrador de runtime (ver RENAMED lá em cima). */
     ['opacidade: motor manda (0/1)', 0, 1, 1, v => CONFIG.opacityMotor = !!v, () => CONFIG.opacityMotor ? 1 : 0],
-    ['sphereOpacity (motor manda)', 0, 1, 0.01, v => CONFIG.sphereOpacity = v, () => CONFIG.sphereOpacity],
+    ['bola: opacidade (0-1)', 0, 1, 0.01, v => CONFIG.sphereOpacity = v, () => CONFIG.sphereOpacity],
     ['health (motor manda)', 0, 1, 0.01,
       v => { health = v; if (window.MIRRORBALL && window.MIRRORBALL.setHealth) window.MIRRORBALL.setHealth(v); },
       () => (window.MIRRORBALL && window.MIRRORBALL.getHealth) ? window.MIRRORBALL.getHealth() : health],
@@ -166,6 +178,10 @@ export async function initPanel(CONFIG, hooks = {}) {
       'feixes+haze: motor manda (0/1)',
       'focos+flashes: motor manda (0/1)',
       'opacidade: motor manda (0/1)',
+      // F13 §2: PASSA A PERSISTIR. Antes era runtime puro: o David punha a bola opaca, recarregava
+      // e voltava ao valor do config — parecia que "não dava para fixar". Com o disjuntor a 0 este
+      // é um knob de afinação como outro qualquer, e um knob de afinação grava-se.
+      'bola: opacidade (0-1)',
     ])
   );
 
@@ -299,6 +315,16 @@ export async function initPanel(CONFIG, hooks = {}) {
        clampa contra o pé-direito real, para a bola nunca sair da sala). */
     ['bola: altura (m)', 2.0, 4.6, 0.05,
       v => { CONFIG.ballHeightM = v; onBallHeightChanged(); }, () => CONFIG.ballHeightM],
+    /* ---- F13 §3: DIÂMETRO da bola, 2,0-3,0 m em passos de 0,5 (spec do David) ----
+       Ao vivo: `onBallDiameterChanged` escala a bola, REAPLICA a altura (o clamp fundo/teto
+       depende do raio), regenera a clareira do mikado e refresca o probe — a mesma sequência do
+       slider de altura, e pela mesma razão (a ordem importa: primeiro o raio e a cota efetiva,
+       só depois quem os lê).
+       ⚠ Nota de utilização: com a bola maior a faixa ÚTIL do slider de altura encolhe (o fundo
+       nunca desce abaixo de 1 m do chão nem o topo colide com o teto). O slider continua a ir aos
+       4,6 mas o valor EFETIVO é clampado — `CONFIG.ballYEffective` é quem manda. */
+    ['bola: diâmetro (m)', 2.0, 3.0, 0.5,
+      v => { CONFIG.ballDiameterM = v; onBallDiameterChanged(); }, () => CONFIG.ballDiameterM],
     ['mikado (0/1)', 0, 1, 1, v => { CONFIG.mikado.on = v >= 0.5; }, () => (CONFIG.mikado.on === false ? 0 : 1)],
     // geometria (rebuild ao vivo)
     /* F12 §1: a contagem passou a DENSIDADE (barras/m² do miolo) — muda a geometria da sala e a
@@ -315,6 +341,16 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['mikado: inclinação°', 0, 25, 1, v => { CONFIG.mikado.pitchDeg = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.pitchDeg],
     ['mikado: viés eixo', 0, 1, 0.05, v => { CONFIG.mikado.axisBias = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.axisBias],
     ['mikado: folga pilares (m)', 0, 1.5, 0.05, v => { CONFIG.mikado.insetM = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.insetM],
+    /* ---- F13 §1: MIKADO NA SALA TODA ----
+       0 = miolo (retângulo dos pilares, o modo da F11 — default, nada muda para quem não clicar).
+       1 = a sala inteira até 'folga paredes' das paredes; a densidade barras/m² faz a contagem
+       crescer sozinha, e as barras que cruzariam um PILAR montado são rejeitadas (ver mikado.js).
+       A 'folga paredes' só tem efeito no modo 1. Ambos regeneram ao vivo. */
+    ['mikado: sala toda (0/1)', 0, 1, 1,
+      v => { CONFIG.mikado.fullRoom = v >= 0.5 ? 1 : 0; onMikadoGeomChanged(); },
+      () => (num(CONFIG.mikado.fullRoom, 0) >= 0.5 ? 1 : 0)],
+    ['mikado: folga paredes (m)', 0.2, 3, 0.1,
+      v => { CONFIG.mikado.wallMarginM = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.wallMarginM],
     ['mikado: clareira bola (m)', 0, 2, 0.05, v => { CONFIG.mikado.ballClearM = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.ballClearM],
     ['mikado: semente', 1, 99, 1, v => { CONFIG.mikado.seed = v; onMikadoGeomChanged(); }, () => CONFIG.mikado.seed],
     // efeito/flashes (ao vivo, sem rebuild). ⚠ 'mikado: flash Hz' TEM teto 3 — regra da sala.
@@ -457,10 +493,13 @@ export async function initPanel(CONFIG, hooks = {}) {
        'bola (0/1)' vive AQUI, ao lado de 'mikado (0/1)': são o par que o David usa para escolher a
        peça central da sala (bola ↔ mikado ↔ as duas), e é o gesto que a spec §4 descreve. */
     ['Mikado & Bola', [
-      'bola (0/1)', 'bola: altura (m)', 'mikado (0/1)',
+      'bola (0/1)', 'bola: altura (m)', 'bola: diâmetro (m)', 'mikado (0/1)',
       'mikado: barras/m²', 'mikado: altura (m)', 'mikado: espalha (m)', 'mikado: camadas',
       'mikado: barra min (m)', 'mikado: barra máx (m)', 'mikado: Ø tubo (m)', 'mikado: inclinação°',
-      'mikado: viés eixo', 'mikado: folga pilares (m)', 'mikado: clareira bola (m)', 'mikado: semente',
+      'mikado: viés eixo', 'mikado: folga pilares (m)',
+      // F13 §1: o par do modo "sala toda"
+      'mikado: sala toda (0/1)', 'mikado: folga paredes (m)',
+      'mikado: clareira bola (m)', 'mikado: semente',
       'mikado: repouso', 'mikado: flash força', 'mikado: flash ms', 'mikado: flash Hz',
       'mikado: flashes/rajada', 'mikado: modo (0=todas/1=blocos)', 'mikado: tam. bloco',
       'mikado: cor (0=rot)', 'mikado: luz sala ×',
@@ -482,7 +521,7 @@ export async function initPanel(CONFIG, hooks = {}) {
     ]],
     ['Motor', [
       'feixes+haze: motor manda (0/1)', 'focos+flashes: motor manda (0/1)',
-      'opacidade: motor manda (0/1)', 'health (motor manda)', 'sphereOpacity (motor manda)',
+      'opacidade: motor manda (0/1)', 'health (motor manda)', 'bola: opacidade (0-1)',
       'rotationRpm (motor manda)', 'strobe fundo (0/1)', 'strobe: frequência ×',
       'strobe: força', 'strobe: dura ms',
     ]],

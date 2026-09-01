@@ -28,6 +28,7 @@ const GRAD_STOPS = [
 const RADIAL_SEGMENTS = 10; // secção do tronco (barato — só a névoa, não precisa de mais)
 
 function num(v, d) { return Number.isFinite(v) ? v : d; }
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
 // Constrói UM tronco de cone unitário ao longo de +Z, base em z=0 (fonte, alpha 0) até z=1 (limbo,
 // alpha do gradiente), raio 1 em toda a extensão (o achatamento h0/h1 entra por escala não-uniforme
@@ -157,33 +158,47 @@ export function createIncident(scene, CONFIG) {
     const a0 = CONFIG.incidentAlpha * haze * Math.min(1, I);
     if (!(a0 >= 0.002)) return false;
 
-    // S = direção bola->fonte (unitário); C = offset de mira (aim), já em raios, pequeno.
+    /* S = direção bola->fonte (unitário); C = offset de mira (aim), já em raios, pequeno.
+       F13 §3: TODO este bloco corre no referencial da BOLA, EM RAIOS (é onde `C`, `sp.r`,
+       `incidentLen` e `incidentMaxPx` foram afinados) e só converte para metros na SAÍDA —
+       exatamente o padrão do `computeColors` do ball.js. `rb` = raio vivo; a 1,0 (Ø 2,0 m) o
+       resultado é bit a bit o da F12. */
+    const rb = clamp(num(CONFIG.ballR, 1), 1.0, 1.5);
     const S = sp.S, C = sp.C || [0, 0, 0];
     const cc = Math.hypot(C[0], C[1], C[2]);
-    const tIn = Math.sqrt(Math.max(0, 1 - cc * cc)); // entrada do eixo na esfera (:519)
+    const tIn = Math.sqrt(Math.max(0, 1 - cc * cc)); // entrada do eixo na esfera unitária (:519)
     if (!Number.isFinite(tIn)) return false;
     const hit = [C[0] + S[0] * tIn, C[1] + S[1] * tIn, C[2] + S[2] * tIn];
     const far = CONFIG.incidentLen;
     /* `hit`/`src` nascem no referencial da BOLA (esfera de raio 1 na origem). F12 §3: leva-se `src`
        já para o MUNDO com `+ballY`, porque tanto o teste contra a câmara abaixo como a translação
-       da mesh são em coordenadas absolutas. A DIREÇÃO (S) não muda com a translação. */
-    const src = [hit[0] + S[0] * far, hit[1] + S[1] * far + num(ballY, 0), hit[2] + S[2] * far];
+       da mesh são em coordenadas absolutas. A DIREÇÃO (S) não muda com a translação.
+       F13 §3: `×rb` (raios → metros) ANTES do `+ballY`, que é uma cota do mundo. */
+    const src = [
+      (hit[0] + S[0] * far) * rb,
+      (hit[1] + S[1] * far) * rb + num(ballY, 0),
+      (hit[2] + S[2] * far) * rb,
+    ];
 
     // não desenhar se a fonte cai perto/atrás da câmara (:523) — o original testa `src.z > camD-2.5`
     // no espaço de câmara fixa em +Z; aqui a câmara orbita, então usa-se a distância euclidiana real
     // fonte↔câmara como equivalente 3D (mesmo limiar, divergência assumida — ver PARITY §1.7).
+    // F13 §3: `src` passou a estar em METROS, o limiar `2.5` está em RAIOS → `×rb` para comparar
+    // na mesma unidade (senão a bola grande cortava cones que devia desenhar).
     const distSrcCam = Math.hypot(src[0] - camPos.x, src[1] - camPos.y, src[2] - camPos.z);
-    if (distSrcCam < 2.5) return false;
+    if (distSrcCam < 2.5 * rb) return false;
 
-    const axisLen = far; // comprimento do eixo em raios (hit -> src)
+    const axisLen = far * rb; // F13 §3: comprimento do eixo (hit -> src), raios → METROS
     if (!(axisLen > 1e-4)) return false;
 
     // meia-largura: teto relativo (hRef·incidentMaxWidth) e teto absoluto (incidentMaxPx raios) — vence
     // o menor (:532-535). Em 3D não há Rpx/projeção: hRef = raio da mancha na bola (já em raios, sp.r),
     // e incidentMaxPx é diretamente uma fração do raio da bola (=1) — ver comentário de CONFIG.
+    // F13 §3: `hRef`/`incidentMaxPx` estão em RAIOS; `×rb` converte a meia-largura para metros
+    // (`incidentMaxWidth` é uma RAZÃO e fica como está).
     const hRef = sp.r;
     const cap = Math.min(hRef * CONFIG.incidentMaxWidth, CONFIG.incidentMaxPx);
-    const halfWidth = Math.min(hRef, cap);
+    const halfWidth = Math.min(hRef, cap) * rb;
     if (!(halfWidth > 1e-5)) return false;
 
     // orientação: eixo unitário do cone unitário é +Z local; alinha com (src -> hit), ou seja -S.

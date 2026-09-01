@@ -195,6 +195,20 @@ export function createBall(scene, CONFIG) {
     }
   }
   syncCoreMat();
+  /* ================= F13 §3: RAIO DA BOLA (`ballR`) =================
+     Até à F12 o raio era a constante `1` espalhada por todo o ficheiro (e por main.js/incident.js/
+     beams.js/mikado.js), porque "1 raio = 1 metro". `ballR()` é agora a fonte de verdade ÚNICA —
+     lê-se sempre por função, nunca se guarda numa constante de módulo, senão o knob deixava de
+     atuar ao vivo. Clampado à faixa do knob (1,0-1,5 = Ø 2,0-3,0 m) e NaN-safe (regra 7). */
+  function ballR() {
+    const d = num(C.ballDiameterM, 2.0);
+    const r = (Number.isFinite(d) ? d : 2.0) / 2;
+    return clamp(r, 1.0, 1.5);
+  }
+  /* O núcleo escuro fica 2% dentro da casca de espelhos (1,96 = 2·R·0,98 com R=1). A esfera é
+     criada com Ø nominal e ESCALADA: recriá-la a cada mudança de knob era um mesh novo por
+     clique, com o `excludeBallFromRoomLights`/`applyBallVisibility` do main.js a ficar a apontar
+     para a mesh morta — exatamente a armadilha nº3 da F12 (caches invalidadas). */
   const core = BJS.MeshBuilder.CreateSphere('ballCore', { diameter: 1.96, segments: 24 }, scene);
   core.material = coreMat;
 
@@ -228,10 +242,18 @@ export function createBall(scene, CONFIG) {
     const floorY = num(R.floor, -3.5), ceilY = num(R.ceil, 2.0);
     const h = num(C.ballHeightM, BALL_NOMINAL_M);
     let y = (Number.isFinite(h) ? h : BALL_NOMINAL_M) - BALL_NOMINAL_M;
-    // fundo da bola (y − 1) nunca abaixo de floor + 1 m
-    const yMin = floorY + 1 + 1;
-    // topo da bola (y + 1) com pelo menos 0,25 m até ao teto (espaço para o gancho + 1 elo)
-    const yMax = ceilY - 1 - 0.25;
+    /* F13 §3: os dois `1` deste clamp eram o RAIO da bola disfarçado de metro — passam a `rb`.
+       O que fica literal são as folgas em METROS, que não têm nada que ver com o tamanho da bola:
+       1 m de chão livre por baixo, 0,25 m de teto livre por cima (gancho + 1 elo).
+       Consequência prática, e é POR DESENHO: com a bola a Ø 3 m a faixa útil do slider de altura
+       ENCOLHE 0,5 m em cada ponta — uma bola maior tem mesmo menos sítio para andar numa sala de
+       pé-direito fixo. O slider continua a ir aos 4,6, mas o clamp trava antes e o valor efetivo
+       sai em `CONFIG.ballYEffective` (que é o que o mikado lê para a clareira). */
+    const rb = ballR();
+    // fundo da bola (y − rb) nunca abaixo de floor + 1 m
+    const yMin = floorY + 1 + rb;
+    // topo da bola (y + rb) com pelo menos 0,25 m até ao teto (espaço para o gancho + 1 elo)
+    const yMax = ceilY - rb - 0.25;
     if (yMin <= yMax) y = clamp(y, yMin, yMax);
     else y = 0;                                  // sala impossível: fica na cota nominal
     return Number.isFinite(y) ? y : 0;           // regra 7: NaN nunca chega ao mundo
@@ -250,8 +272,26 @@ export function createBall(scene, CONFIG) {
        (ou `ball.centerY`, que é o mesmo número), nunca o knob em cru. */
     C.ballYEffective = ballY;
     root.position.y = ballY;
+    applyBallScale();
     if (rebuildChainToo || Math.abs(prev - ballY) > 1e-9) buildChain();
     if (probe) probe.position.y = ballY;
+  }
+
+  /* ---- F13 §3: aplicar o RAIO às meshes ----
+     DECISÃO (a que evitou reescrever `buildMesh`/`buildBone`/`restPos`/a explosão inteira): a
+     malha continua a ser construída na esfera UNITÁRIA e é o `root` que ESCALA. `facets`, `core`
+     e `bone` são filhos do root, portanto crescem os três de uma vez, com a normal (que o Babylon
+     re-normaliza) e o `restPos` da explosão intactos — a explosão continua a ser calculada em
+     raios e a sair escalada, que é o comportamento certo.
+     O que NÃO é filho do root e por isso leva o raio à mão: a CORRENTE e o GANCHO (`yTop = rb`,
+     ver `buildChain`), o PROBE (fica no centro, só a posição importa), a AURÉOLA (main.js) e todo
+     o cálculo em CPU que devolve posições ao MUNDO (`P = rb·N`, ver `computeColors`).
+     Publica-se `C.ballR` para quem está fora do módulo (mikado.js, main.js, incident.js) não ter
+     de repetir a divisão — mesma regra do `ballYEffective` da F12: fonte de verdade ÚNICA. */
+  function applyBallScale() {
+    const rb = ballR();
+    C.ballR = rb;
+    if (root.scaling.x !== rb) root.scaling.set(rb, rb, rb);
   }
 
   /* ================= geometria ================= */
@@ -452,7 +492,10 @@ export function createBall(scene, CONFIG) {
        para a corrente ficar no sítio certo do mundo (ela NÃO é filha do `root`, por isso não herda
        a translação — ver o comentário grande acima). */
     const ceil = num(R.ceil, 4.2) - ballY;
-    const yTop = 1;                                  // topo da bola (raio 1)
+    /* F13 §3: o topo da bola é o RAIO, não a constante 1. O comprimento do ELO (`L`) fica em
+       METROS de propósito: um elo de corrente real não engorda porque trocaram a bola — o que
+       muda é o número de elos, que já deriva da distância topo→teto. */
+    const yTop = ballR();                            // topo da bola (= raio)
     const step = L * 0.82;                           // :719 — `y -= L * 0.82`
     if (!(ceil > yTop + step)) return;               // teto abaixo do topo: sem corrente
 
@@ -710,12 +753,16 @@ export function createBall(scene, CONFIG) {
     dots.X = dotX; dots.N = dotN; dots.R = dotR; dots.I = dotI; dots.size = dotSize; dots.count = 0;
   }
 
-  // largura média de um tile em raios da bola — base do cone do feixe (`tileRad` de :565).
-  // `Math.PI / facetRows` é a altura angular de uma fila; com tiles ~quadrados serve de largura.
+  /* largura média de um tile — base do cone do feixe (`tileRad` de :565).
+     `Math.PI / facetRows` é a altura ANGULAR de uma fila; com tiles ~quadrados serve de largura.
+     F13 §3: o `beams.js` consome isto como uma medida do MUNDO (raio da base do cone, beams.js:280),
+     por isso o arco tem de ser multiplicado pelo raio: `rb · Δφ`. Sem isto, a bola de Ø 3 m tinha
+     espelhos 50% maiores mas feixes com a mesma grossura de sempre — lia-se como feixes finos
+     demais para a bola. Recalcula-se no `rebuild()`, que é onde `facetRows` e o raio entram. */
   let tileWidth = Math.PI / 48;
   function computeTileWidth() {
     const rows = Math.max(6, Math.round(num(cfg('facetRows'), 48)));
-    tileWidth = Math.PI / rows;
+    tileWidth = (Math.PI / rows) * ballR();
   }
 
   /* Ordena por I desc, trunca a `beamMaxCount` e compacta para `beams.P/R/I`.
@@ -812,11 +859,27 @@ export function createBall(scene, CONFIG) {
     const roomCfg = cfg('room') || BALL_DEFAULTS.room;
     /* F12 §3: os planos entram no referencial da BOLA (−ballY em Y). Todo o raycast abaixo continua
        a partir de `P` = a normal do tile (esfera de raio 1 na origem local); o resultado volta ao
-       mundo com `+ballY` no `Yw` (ver mais abaixo). X e Z não mexem — a bola só sobe e desce. */
-    const roomHalfW = num(roomCfg.halfW, 5.2);
-    const roomCeil = num(roomCfg.ceil, 4.2) - ballY;
-    const roomFloor = num(roomCfg.floor, -5.0) - ballY;
-    const roomBack = num(roomCfg.back, -7.0);
+       mundo com `+ballY` no `Yw` (ver mais abaixo). X e Z não mexem — a bola só sobe e desce.
+
+       ---- F13 §3: e agora também NORMALIZADO PELO RAIO ----
+       A F12 já tinha resolvido metade deste problema, e a solução certa aqui é a MESMA, estendida:
+       em vez de espalhar `×rb` por 40 linhas do loop (a cada `sp.r`, `camD`, `dotFalloff`,
+       `camD − 1.5`, `nz·camD − 1`, `beamLen`…), mantém-se **todo o loop no referencial da BOLA,
+       em RAIOS** — que é a unidade em que foi escrito e em que todas as constantes foram afinadas —
+       e converte-se só na FRONTEIRA:
+         ENTRADA: os planos da sala, que estão em metros, entram divididos por `rb` (`/rbInv`);
+         SAÍDA:   as posições que vão para o mundo (dots `Xw/Yw/Zw`, origem dos feixes) saem
+                  multiplicadas por `rb`.
+       Assim `sp.r`, `aim`, `camDistance`, `beamLen`, `incidentLen`, `dotFalloff` e as margens
+       `−1.5`/`−0.6` continuam todas a valer o que valiam — em RAIOS — e passam a escalar com a
+       bola de graça, que é o comportamento pedido ("tudo o que assumia raio 1 deriva do raio
+       novo"). Com Ø 2,0 m `rb` = 1 e o caminho é BIT A BIT o da F12. */
+    const rb = ballR();
+    const rbInv = 1 / rb;
+    const roomHalfW = num(roomCfg.halfW, 5.2) * rbInv;
+    const roomCeil = (num(roomCfg.ceil, 4.2) - ballY) * rbInv;
+    const roomFloor = (num(roomCfg.floor, -5.0) - ballY) * rbInv;
+    const roomBack = num(roomCfg.back, -7.0) * rbInv;
     const emitDots = dotX !== null && dm > 0 && dotDensityLiveClamped > 0;
     dotCount = 0;
 
@@ -958,13 +1021,18 @@ export function createBall(scene, CONFIG) {
                 // graze (|N·R̂|, ângulo rasante) recalcula-se em dots.js a partir de N/R — evita
                 // guardar mais um float por ponto aqui.
                 const d3 = dotCount * 3;
-                // F12 §3: de volta ao MUNDO (o `dots.js` desenha discos em coordenadas absolutas).
-                // `Yw` foi calculado no referencial da bola, com os planos já deslocados de −ballY.
-                dotX[d3] = Xw; dotX[d3 + 1] = Yw + ballY; dotX[d3 + 2] = Zw;
+                /* F12 §3: de volta ao MUNDO (o `dots.js` desenha discos em coordenadas absolutas).
+                   `Yw` foi calculado no referencial da bola, com os planos já deslocados de −ballY.
+                   F13 §3: e AGORA também escalado — `Xw/Yw/Zw` estão em RAIOS (os planos entraram
+                   divididos por `rb`), portanto voltam a metros com `×rb`. O `+ballY` vem DEPOIS
+                   da escala: `ballY` é uma cota do mundo, não um raio. */
+                dotX[d3] = Xw * rb; dotX[d3 + 1] = Yw * rb + ballY; dotX[d3 + 2] = Zw * rb;
                 dotN[d3] = nrmX; dotN[d3 + 1] = nrmY; dotN[d3 + 2] = nrmZ;
                 dotR[d3] = Rx; dotR[d3 + 1] = Ry; dotR[d3 + 2] = Rz3;
                 dotI[dotCount] = dotCone * (0.6 + 0.4 * dm) * NdS * sp.I / (1 + dotFalloffV * best * best);
-                dotSize[dotCount] = T.dphi * dotScaleV;
+                // F13 §3: o disco na parede é a imagem de um ESPELHO — cresce com o espelho, que
+                // cresce com a bola. `T.dphi` é angular; o tamanho físico é `rb · dphi`.
+                dotSize[dotCount] = T.dphi * dotScaleV * rb;
                 dotCount++;
               }
             }
@@ -996,7 +1064,8 @@ export function createBall(scene, CONFIG) {
               // está e varre a sala com ele (fonte única: este loop).
               // F12 §3: `+ballY` leva o ponto de partida do feixe ao MUNDO (o beams.js coloca lá os
               // cones); `px/py/pz` são coordenadas do referencial da bola, como o resto do loop.
-              beamP[b3] = px; beamP[b3 + 1] = py + ballY; beamP[b3 + 2] = pz;
+              // F13 §3: `×rb` primeiro (raios → metros), `+ballY` depois (cota do mundo).
+              beamP[b3] = px * rb; beamP[b3 + 1] = py * rb + ballY; beamP[b3 + 2] = pz * rb;
               beamR[b3] = Rx; beamR[b3 + 1] = Ry; beamR[b3 + 2] = Rz3;
               beamI[beamRawCount] = Ival;
               beamRawCount++;
@@ -1188,6 +1257,10 @@ export function createBall(scene, CONFIG) {
        É a fonte de verdade para quem precisa de saber onde a bola está: `main.js` (mira dos focos,
        auréola, cone incidente) e `beams.js` (direção bola→câmara). */
     get centerY() { return ballY; },
+    /* F13 §3: raio EFETIVO da bola (metros, = ballDiameterM/2 já clampado a 1,0-1,5). Fonte de
+       verdade para quem está fora — a mesma regra do `centerY`: ninguém deriva o raio do knob em
+       cru. Também publicado em `CONFIG.ballR` (para os módulos que só veem o CONFIG). */
+    get radius() { return ballR(); },
     /* F12 §3: força a aplicação IMEDIATA da cota (normalmente feita no `update()` do frame
        seguinte). O painel precisa disto: o `onBallHeightChanged` regenera o mikado, e a clareira lê
        `CONFIG.ballYEffective` — sem esta chamada o mikado regenerava-se com a cota do frame

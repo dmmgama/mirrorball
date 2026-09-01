@@ -1,7 +1,7 @@
 // v2/main.js — esqueleto do spike v2 (Fase 1): engine, sala, câmara, luzes mínimas, loop/HUD, painel `d`.
 // A malha da bola é responsabilidade do Opus (v2/ball.js); aqui só se importa dinamicamente com stub de recurso.
 import { buildRoom } from './room.js?v=4';
-import { initPanel } from './panel.js?v=9';
+import { initPanel } from './panel.js?v=10';
 import { applyColorToggle, hueToRgb } from './colorutil.js?v=1';
 
 const CONFIG = window.CONFIG;
@@ -115,22 +115,44 @@ applyBgGrey();
    seja ballSizeVH da FOV vertical total. */
 const ALPHA0 = Math.PI / 2; // ArcRotateCamera: x=r·cos(alpha)·sin(beta), z=r·sin(alpha)·sin(beta) → alpha=PI/2, beta=PI/2 dá posição (0,0,+radius)
 const BETA0 = Math.PI / 2;
+/* ---- F13 §3: raio da bola, fonte de verdade para o main.js ----
+   O `ball.js` publica `CONFIG.ballR` (ver `applyBallScale`), mas o main.js precisa dele ANTES de
+   o ball.js carregar (câmara, halo). Por isso deriva-se aqui do knob, com o MESMO clamp — e a
+   partir do momento em que a bola existe os dois números são o mesmo. NaN-safe (regra 7). */
+function ballRadius() {
+  const d = num(CONFIG.ballDiameterM, 2.0);
+  return clamp01to15((Number.isFinite(d) ? d : 2.0) / 2);
+}
+function clamp01to15(v) { return v < 1.0 ? 1.0 : v > 1.5 ? 1.5 : v; }
+/* CÂMARA E RAIO (decisão F13 §3): `camDistance` é documentado "em raios da bola" (config.js:100) e
+   até aqui era usado como metros porque 1 raio = 1 m. Passa a ser honrado como RAIOS: a distância
+   do mundo é `camDistance · raio`. Consequência querida: com a bola a Ø 3 m a câmara AFASTA-SE na
+   mesma proporção e o ENQUADRAMENTO não muda — a bola continua a ocupar `ballSizeVH` do ecrã, que
+   é o contrato do `computeFov()`. Se em vez disso a câmara ficasse quieta, subir o diâmetro dava
+   um zoom disfarçado e ninguém conseguiria julgar o tamanho.
+   É também isto que mantém o `camD` do loop do ball.js (que corre em raios) válido sem tocar em
+   nenhuma das margens afinadas lá dentro (`camD − 1.5`, `nz·camD − 1`, `camD − 0.6`). */
+function camWorldDistance() { return num(CONFIG.camDistance, 7) * ballRadius(); }
 function computeFov() {
-  const ang = 2 * Math.asin(Math.min(1, 1 / CONFIG.camDistance));
+  // ângulo aparente da bola: 2·asin(raio / distância). Como a distância também é `·raio`, o raio
+  // simplifica-se e a FOV é INVARIANTE ao diâmetro — que é precisamente o enquadramento fixo.
+  const ang = 2 * Math.asin(Math.min(1, ballRadius() / Math.max(1e-3, camWorldDistance())));
   return ang / CONFIG.ballSizeVH;
 }
-const camera = new BABYLON.ArcRotateCamera('cam', ALPHA0, BETA0, CONFIG.camDistance, BABYLON.Vector3.Zero(), scene);
+const camera = new BABYLON.ArcRotateCamera('cam', ALPHA0, BETA0, camWorldDistance(), BABYLON.Vector3.Zero(), scene);
 camera.attachControl(canvas, true);
 camera.wheelPrecision = 40;
-camera.lowerRadiusLimit = 2.5;
-camera.upperRadiusLimit = 20;
+// F13 §3: o limite de aproximação é em raios (2,5 raios ≈ 1,5 raios de folga à superfície) —
+// sem `×raio`, a bola de Ø 3 m deixava a câmara entrar-lhe quase pelos espelhos dentro.
+camera.lowerRadiusLimit = 2.5 * ballRadius();
+camera.upperRadiusLimit = 20 * ballRadius();
 camera.fov = computeFov();
 camera.fovMode = BABYLON.Camera.FOVMODE_VERTICAL_FIXED;
 
 function resetCameraPose() {
   camera.alpha = ALPHA0;
   camera.beta = BETA0;
-  camera.radius = CONFIG.camDistance;
+  camera.radius = camWorldDistance();
   camera.fov = computeFov();
   // F12 §3: repor a câmara volta a apontá-la ao centro da bola na cota em que ela está agora
   // (o loop reescreve isto por frame; aqui é só para o gesto da tecla `0` ser imediato).
@@ -189,30 +211,34 @@ addEventListener('keydown', (e) => { if (e.key === '0') resetCameraPose(); });
      (o clamp real, contra o pé-direito, é do ball.js, que reescreve `ballYEffective` no arranque). */
   if (fin(stored['bola: altura (m)'])) CONFIG.ballHeightM = stored['bola: altura (m)'];
   CONFIG.ballYEffective = num(CONFIG.ballHeightM, 3.5) - 3.5;
+  /* F13 §3: MESMA razão outra vez — o `createMikado` corre antes do `ball.js` e a CLAREIRA é
+     `raio + margem`. Sem o diâmetro pré-aplicado, quem tivesse Ø 3,0 m gravado via a clareira
+     aberta para uma bola de Ø 2,0 m e as barras a entrar-lhe pela superfície dentro, até tocar
+     num knob. Publica-se já `ballR` (o `ball.js` reescreve-o com o mesmo clamp no arranque). */
+  if (fin(stored['bola: diâmetro (m)'])) CONFIG.ballDiameterM = stored['bola: diâmetro (m)'];
+  {
+    const d = num(CONFIG.ballDiameterM, 2.0) / 2;
+    CONFIG.ballR = d < 1.0 ? 1.0 : d > 1.5 ? 1.5 : d;
+  }
 })();
 
-/* ---------------- F12 fix: o banner "dimensões da sala mudaram" era FALSO ALARME permanente ----------
-   Sintoma (screenshot do David, 2026-09-01): a faixa vermelha "dimensões da sala mudaram — recarrega
-   a página (F5)" ficava no fundo do ecrã em PERMANÊNCIA, sem ele ter tocado em nada.
+/* ---------------- F13 §4: o banner "dimensões da sala mudaram" foi ELIMINADO ------------------------
+   HISTÓRIA. A F8 pôs uma faixa vermelha no `#err` a dizer "dimensões da sala mudaram — recarrega a
+   página (F5) para aplicar" sempre que um knob ⟳ (geometria que só se constrói no arranque) fosse
+   mexido. A F11 atribuiu o falso alarme permanente à reabertura do grupo "Sala"; a F12 descobriu a
+   causa real (qualquer reposição EM BLOCO de knobs chama o `set()` de todos, incluindo os ⟳) e
+   tornou o aviso honesto comparando o CONFIG vivo com `BUILT_GEOM`. **Não chegou**: o David voltou a
+   apanhar o banner depois da F12, com a página recarregada (screenshot 2026-09-01).
 
-   DIAGNÓSTICO (medido ao vivo nesta sessão, a reproduzir com
-   `MB2.panel.knobsSet(MB2.panel.knobsGet(), false)`): qualquer reposição EM BLOCO de knobs chama o
-   `set()` de todos eles, e o `set()` dos knobs ⟳ chama `onRoomDimChanged()` INCONDICIONALMENTE —
-   mesmo quando reescreve exatamente o valor que já lá estava. Caminhos que fazem isso: "repor
-   ficheiro gravado", "↺ reset" do grupo, "carregar ficheiro", e (em ?src=music) o
-   `MIRRORBALL.knobs.set(j.ball)` que o music.js dispara ao carregar o music-config.json — este
-   último DEPOIS de `panelReady = true`, pelo que o guard do `panelReady` não o apanhava. A F11
-   tinha atribuído o sintoma à reabertura do grupo "Sala"; a causa real é mais geral e não depende
-   do grupo aberto.
+   DECISÃO DO DAVID (F13 §4, âmbito fechado): "não quero avisos NENHUNS". Já não se persegue o
+   caminho que o faz aparecer — o banner deixa de EXISTIR. `onRoomDimChanged` passa a não escrever
+   NADA no DOM em circunstância nenhuma (ver o hook lá em baixo, agora um no-op documentado).
 
-   CORREÇÃO (esta, e não mexer na ordem do painel): guarda-se aqui a fotografia da geometria com que
-   a sala foi REALMENTE construída (`BUILT_GEOM`, tirada logo a seguir ao `preApplyReloadKnobs`, antes
-   de `buildRoom`) e o aviso passa a comparar o CONFIG vivo com ela. Só há banner se houver uma
-   diferença de facto — e ele DESAPARECE sozinho se o valor voltar ao que a cena tem, que é o que
-   acontece quando o David desfaz o gesto. Isto não toca no caminho de reposição de knobs que a F10
-   consertou (`preApplyReloadKnobs` continua a ser quem aplica os ⟳ antes da geometria); só torna o
-   aviso honesto. */
-const BANNER_ROOM = 'dimensões da sala mudaram — recarrega a página (F5) para aplicar.\n';
+   O QUE FICA. `BUILT_GEOM`/`roomGeomDiffers()` ficam como LÓGICA INTERNA (o contrato da F13
+   permite-o expressamente): são a única fotografia fiável de com que geometria a cena foi
+   construída, e servem o diagnóstico por consola (`MB2.roomGeomDiffers()`) sem nada visível. O
+   `#err` continua a existir e continua a ser usado — mas SÓ por `moduleFail()`, para falhas de
+   import a sério, que é para o que nasceu (episódio "tudo preto" do S8). */
 const BUILT_GEOM = {
   halfX: CONFIG.pillars.halfX,
   spacingZ: CONFIG.pillars.spacingZ,
@@ -271,7 +297,7 @@ try {
    escrito o `bola (0/1)` do localStorage. Ver o bloco F11 lá em cima. */
 let mikado = null;
 try {
-  const mod = await import('./mikado.js?v=6');
+  const mod = await import('./mikado.js?v=7');
   mikado = mod.createMikado(scene, CONFIG);
   console.log('mikado.js carregado —', mikado.barCount, 'barras.');
   /* mesmo fix S9 "parede de luz" dos robots: as PointLight do flash do mikado são fortes e estão
@@ -326,7 +352,9 @@ for (let i = 0; i < MAX_SPOTS; i++) {
   const dir = dirFromAzEl(sp.az, sp.el);
   const pos = dir.scale(CONFIG.spotDist);
   const toCenter = BABYLON.Vector3.Zero().subtract(pos).normalize();
-  const angle = 2 * Math.atan((sp.radius * CONFIG.spotRadiusMul) / CONFIG.spotDist) * 2.2;
+  // F13 §3: `sp.radius` é o raio da mancha NA SUPERFÍCIE, em raios da bola (config.js:13) — numa
+  // bola maior a mancha é fisicamente maior, logo o cone abre mais. `spotDist` está em metros.
+  const angle = 2 * Math.atan((sp.radius * CONFIG.spotRadiusMul * ballRadius()) / CONFIG.spotDist) * 2.2;
   const light = new BABYLON.SpotLight('spot' + i, pos, toCenter, angle, 12, scene);
   light.intensity = CONFIG.spotLightIntensity * num(sp.intensity, 0);
   light.radius = 0.02;
@@ -388,7 +416,8 @@ function updateSpotLights() {
       light.position.copyFrom(pos);
       light.direction = ballCenter().subtract(pos).normalize();
       // o raio de `mountedSpots` já tem (ou não, se for flash) o spotRadiusMul aplicado (ball.js)
-      light.angle = 2 * Math.atan(Math.max(0.01, num(m.r, 0.15)) / CONFIG.spotDist) * 2.2;
+      // F13 §3: `m.r` vem em RAIOS da bola (ball.js:pushSpot) → `×ballRadius()` para metros.
+      light.angle = 2 * Math.atan(Math.max(0.01, num(m.r, 0.15)) * ballRadius() / CONFIG.spotDist) * 2.2;
       light.intensity = CONFIG.spotLightIntensity * I;
       // flashes não têm entrada em CONFIG.spots (nascem da coreografia) → cor branca
       const col = m.isFlash ? WHITE : spotColor(CONFIG.spots[k] || {});
@@ -409,7 +438,7 @@ function updateSpotLights() {
       const I = num(sp.intensity, 0);
       light.position.copyFrom(pos);
       light.direction = ballCenter().subtract(pos).normalize();   // F12 §3: mira segue a bola (posição não)
-      light.angle = 2 * Math.atan((sp.radius * CONFIG.spotRadiusMul) / CONFIG.spotDist) * 2.2;
+      light.angle = 2 * Math.atan((sp.radius * CONFIG.spotRadiusMul * ballRadius()) / CONFIG.spotDist) * 2.2; // F13 §3
       light.intensity = CONFIG.spotLightIntensity * I;
       const col = spotColor(sp);
       light.diffuse = col; light.specular = col;
@@ -483,7 +512,9 @@ updateWash();
 const MAX_AMBIENT = 3;
 const ambientLights = [];
 for (let i = 0; i < MAX_AMBIENT; i++) {
-  const dist = CONFIG.spotDist + 1;
+  // F13 §3: `spotDist` fica em METROS (o corpo montado não anda — regra 3 do handoff S10); o `+1`
+  // era "um RAIO da bola para lá do foco" e portanto acompanha o diâmetro.
+  const dist = CONFIG.spotDist + ballRadius();
   const areaSize = 2 * dist * Math.tan(CONFIG.ambient.areaDeg * D2R);
   const L = new BABYLON.RectAreaLight('ambient' + i, new BABYLON.Vector3(0, 0, dist), areaSize, areaSize, scene);
   L.intensity = 0;
@@ -505,7 +536,9 @@ let activeAmbientCount = 0;
 function updateAmbientLights(tSec) {
   const poses = ball && ball.ambientPoses; // [{az,el,I}] — fonte única de verdade quando existir
   const n = Math.max(0, Math.min(CONFIG.ambient.n | 0, MAX_AMBIENT));
-  const dist = CONFIG.spotDist + 1;
+  // F13 §3: `spotDist` fica em METROS (o corpo montado não anda — regra 3 do handoff S10); o `+1`
+  // era "um RAIO da bola para lá do foco" e portanto acompanha o diâmetro.
+  const dist = CONFIG.spotDist + ballRadius();
   const areaSize = 2 * dist * Math.tan(CONFIG.ambient.areaDeg * D2R);
   let active = 0;
   for (let i = 0; i < MAX_AMBIENT; i++) {
@@ -593,6 +626,12 @@ function updateHalo(E) {
   // (é um billboard solto no mundo, não é filho do root da bola).
   const by = ballCenterY();
   if (haloMesh.position.y !== by) haloMesh.position.y = by;
+  /* F13 §3: e tem de CRESCER com ela — `HALO_R` = 2,6 é em raios da bola (o plano nasceu com
+     `size: HALO_R*2`, ou seja já com R=1 embutido). Escala-se a mesh em vez de a recriar: um
+     `CreatePlane` novo por clique de knob deixava o `applyBallVisibility` a apontar para uma
+     mesh morta (armadilha nº3 da F12). Só se escreve quando o valor muda de facto. */
+  const rb = ballRadius();
+  if (haloMesh.scaling.x !== rb) haloMesh.scaling.set(rb, rb, rb);
 }
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
@@ -601,7 +640,7 @@ function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
    Se ainda não existir (ou falhar), stub = esfera simples, só para se poder testar o resto. */
 let ball = null;
 try {
-  const mod = await import('./ball.js?v=3');
+  const mod = await import('./ball.js?v=4');
   ball = mod.createBall(scene, CONFIG);
   console.log('ball.js carregado —', ball && ball.tiles, 'tiles');
   // F8: pilares + chapéus + robots de teto entram na renderList do probe — a bola tem de espelhar a
@@ -632,7 +671,9 @@ try {
   stubMat.albedoColor = new BABYLON.Color3(0.5, 0.5, 0.5);
   stubMat.metallic = CONFIG.mirrorMetallic;
   stubMat.roughness = CONFIG.mirrorRoughness;
-  const mesh = BABYLON.MeshBuilder.CreateSphere('ballStub', { diameter: 2, segments: 32 }, scene);
+  // F13 §3: mesmo o stub de emergência respeita o diâmetro (senão o David via uma bola do tamanho
+  // errado e culpava o knob, quando o problema era o ball.js não ter carregado).
+  const mesh = BABYLON.MeshBuilder.CreateSphere('ballStub', { diameter: 2 * ballRadius(), segments: 32 }, scene);
   mesh.material = stubMat;
   ball = {
     mesh,
@@ -730,7 +771,7 @@ function applyBallVisibility() {
    beams.js pode ainda não existir (Opus em paralelo) — tolera com try/catch, tal como o ball.js. */
 let beams = null;
 try {
-  const mod = await import('./beams.js?v=2');
+  const mod = await import('./beams.js?v=3');
   beams = mod.createBeams(scene, CONFIG, ball);
   console.log('beams.js carregado.');
 } catch (err) {
@@ -739,7 +780,7 @@ try {
 
 let incident = null;
 try {
-  const mod = await import('./incident.js?v=2');
+  const mod = await import('./incident.js?v=3');
   incident = mod.createIncident(scene, CONFIG);
   console.log('incident.js carregado.');
 } catch (err) {
@@ -912,33 +953,45 @@ const panelApi = await initPanel(CONFIG, {
       if (ball && ball.refreshProbe) ball.refreshProbe();
     } catch (e) { console.error('onBallHeightChanged:', e); }
   },
-  // F8: dimensões da sala (largura/comprimento/pé-direito) só se aplicam num RELOAD — a geometria
-  // da sala/pilares/chapéus só se constrói uma vez no arranque (sem rebuild ao vivo, ver comentário
-  // em config.js). Avisa alto no #err (mesmo padrão do moduleFail) em vez de silenciosamente não
-  // fazer nada — o David mexe o slider, vê logo porque "não aconteceu nada".
-  /* F12: o aviso passa a ser comparado com a geometria REALMENTE construída (`BUILT_GEOM`), não
-     disparado por qualquer chamada ao setter. Ver o comentário longo do bloco `BUILT_GEOM` lá em
-     cima: reposições em bloco (repor ficheiro / ↺ reset / music-config) reescrevem os mesmos
-     valores e faziam nascer um banner permanente que o David não tinha como tirar.
-     Agora: aparece SÓ quando um knob ⟳ diverge de facto, e some quando volta ao valor da cena. */
-  onRoomDimChanged: () => {
-    // o painel chama `set()` para TODOS os knobs persistidos ao construir os grupos — antes de
-    // `panelReady` isso é reposição de localStorage, nunca um gesto do David.
-    if (!panelReady) return;
+  /* ---- F13 §3: DIÂMETRO da bola (2,0-3,0 m) ----
+     A MESMA cadeia da altura, e a ORDEM é a mesma armadilha (F12, armadilha nº1): quem lê o raio
+     tem de o ler já publicado e já clampado.
+       1. `ball.applyHeight()` — escala a bola (`root.scaling`), publica `CONFIG.ballR`, RE-CLAMPA a
+          cota (com Ø 3 m a bola já não cabe onde cabia a Ø 2 m) e republica `ballYEffective`;
+          reconstrói a corrente, que nasce no topo da bola e portanto mudou de comprimento.
+       2. `mikado.rebuild()` — a clareira é `raio + margem`: com o raio novo, o buraco muda.
+       3. `ball.refreshProbe()` — a bola mudou de tamanho, o que ela espelha vem de outra distância.
+     A câmara e a auréola tratam-se sozinhas por frame (`camWorldDistance`/`updateHalo`), e a
+     POSIÇÃO dos corpos dos focos NÃO se mexe (regra 3 do handoff S10) — só a abertura do cone,
+     que `updateSpotLights` recalcula no frame seguinte. */
+  onBallDiameterChanged: () => {
     try {
-      const d = document.getElementById('err');
-      if (!d) return;
-      const differs = roomGeomDiffers();
-      const shown = /dimensões da sala mudaram/.test(d.textContent);
-      if (differs && !shown) {
-        d.style.display = 'block';
-        d.textContent = BANNER_ROOM + d.textContent;
-      } else if (!differs && shown) {
-        // voltou ao valor com que a cena foi construída → o aviso deixou de fazer sentido
-        d.textContent = d.textContent.split(BANNER_ROOM).join('');
-        if (!d.textContent.trim()) d.style.display = 'none';
-      }
-    } catch (e) { /* sem DOM */ }
+      if (ball && ball.applyHeight) ball.applyHeight();
+      if (mikado && mikado.rebuild) mikado.rebuild();
+      if (ball && ball.refreshProbe) ball.refreshProbe();
+      // a câmara mantém o enquadramento: distância e limites de zoom seguem o raio novo
+      camera.radius = camWorldDistance();
+      camera.lowerRadiusLimit = 2.5 * ballRadius();
+      camera.upperRadiusLimit = 20 * ballRadius();
+      camera.fov = computeFov();
+      rebuildSpotLights();   // reabre os cones das SpotLight com o raio novo da mancha
+    } catch (e) { console.error('onBallDiameterChanged:', e); }
+  },
+  /* F13 §4: NO-OP VISUAL, DE PROPÓSITO. As dimensões da sala (vão/passo dos pilares, lado do pilar,
+     pé-direito, corte dos chapéus) continuam a só se aplicar num RELOAD — a geometria da
+     sala/pilares/chapéus constrói-se uma vez no arranque (ver config.js) e o `preApplyReloadKnobs()`
+     é quem a aplica na volta seguinte. O que mudou é que isso JÁ NÃO SE ANUNCIA: o David pediu
+     "avisos NENHUNS" (F13 §4) depois de o banner ter reaparecido pós-F12.
+
+     ⚠ Este hook NÃO pode voltar a escrever no DOM. Se algum dia for preciso um sinal de "isto só
+     entra no reload", tem de ser dentro do painel (p. ex. o próprio slider a marcar-se ⟳), nunca
+     uma faixa por cima da cena. O `#err` é exclusivo de `moduleFail()`.
+     Fica só o diagnóstico por consola, que não é visível na cena. */
+  onRoomDimChanged: () => {
+    if (!panelReady) return;
+    if (window.MB2_DEBUG_ROOMDIM && roomGeomDiffers()) {
+      console.log('[MB2] geometria ⟳ difere da construída (só entra no reload).');
+    }
   },
 });
 panelReady = true;
@@ -1054,7 +1107,26 @@ function effective(out) {
   A.haze = num(CONFIG.haze, 0.65);
   out.spotGain = lerp(A.spotGain, D.spotGain, t);
   out.rotationRpm = clamp(lerp(A.rotationRpm, D.rotationRpm, t) * (reducedMotion ? 0.03 : 1), 0, 3); // teto 3 rpm
-  out.sphereOpacity = clamp01(lerp(A.sphereOpacity, D.sphereOpacity, t));
+  /* ---- F13 §2: o OVERRIDE MANUAL DA OPACIDADE tem de ser TOTAL ----
+     O bug do David ("não consigo tirar o controlo da opacidade ao motor, e quando consigo não
+     consigo pôr a bola TODA opaca") tinha DOIS donos a escrever no mesmo sítio, e desligar um só
+     não chegava:
+       1. `music.js:2108` escreve `C.sphereOpacity` — esse JÁ respeitava `opacityMotor` (o
+          disjuntor do painel), por isso era o único que se via na leitura do código;
+       2. **este `lerp` para o preset DEAD (0,35)** — que não respeitava disjuntor NENHUM. E o
+          `music.js` escreve `MB.setHealth(state.health)` por frame, e `state.health` cai a 0 em
+          silêncio (que é o caso do gerador sintético e de qualquer pausa na música). Resultado
+          medido: com `opacidade: motor manda = 0` e o slider a 1,00, a bola vivia a 0,35 e não
+          havia gesto no painel que a pusesse opaca. É o bug clássico deste repo — dois donos, o
+          último a escrever ganha — na sua forma mais escondida, porque o segundo dono nem parece
+          estar a falar de opacidade.
+     Regra fixada: com o disjuntor a 0, `CONFIG.sphereOpacity` (o slider) é a saída, LITERAL. Nem
+     health, nem estrelato, nem gestos. A 1,00 a bola fica completamente opaca.
+     `rotationRpm`/`haze`/`spotGain` NÃO mudam — o health continua a ser o que era para eles (a
+     regra 2 do CLAUDE.md, "a bola nunca pára", vive nesse caminho e fica intacta). */
+  out.sphereOpacity = CONFIG.opacityMotor === false
+    ? clamp01(A.sphereOpacity)
+    : clamp01(lerp(A.sphereOpacity, D.sphereOpacity, t));
   out.haze = clamp(lerp(A.haze, D.haze, t), 0, 1);
   return out;
 }
@@ -1485,6 +1557,11 @@ window.MB2 = {
   get choreo() { return choreo; },
   get E() { return E; },
   get panel() { return panelApi; },
+  /* F13 §4 (diagnóstico, NADA visível): o banner "dimensões da sala mudaram" foi eliminado; quem
+     quiser saber se um knob ⟳ diverge da geometria com que a cena foi construída chama isto pela
+     consola. `MB2.builtGeom` é a fotografia tirada antes do `buildRoom()`. */
+  roomGeomDiffers,
+  get builtGeom() { return Object.assign({}, BUILT_GEOM); },
 };
 
 console.log('MB2 pronto —', engine.isWebGPU ? 'WebGPU' : 'WebGL2');

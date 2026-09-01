@@ -71,8 +71,21 @@ function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
    continua a ser 4, fixo). Parou-se em 72 e não mais: as barras entram TODAS na renderList do
    ReflectionProbe (a bola tem de as espelhar) e cada uma custa 6 draws por face do cubo.
    Quando a densidade pede mais do que o pool, o `generate()` avisa na consola em vez de cortar em
-   silêncio — a alternativa era o knob dizer uma coisa e a sala mostrar outra. */
-const MAX_BARS = 72;
+   silêncio — a alternativa era o knob dizer uma coisa e a sala mostrar outra.
+
+   ---- F13 §1: 72 → 112, por causa do modo "sala toda" ----
+   O modo novo (`mikado: sala toda`) leva a zona do MIOLO (~49 m² na sala nominal) para a SALA
+   INTEIRA menos 1 m de cada parede (~9 × 13 = 117 m²). Com a densidade default de 0,81/m² isso
+   pede ~95 barras: a 72 o modo novo nascia CORTADO a meio e o aviso da consola disparava logo à
+   primeira vez que o David clicasse no toggle — a densidade deixaria de ser densidade.
+   112 cobre a sala nominal em modo sala-toda até ~0,95/m² e o miolo até ao topo do knob (1,6).
+   CUSTO: o pool é criado UMA vez no arranque, portanto são 112×6 = 672 meshes pequenas, das quais
+   só as em uso ficam `setEnabled(true)` — as outras não custam nada por frame (nem à cena nem ao
+   probe, que só desenha o que está enabled). O que custa é o REFRESH do probe (RENDER_ONCE, ver a
+   dívida registada na F12: a renderList é fixada com o pool inteiro no `attachProbe`). Fica na
+   mesma dívida, agora maior; a correção é refazer a renderList no `rebuild()` — fora do âmbito
+   fechado da F13, mas é o primeiro sítio a olhar se a perf incomodar. */
+const MAX_BARS = 112;
 const MIN_GAP_S = 1 / 3;      // teto ABSOLUTO de 3 Hz entre flashes (regra invariável da sala)
 
 /* Paleta fixada na spec: vermelho, branco, azul. Ordem = índice do knob 'mikado: cor (0=rot)'.
@@ -262,14 +275,89 @@ export function createMikado(scene, CONFIG) {
     const R = CONFIG.room || {};
     const floorY = num(R.floor, -3.5), ceilY = num(R.ceil, 2.0);
 
-    /* ZONA (spec §2): dentro do retângulo dos PILARES. Os pilares estão em X = ±halfX e nas
-       filas Z = ±spacingZ (3 filas centradas em 0). O miolo é portanto |X| ≤ halfX e
-       |Z| ≤ spacingZ, com uma folga `insetM` para as pontas não roçarem os pilares. */
+    /* ZONA — F13 §1: DOIS MODOS, por knob `mikado: sala toda (0/1)`.
+       (a) MIOLO (modo da F11, default): dentro do retângulo dos PILARES. Os pilares estão em
+           X = ±halfX e nas filas Z = ±spacingZ (3 filas centradas em 0), logo o miolo é
+           |X| ≤ halfX e |Z| ≤ (rows−1)/2·spacingZ, com a folga `insetM` para as pontas não
+           roçarem os pilares.
+       (b) SALA TODA (F13 §1): até `wallMarginM` (default 1 m) das PAREDES. A zona passa a ser
+           |X| ≤ halfW − margem e |Z| ≤ |back| − margem, e o mikado atravessa os corredores.
+       A densidade barras/m² da F12 faz o resto: a área cresce ~2,5× e a contagem acompanha
+       sozinha, sem o David ter de mexer noutro knob (era esse o pedido). */
     const P = CONFIG.pillars || {};
+    const R2 = CONFIG.room || {};
     const inset = Math.max(0, num(cfg.insetM, 0.35));
-    const halfX = Math.max(0.5, num(P.halfX, 3.0) - inset);
     const rows = Math.max(1, Math.round(num(P.rows, 3)));
-    const halfZ = Math.max(0.5, ((rows - 1) / 2) * num(P.spacingZ, 5.0) - inset);
+    const fullRoom = num(cfg.fullRoom, 0) >= 0.5;
+    let halfX, halfZ;
+    if (fullRoom) {
+      const wm = Math.max(0, num(cfg.wallMarginM, 1.0));
+      halfX = Math.max(0.5, num(R2.halfW, 5.5) - wm);
+      halfZ = Math.max(0.5, Math.abs(num(R2.back, -7.5)) - wm);
+    } else {
+      halfX = Math.max(0.5, num(P.halfX, 3.0) - inset);
+      halfZ = Math.max(0.5, ((rows - 1) / 2) * num(P.spacingZ, 5.0) - inset);
+    }
+
+    /* ---- F13 §1: as barras NÃO PODEM ATRAVESSAR OS PILARES ----
+       No modo miolo o problema não existia (a zona morre antes deles). Na sala toda as barras
+       passam por cima dos corredores e os pilares vão do chão ao TETO, portanto uma barra que
+       cruze a planta de um pilar entra-lhe pelo betão dentro.
+       DECISÃO: **REJEITAR** a barra, não encurtá-la. Encurtar seria o gesto natural (é o que já
+       se faz contra as paredes), mas com 6 pilares espalhados pelo meio da zona produzia um monte
+       de cotos curtos à volta de cada um — lê-se como uma malha remendada, não como o mikado das
+       fotos. Rejeitar custa só sorteios (o `guard` do while já os paga) e o resultado é uma malha
+       que simplesmente CONTORNA os pilares, que é o que se vê numa sala real.
+       Só se testam os pilares MONTADOS: um pilar desligado no painel não é obstáculo nenhum.
+       A planta é inflacionada por meio Ø do tubo + uma folga, para o tubo não roçar a aresta. */
+    const pillarBoxes = [];
+    if (P.on !== false) {
+      const sec = Math.max(0.05, num(P.section, 0.5));
+      const px = Math.abs(num(P.halfX, 3.0));
+      const sz = num(P.spacingZ, 5.0);
+      const z0 = -((rows - 1) * sz) / 2;
+      const off = Array.isArray(P.off) ? P.off : [];
+      // margem = meio tubo + meio perfil + folga de leitura (o perfil é mais largo que o tubo)
+      const grow = sec / 2 + Math.max(0.02, num(cfg.tubeDiaM, 0.07)) * 1.2 + 0.05;
+      let idx = 0;
+      for (let side = -1; side <= 1; side += 2) {
+        for (let row = 0; row < rows; row++, idx++) {
+          const zc = z0 + row * sz;
+          if (off.indexOf(idx) !== -1) continue;          // pilar desligado: não é obstáculo
+          pillarBoxes.push({ x: side * px, z: zc, h: grow });
+        }
+      }
+    }
+    /* Interseção segmento×caixa AABB na planta XZ (slab test 2D). A altura não entra: o pilar vai
+       do chão ao teto, portanto qualquer cota do mikado colide. */
+    function segHitsPillar(p0, p1) {
+      for (let k = 0; k < pillarBoxes.length; k++) {
+        const B = pillarBoxes[k];
+        const minX = B.x - B.h, maxX = B.x + B.h, minZ = B.z - B.h, maxZ = B.z + B.h;
+        let t0 = 0, t1 = 1, ok = true;
+        const dx = p1.x - p0.x, dz = p1.z - p0.z;
+        // eixo X
+        if (Math.abs(dx) < 1e-9) { if (p0.x < minX || p0.x > maxX) ok = false; }
+        else {
+          let a = (minX - p0.x) / dx, b = (maxX - p0.x) / dx;
+          if (a > b) { const s = a; a = b; b = s; }
+          if (a > t0) t0 = a; if (b < t1) t1 = b;
+          if (t0 > t1) ok = false;
+        }
+        // eixo Z
+        if (ok) {
+          if (Math.abs(dz) < 1e-9) { if (p0.z < minZ || p0.z > maxZ) ok = false; }
+          else {
+            let a = (minZ - p0.z) / dz, b = (maxZ - p0.z) / dz;
+            if (a > b) { const s = a; a = b; b = s; }
+            if (a > t0) t0 = a; if (b < t1) t1 = b;
+            if (t0 > t1) ok = false;
+          }
+        }
+        if (ok) return true;
+      }
+      return false;
+    }
 
     /* ALTURA: `heightM` é a altura FÍSICA do CENTRO do mikado ao chão (é assim que o David a mede;
        default 4,0 m, spec §3). Converte-se para o mundo Babylon (Y medido do centro da bola, que
@@ -308,9 +396,15 @@ export function createMikado(scene, CONFIG) {
     const pitchMax = clamp(num(cfg.pitchDeg, 6), 0, 30) * Math.PI / 180;
 
     /* clareira da bola: só se a BOLA estiver LIGADA (spec §4 — com só mikado, stack completo).
-       Raio de rejeição = raio da bola (1 m = 1 raio) + margem do knob (default 0,5 m). */
+       Raio de rejeição = raio da bola + margem do knob (default 0,5 m).
+       F13 §3: o raio deixou de ser a constante 1 — vem de `CONFIG.ballR` (Ø 2,0-3,0 m → 1,0-1,5),
+       que o `ball.js` publica e o `preApplyReloadKnobs` pré-calcula para o arranque. A MARGEM
+       (`ballClearM`) fica em METROS: é a folga que o David quer ver entre o vidro e o tubo, e não
+       tem razão nenhuma para crescer com a bola. Logo, uma bola de Ø 3 m abre um buraco 0,5 m
+       maior no mikado, não 1,5×. */
     const ballOn = CONFIG.ballOn !== false;
-    const clearR = ballOn ? Math.max(0, 1 + num(cfg.ballClearM, 0.5)) : -1;
+    const rBall = clamp(num(CONFIG.ballR, 1), 1.0, 1.5);
+    const clearR = ballOn ? Math.max(0, rBall + num(cfg.ballClearM, 0.5)) : -1;
     /* F12 §3: a bola já não está fixa na origem — o slider 'bola: altura (m)' desloca-a em Y, e a
        CLAREIRA tem de acompanhar. Sem isto, subir a bola para dentro do mikado fazia-a atravessar
        as barras (e descê-la deixava um buraco no ar onde já não está nada).
@@ -367,6 +461,10 @@ export function createMikado(scene, CONFIG) {
 
       // CLAREIRA: rejeita a barra que entra na zona da bola (spec §4)
       if (clearR > 0 && segDistToBall(p0, p1, ballC) < clearR) continue;
+
+      // F13 §1: PILARES. Só pode acontecer no modo "sala toda" (no miolo a zona morre antes deles),
+      // por isso nem se paga o teste no modo default. Rejeitar, não encurtar — ver a decisão acima.
+      if (fullRoom && pillarBoxes.length && segHitsPillar(p0, p1)) continue;
 
       out.push({ x: cx, y, z: cz, yaw, pitch, len });
     }
