@@ -197,12 +197,30 @@ window.CONFIG = {
 
   // ---- Fase 8 (Sonnet, 2026-08-31): sala real do Lux Frágil — dimensões, pilares, wash azul,
   // chapéus de latão. Ver docs/f8-sala-lux.md. `roomWidthM/roomDepthM/roomHeightM` refletem
-  // `CONFIG.room` em metros (knobs legíveis no painel `d`); mudar qualquer um exige RELOAD da página
-  // (a sala/pilares/chapéus só se constroem uma vez no arranque — não há rebuild ao vivo da
-  // geometria da sala, ao contrário de `espelhos: filas` que só reconstrói a BOLA). ----
-  roomWidthM: 11.0,          // largura X da sala (m) — knob 'sala: largura (m)' (RELOAD). F8-b: 10→11 (filas +1 m)
-  roomDepthM: 15.0,          // comprimento Z da sala (m) — knob 'sala: comprimento (m)' (RELOAD)
+  // `CONFIG.room` em metros; mudar qualquer um exige RELOAD da página (a sala/pilares/chapéus só se
+  // constroem uma vez no arranque — não há rebuild ao vivo da geometria da sala, ao contrário de
+  // `espelhos: filas` que só reconstrói a BOLA).
+  //
+  // ---- F10 (David, 2026-09-01, docs/f8-sala-lux.md "F10 — parametrização"): largura/comprimento
+  // passam a DERIVADOS ----
+  // Decisão: `roomWidthM`/`roomDepthM` DEIXAM de ser knobs do painel (já não há 'sala: largura (m)'
+  // nem 'sala: comprimento (m)' em panel.js — dois knobs a escrever a MESMA coisa que os novos knobs
+  // de pilares lutariam pelo mesmo estado). Os campos continuam a existir aqui como VALORES
+  // CALCULADOS (o painel escreve-os via os setters de 'pilares: vão entre filas (m)' e 'pilares:
+  // passo na fila (m)', que também escrevem CONFIG.room.halfW/back) porque main.js/hats.js/fixtures.js
+  // ainda os leem para posicionar coisas relativas à sala. A regra fixa (David): os CORREDORES nunca
+  // mudam — pilar→parede lateral sempre `PILLAR_WALL_MARGIN` (2,5 m), margem dos topos sempre
+  // `PILLAR_END_MARGIN` (2,5 m, pilar extremo a metade do vão da fila da parede de fundo). Logo:
+  //   largura = vão_entre_filas + 2×PILLAR_WALL_MARGIN   (halfW = largura/2)
+  //   comprimento = 2×passo_na_fila + 2×PILLAR_END_MARGIN (back = -comprimento/2)
+  // `pillars.halfX` = vão_entre_filas/2, `pillars.spacingZ` = passo_na_fila — a ÚNICA fonte de
+  // verdade destas duas medidas passa a ser `CONFIG.pillars` (ver bloco `pillars` abaixo); os campos
+  // roomWidthM/roomDepthM ficam sincronizados pelos setters do painel (panel.js).
+  roomWidthM: 11.0,          // largura X da sala (m) — DERIVADO (vão pilares + 2×2,5 m), RELOAD
+  roomDepthM: 15.0,          // comprimento Z da sala (m) — DERIVADO (2×passo pilares + 2×2,5 m), RELOAD
   roomHeightM: 5.5,          // pé-direito (m) — knob 'sala: pé-direito (m)' (RELOAD)
+  pillarWallMarginM: 2.5,    // pilar→parede lateral — FIXO, nunca muda com os knobs de vão/passo
+  pillarEndMarginM: 2.5,     // pilar extremo→parede de fundo — FIXO, nunca muda com os knobs de vão/passo
 
   colorOn: true,             // 'cor (0/1)' — knob geral: 1 = wash/chapéus/chão/pilares a cor real;
                              // 0 = tudo colapsa para luminância (grey = 0.2126r+0.7152g+0.0722b),
@@ -223,12 +241,35 @@ window.CONFIG = {
      (David: "tapar e ligar" cada um). Ordem dos índices = ordem de criação em room.js:
        0,1,2 = fila X negativo (Z -5/0/+5) · 3,4,5 = fila X positivo (Z -5/0/+5).
      Um pilar desligado fica `setEnabled(false)` MAS permanece na renderList do probe (o probe só
-     desenha o que está enabled — ver room.js/main.js), portanto o toggle atua ao vivo, sem reload. */
+     desenha o que está enabled — ver room.js/main.js), portanto o toggle atua ao vivo, sem reload.
+
+     ---- F10 (David, 2026-09-01): geometria paramétrica por knob (RELOAD, mesmo padrão das dimensões
+     da sala — a geometria só se constrói uma vez no arranque) ----
+     `halfX` (metade do vão ENTRE FILAS) e `spacingZ` (passo NA FILA, ao eixo) passam a ser escritos
+     pelos knobs 'pilares: vão entre filas (m)' (default 6, = 2×halfX) e 'pilares: passo na fila (m)'
+     (default 5, = spacingZ) do painel — ambos em passos de 0,5 m. Os setters (panel.js) recalculam
+     `roomWidthM/roomDepthM` (e `room.halfW/back`) para os corredores ficarem sempre iguais (ver a nota
+     F10 acima de `roomWidthM`). `section` (lado do pilar, secção quadrada) ganha o knob 'pilares: lado
+     (m)' (default 0,5, range 0,3-1,2, passos 0,05) — o CENTRO do pilar não se move, só a espessura da
+     caixa (room.js já usa `section` para width/depth da box, sem tocar em `position`). */
   pillars: {
     on: true, halfX: 3.0, section: 0.5, rows: 3, spacingZ: 5.0, albedo: [0.05, 0.05, 0.05],
     off: [],
   },
   floorWoodColor: [0.10, 0.075, 0.055], // tom de madeira escura do chão — knob 'sala: chão madeira' (RGB fixo, sem knob de cor individual; sujeito a colorOn)
+
+  /* ---- F10 (David, 2026-09-01): refletividade por superfície — multiplicador do albedo (0-3,
+     default 1) de cada material de sala; ao vivo, SEM rebuild (room.js: applyXReflMul()). Confirmado
+     por leitura de dots.js: os pontos refletidos pela mirror ball são thin instances de UM material
+     StandardMaterial próprio (emissivo aditivo, alimentado por `ball.dots` — posições/intensidade
+     calculadas no CPU a partir dos focos, NUNCA leem o albedo/material das paredes) — estes knobs não
+     lhes tocam, por construção. */
+  reflMul: {
+    floor: 1.0,   // knob 'refl: chão'
+    ceil: 1.0,    // knob 'refl: teto'
+    back: 1.0,    // knob 'refl: paredes fundo' (só `room_back` — a sala não tem parede frontal, fica aberta para a câmara)
+    side: 1.0,    // knob 'refl: paredes laterais' (room_left + room_right, material partilhado)
+  },
 
   // wash ambiente azul profundo — banha paredes/pilares/chão; é o que permite LER os espelhos da
   // bola (feedback S9). Reaproveita as RectAreaLight `ambient0-2` já existentes (main.js) MAIS uma

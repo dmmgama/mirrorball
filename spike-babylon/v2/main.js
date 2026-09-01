@@ -1,7 +1,7 @@
 // v2/main.js — esqueleto do spike v2 (Fase 1): engine, sala, câmara, luzes mínimas, loop/HUD, painel `d`.
 // A malha da bola é responsabilidade do Opus (v2/ball.js); aqui só se importa dinamicamente com stub de recurso.
-import { buildRoom } from './room.js?v=3';
-import { initPanel } from './panel.js?v=6';
+import { buildRoom } from './room.js?v=4';
+import { initPanel } from './panel.js?v=7';
 import { applyColorToggle, hueToRgb } from './colorutil.js?v=1';
 
 const CONFIG = window.CONFIG;
@@ -110,6 +110,46 @@ function resetCameraPose() {
   camera.fov = computeFov();
 }
 addEventListener('keydown', (e) => { if (e.key === '0') resetCameraPose(); });
+
+/* ---------------- F10 fix: aplicar os knobs ⟳ do localStorage ANTES de construir a geometria ----------------
+   Bug encontrado ao verificar o F10 (docs/f8-sala-lux.md): `buildRoom()`/`createHats()` correm aqui,
+   MAS `initPanel()` (que lê `localStorage['mb2.knobs']` e escreve os valores persistidos em CONFIG)
+   só corre a seguir ao `ball.js`, dezenas de linhas abaixo (`await initPanel(...)`) — ou seja, TODO
+   knob ⟳ ('sala: pé-direito (m)', 'chapéus: corte da pala°', e agora 'pilares: vão entre filas (m)'/
+   'pilares: passo na fila (m)'/'pilares: lado (m)') SEMPRE construía a sala com os defaults do
+   config.js, nunca com o valor gravado — o F5 "para aplicar" não aplicava nada, geração após geração.
+   Corrige-se aqui com um pré-passo SÍNCRONO e mínimo (não é o `initPanel` completo — só lê os 6 knobs
+   ⟳ que afetam geometria construída uma vez) que escreve em CONFIG antes de `buildRoom`/`createHats`
+   correrem. O `initPanel` mais abaixo continua a ser a fonte de verdade para os SLIDERS (reaplica os
+   mesmos valores ao popover); este pré-passo só evita a sala nascer errada. */
+(function preApplyReloadKnobs() {
+  let stored = null;
+  try { stored = JSON.parse(localStorage.getItem('mb2.knobs') || 'null'); } catch (e) { /* sem storage */ }
+  if (!stored || typeof stored !== 'object') return;
+  const fin = (v) => Number.isFinite(v);
+  if (fin(stored['pilares: vão entre filas (m)'])) {
+    const v = stored['pilares: vão entre filas (m)'];
+    CONFIG.pillars.halfX = v / 2;
+    const M = fin(CONFIG.pillarWallMarginM) ? CONFIG.pillarWallMarginM : 2.5;
+    CONFIG.roomWidthM = v + 2 * M;
+    CONFIG.room.halfW = CONFIG.roomWidthM / 2;
+    CONFIG.hats.lineX = CONFIG.roomWidthM / 2 - 1;
+  }
+  if (fin(stored['pilares: passo na fila (m)'])) {
+    const v = stored['pilares: passo na fila (m)'];
+    CONFIG.pillars.spacingZ = v;
+    const M = fin(CONFIG.pillarEndMarginM) ? CONFIG.pillarEndMarginM : 2.5;
+    CONFIG.roomDepthM = 2 * v + 2 * M;
+    CONFIG.room.back = -CONFIG.roomDepthM / 2;
+    CONFIG.hats.spacingZ = v / 2;
+  }
+  if (fin(stored['pilares: lado (m)'])) CONFIG.pillars.section = stored['pilares: lado (m)'];
+  if (fin(stored['sala: pé-direito (m)'])) {
+    CONFIG.roomHeightM = stored['sala: pé-direito (m)'];
+    CONFIG.room.ceil = CONFIG.roomHeightM - 3.5;
+  }
+  if (fin(stored['chapéus: corte da pala°'])) CONFIG.hats.cutDeg = stored['chapéus: corte da pala°'];
+})();
 
 /* ---------------- sala implícita: 5 planos + F8 pilares/chão de madeira ---------------- */
 const room = buildRoom(scene, CONFIG);
@@ -615,6 +655,9 @@ const panelApi = await initPanel(CONFIG, {
   // F8-b: toggle por pilar — setEnabled ao vivo (o pilar fica na renderList do probe; o probe só
   // desenha o que está enabled, por isso não se mexe na lista, que é fixada em attachProbe).
   onPillarsChanged: () => { try { room.applyPillarToggles(); } catch (e) { console.error(e); } },
+  // F10: refletividade por superfície — ao vivo, sem rebuild (room.js: applyAllReflMul() remuta os
+  // albedos existentes; applyFloorColor() já combina o multiplicador do chão com o toggle 'cor (0/1)').
+  onReflChanged: () => { try { room.applyAllReflMul(); room.applyFloorColor(); } catch (e) { console.error(e); } },
   // F8: dimensões da sala (largura/comprimento/pé-direito) só se aplicam num RELOAD — a geometria
   // da sala/pilares/chapéus só se constrói uma vez no arranque (sem rebuild ao vivo, ver comentário
   // em config.js). Avisa alto no #err (mesmo padrão do moduleFail) em vez de silenciosamente não

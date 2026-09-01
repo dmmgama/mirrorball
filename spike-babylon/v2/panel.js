@@ -69,6 +69,7 @@ function writeJSON(key, val) {
 
 export async function initPanel(CONFIG, hooks = {}) {
   const noop = () => {};
+  function num(v, d) { return Number.isFinite(v) ? v : d; } // F10: margens fixas dos corredores (config.js)
   const onRebuildBall = hooks.onRebuildBall || noop;
   const onSpotsChanged = hooks.onSpotsChanged || noop;
   const onShadeChanged = hooks.onShadeChanged || noop;
@@ -78,6 +79,7 @@ export async function initPanel(CONFIG, hooks = {}) {
   const onColorToggleChanged = hooks.onColorToggleChanged || noop;
   const onRoomDimChanged = hooks.onRoomDimChanged || noop;
   const onPillarsChanged = hooks.onPillarsChanged || noop; // F8-b: toggle por pilar (setEnabled ao vivo)
+  const onReflChanged = hooks.onReflChanged || noop; // F10: refletividade por superfície (ao vivo, sem rebuild)
 
   const CH = CONFIG.choreo, AMB = CONFIG.ambient;
   // 'health' é mecânico (placeholder local) até o Opus criar window.MIRRORBALL.setHealth/getHealth
@@ -210,12 +212,40 @@ export async function initPanel(CONFIG, hooks = {}) {
     // dimensões: mudar exige RELOAD (a sala/pilares/chapéus só se constroem uma vez no arranque —
     // não há rebuild ao vivo da geometria da sala, ao contrário de 'espelhos: filas' que só
     // reconstrói a bola). `onRoomDimChanged` avisa no #err, não faz onRebuildBall.
-    ['sala: largura (m)', 4, 30, 0.5,
-      v => { CONFIG.roomWidthM = v; CONFIG.room.halfW = v / 2; onRoomDimChanged(); }, () => CONFIG.roomWidthM],
-    ['sala: comprimento (m)', 4, 40, 0.5,
-      v => { CONFIG.roomDepthM = v; CONFIG.room.back = -v / 2; onRoomDimChanged(); }, () => CONFIG.roomDepthM],
+    //
+    // ---- F10 (David, 2026-09-01): 'sala: largura (m)'/'sala: comprimento (m)' DEIXAM de ser knobs —
+    // substituídos pelos dois abaixo ('pilares: vão entre filas'/'pilares: passo na fila'), medidos AO
+    // EIXO dos pilares. Decisão (evita dois knobs a escrever o mesmo CONFIG.room): largura/comprimento
+    // passam a CALCULADOS pelos setters destes dois knobs — os corredores (pilar→parede lateral,
+    // pilar extremo→parede de fundo) ficam FIXOS em CONFIG.pillarWallMarginM/pillarEndMarginM (2,5 m
+    // cada, config.js), só o miolo (vão/passo) estica ou encolhe. Os chapéus reespaçam-se na MESMA
+    // chamada (passo = passo dos pilares / 2, linhas a 1 m da parede → |X| = largura/2 − 1).
+    ['pilares: vão entre filas (m)', 4, 10, 0.5, v => {
+      CONFIG.pillars.halfX = v / 2;
+      const M = num(CONFIG.pillarWallMarginM, 2.5);
+      CONFIG.roomWidthM = v + 2 * M;
+      CONFIG.room.halfW = CONFIG.roomWidthM / 2;
+      CONFIG.hats.lineX = CONFIG.roomWidthM / 2 - 1; // linhas de chapéus a 1 m da parede lateral
+      onRoomDimChanged();
+    }, () => CONFIG.pillars.halfX * 2],
+    ['pilares: passo na fila (m)', 3, 8, 0.5, v => {
+      CONFIG.pillars.spacingZ = v;
+      const M = num(CONFIG.pillarEndMarginM, 2.5);
+      CONFIG.roomDepthM = 2 * v + 2 * M;
+      CONFIG.room.back = -CONFIG.roomDepthM / 2;
+      CONFIG.hats.spacingZ = v / 2; // passo dos chapéus = metade do passo dos pilares
+      onRoomDimChanged();
+    }, () => CONFIG.pillars.spacingZ],
+    ['pilares: lado (m)', 0.3, 1.2, 0.05, v => { CONFIG.pillars.section = v; onRoomDimChanged(); }, () => CONFIG.pillars.section],
     ['sala: pé-direito (m)', 3, 10, 0.1,
       v => { CONFIG.roomHeightM = v; CONFIG.room.ceil = v - (3.5); onRoomDimChanged(); }, () => CONFIG.roomHeightM],
+    // ---- F10: refletividade por superfície — multiplicador do albedo (0-3, default 1), AO VIVO
+    // (room.js: applyXReflMul(), sem rebuild). NÃO afeta os pontos refletidos pela bola (dots.js usa
+    // um material próprio, emissivo aditivo, alimentado por ball.dots — confirmado por leitura). ----
+    ['refl: chão', 0, 3, 0.05, v => { CONFIG.reflMul.floor = v; onReflChanged(); }, () => CONFIG.reflMul.floor],
+    ['refl: teto', 0, 3, 0.05, v => { CONFIG.reflMul.ceil = v; onReflChanged(); }, () => CONFIG.reflMul.ceil],
+    ['refl: paredes fundo', 0, 3, 0.05, v => { CONFIG.reflMul.back = v; onReflChanged(); }, () => CONFIG.reflMul.back],
+    ['refl: paredes laterais', 0, 3, 0.05, v => { CONFIG.reflMul.side = v; onReflChanged(); }, () => CONFIG.reflMul.side],
     // cor: geral (afeta wash/chapéus/chão/pilares — a bola/espelhos/feixes continuam sempre
     // greyscale, regra 6 do CLAUDE.md). Default 1 (decisão do David 2026-08-31).
     ['cor (0/1)', 0, 1, 1, v => { CONFIG.colorOn = v >= 0.5; onColorToggleChanged(); }, () => (CONFIG.colorOn === false ? 0 : 1)],
@@ -284,7 +314,10 @@ export async function initPanel(CONFIG, hooks = {}) {
   // ⟳ = slider que exige RELOAD da página (F8: dimensões da sala — a geometria só se constrói uma
   // vez no arranque, não há rebuild ao vivo). Marcado à parte de REBUILD (⏫, que só reconstrói a
   // malha da bola) para não prometer um efeito imediato que o slider não dá.
-  const RELOAD = new Set(['sala: largura (m)', 'sala: comprimento (m)', 'sala: pé-direito (m)', 'chapéus: corte da pala°']);
+  const RELOAD = new Set([
+    'pilares: vão entre filas (m)', 'pilares: passo na fila (m)', 'pilares: lado (m)',
+    'sala: pé-direito (m)', 'chapéus: corte da pala°',
+  ]);
   const spotHueNames = [];
   for (let i = 0; i < 6; i++) spotHueNames.push('spot' + i + ': matiz°');
   const GROUPS = [
@@ -317,14 +350,17 @@ export async function initPanel(CONFIG, hooks = {}) {
       'luz indireta', 'indireta: área°', 'indireta: luz ×', 'corpos (0/1)', 'corpos: escala',
       'corpos: lente ×', 'corpos: haste (0/1)', 'fundo: claridade (dark)',
       // ---- Fase 8: dimensões (RELOAD), wash, chapéus, cor ----
-      'sala: largura (m)', 'sala: comprimento (m)', 'sala: pé-direito (m)', 'cor (0/1)',
+      'sala: pé-direito (m)', 'cor (0/1)',
       'sala: wash (0-1)', 'sala: wash matiz',
+      // ---- F10: refletividade por superfície (ao vivo) ----
+      'refl: chão', 'refl: teto', 'refl: paredes fundo', 'refl: paredes laterais',
       'chapéus (0/1)', 'chapéus: quantos', 'chapéus: brilho', 'chapéus: flash /min', 'chapéus: altura (m)',
       'chapéus: inclinação°', 'chapéus: corte da pala°',
       'robots (0/1)', 'robots: luz', 'robots: inclinação°',
     ]],
     // F8-b: grupo próprio para os 6 pilares individuais ("tapar e ligar" — David).
-    ['Pilares', PILLAR_NAMES],
+    // F10: geometria paramétrica (vão entre filas, passo na fila, secção) junta-se aqui — mesmo grupo.
+    ['Pilares', ['pilares: vão entre filas (m)', 'pilares: passo na fila (m)', 'pilares: lado (m)', ...PILLAR_NAMES]],
     ['Pós & Skin', [
       'bloom: força', 'bloom: limiar', 'bloom: raio px', 'grão', 'vinheta',
       'pós: tonemap (0/1)', 'pós: exposição',
@@ -778,7 +814,16 @@ export async function initPanel(CONFIG, hooks = {}) {
     dbgbar.appendChild(b);
     groupBtns[gname] = b; groupDots[gname] = dot;
   }
-  if (openGroup && groupBoxes[openGroup]) openGroupByName(openGroup);
+  /* ---- fix F10 (encontrado ao verificar os knobs ⟳ novos): reabrir o último grupo no arranque
+     chamava openGroupByName(openGroup) com `openGroup` JÁ IGUAL ao nome lido do localStorage (linha
+     789) — o guard "if (openGroup === gname) closeGroup()" de openGroupByName (pensado para o CLIQUE
+     alternar fechar/abrir) via os dois iguais e fechava o grupo imediatamente a seguir a abri-lo. Na
+     prática: o grupo aberto ao recarregar a página NUNCA ficava visível, e os sliders desse grupo
+     só recebiam `startValue()`/`set(v0)` (a aplicação do localStorage, mkGroup() acima) se o David
+     voltasse a clicar no separador — ou seja, um knob ⟳ (ex.: 'sala: pé-direito', qualquer 'pilares:
+     *') só "pegava" na geometria construída ao arranque numa 2ª visita ao grupo + 2º reload. Zera-se
+     `openGroup` ANTES de chamar openGroupByName para o guard do clique não disparar na reabertura. */
+  if (openGroup && groupBoxes[openGroup]) { const g0 = openGroup; openGroup = null; openGroupByName(g0); }
 
   // grupo Motor esmaecido sem ?src=music (passo 3 do brief): só serve quando o motor de música manda.
   if (!(window.MUSIC)) { groupBtns['Motor'].style.opacity = '.5'; }

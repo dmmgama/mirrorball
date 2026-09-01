@@ -7,16 +7,38 @@
 // `roomD = |R.back|·2` e os planos chão/teto/laterais centram-se em z=0 — logo `back = -7.5` dá
 // Z ∈ [-7.5,+7.5] = 15 m com a bola exatamente ao meio. Não há plano frontal (z=+7.5): a frente
 // fica aberta para a câmara (o público), como já era antes desta fase.
+//
+// F10 (David, 2026-09-01, docs/f8-sala-lux.md "F10 — parametrização"): refletividade por SUPERFÍCIE.
+// A sala tem 5 planos e SÓ 1 parede de fundo (`room_back`, no topo Z negativo — não há plano frontal,
+// fica aberto para a câmara): por isso "refl: paredes fundo" cobre só `room_back` (documentado aqui
+// porque o pedido do David falava em "2 paredes dos topos", mas a geometria só constrói uma).
+// Cada superfície passa a ter o SEU PRÓPRIO PBRMaterial (antes chão/teto/4-paredes-menos-chão
+// partilhavam `roomMat`) para o multiplicador de refletividade poder mexer só nessa superfície.
+// `apply*ReflMul()` multiplicam o albedo ORIGINAL (capturado uma vez) — mutação in-place da Color3
+// existente (nunca reatribuir `.albedoColor = new Color3(...)`, ver a nota de perf em main.js sobre
+// `emissiveColor` — o mesmo custo de recompilação de shader aplica-se a qualquer setter de propriedade
+// de material; aqui os `applyXReflMul()` só correm quando o knob muda, não por frame, mas mantém-se o
+// padrão `.set()` por disciplina). Os multiplicadores NÃO tocam nos dots da mirror ball (dots.js usa o
+// seu próprio StandardMaterial emissivo aditivo, alimentado por `ball.dots` — nunca lê material da
+// sala; confirmado por leitura de dots.js).
 import { toGrey } from './colorutil.js?v=1';
 
 export function buildRoom(scene, CONFIG) {
   const R = CONFIG.room;
-  const roomMat = new BABYLON.PBRMaterial('roomMat', scene);
-  roomMat.albedoColor = new BABYLON.Color3(0.055, 0.055, 0.055);
-  roomMat.metallic = 0;
-  roomMat.roughness = 0.95;
-  roomMat.backFaceCulling = false;
-  roomMat.maxSimultaneousLights = 12;
+  function makeSurfaceMat(name, rgb) {
+    const m = new BABYLON.PBRMaterial(name, scene);
+    m.albedoColor = new BABYLON.Color3(rgb[0], rgb[1], rgb[2]);
+    m.metallic = 0;
+    m.roughness = 0.95;
+    m.backFaceCulling = false;
+    m.maxSimultaneousLights = 12;
+    return m;
+  }
+  const BASE_ALBEDO = [0.055, 0.055, 0.055];
+  const ceilMat = makeSurfaceMat('roomCeilMat', BASE_ALBEDO);
+  const backMat = makeSurfaceMat('roomBackMat', BASE_ALBEDO);
+  const sideMat = makeSurfaceMat('roomSideMat', BASE_ALBEDO); // partilhado por room_left + room_right
+  const roomMat = ceilMat; // compat: `material` devolvido ao chamador continua a apontar para um PBR válido
 
   /* ⚠ REGRESSÃO S8 — "tudo preto" (ver PARITY.md §"Regressão S8: tudo preto").
      Um PBRMaterial SEM `reflectionTexture` própria cai no `scene.environmentTexture`, que aqui é o
@@ -46,7 +68,10 @@ export function buildRoom(scene, CONFIG) {
       return null;
     }
   }
-  roomMat.reflectionTexture = makeDarkCubeTexture([10, 10, 10]);
+  const darkCubeRoom = makeDarkCubeTexture([10, 10, 10]);
+  ceilMat.reflectionTexture = darkCubeRoom;
+  backMat.reflectionTexture = darkCubeRoom;
+  sideMat.reflectionTexture = darkCubeRoom;
 
   function plane(name, w, h, pos, rot, mat) {
     const p = BABYLON.MeshBuilder.CreatePlane(name, { width: w, height: h, sideOrientation: BABYLON.Mesh.DOUBLESIDE }, scene);
@@ -74,18 +99,39 @@ export function buildRoom(scene, CONFIG) {
   function applyFloorColor() {
     const on = CONFIG.colorOn !== false;
     const [r, g, b] = on ? FLOOR_RGB : toGrey(FLOOR_RGB[0], FLOOR_RGB[1], FLOOR_RGB[2]);
-    floorMat.albedoColor.set(r, g, b);
+    // F10: 'refl: chão' multiplica DEPOIS do toggle cor/greyscale — mesmo padrão de applyReflMul.
+    const mul = Math.max(0, num((CONFIG.reflMul || {}).floor, 1));
+    floorMat.albedoColor.set(r * mul, g * mul, b * mul);
   }
   floorMat.albedoColor = new BABYLON.Color3(0, 0, 0);
   applyFloorColor();
 
   const planes = [
-    plane('room_back',  roomW, roomH, new BABYLON.Vector3(0, (R.ceil + R.floor) / 2, R.back)),
+    plane('room_back',  roomW, roomH, new BABYLON.Vector3(0, (R.ceil + R.floor) / 2, R.back), null, backMat),
     plane('room_floor', roomW, roomD, new BABYLON.Vector3(0, R.floor, 0), new BABYLON.Vector3(Math.PI / 2, 0, 0), floorMat),
-    plane('room_ceil',  roomW, roomD, new BABYLON.Vector3(0, R.ceil, 0),  new BABYLON.Vector3(-Math.PI / 2, 0, 0)),
-    plane('room_left',  roomD, roomH, new BABYLON.Vector3(-R.halfW, (R.ceil + R.floor) / 2, 0), new BABYLON.Vector3(0, Math.PI / 2, 0)),
-    plane('room_right', roomD, roomH, new BABYLON.Vector3( R.halfW, (R.ceil + R.floor) / 2, 0), new BABYLON.Vector3(0, -Math.PI / 2, 0)),
+    plane('room_ceil',  roomW, roomD, new BABYLON.Vector3(0, R.ceil, 0),  new BABYLON.Vector3(-Math.PI / 2, 0, 0), ceilMat),
+    plane('room_left',  roomD, roomH, new BABYLON.Vector3(-R.halfW, (R.ceil + R.floor) / 2, 0), new BABYLON.Vector3(0, Math.PI / 2, 0), sideMat),
+    plane('room_right', roomD, roomH, new BABYLON.Vector3( R.halfW, (R.ceil + R.floor) / 2, 0), new BABYLON.Vector3(0, -Math.PI / 2, 0), sideMat),
   ];
+
+  /* ---- F10: refletividade por superfície — multiplicador do albedo (0-3, default 1), ao vivo, sem
+     rebuild da sala. Cada `applyXReflMul()` guarda o albedo ORIGINAL (capturado uma vez, antes de
+     qualquer multiplicador) e escreve `original × mul` na Color3 existente (`.set()`, nunca
+     reatribuir a propriedade — custo de recompilação de shader, ver a nota de perf do estrobo em
+     main.js). Chão já tinha o seu próprio padrão (`applyFloorColor`, também sujeito a 'cor (0/1)');
+     aqui o multiplicador combina-se com esse resultado (aplica-se DEPOIS da cor/greyscale). */
+  const CEIL_RGB = BASE_ALBEDO.slice();
+  const BACK_RGB = BASE_ALBEDO.slice();
+  const SIDE_RGB = BASE_ALBEDO.slice();
+  function applyReflMul(mat, rgb, mul) {
+    const m = Math.max(0, num(mul, 1));
+    mat.albedoColor.set(rgb[0] * m, rgb[1] * m, rgb[2] * m);
+  }
+  function applyCeilReflMul() { applyReflMul(ceilMat, CEIL_RGB, (CONFIG.reflMul || {}).ceil); }
+  function applyBackReflMul() { applyReflMul(backMat, BACK_RGB, (CONFIG.reflMul || {}).back); }
+  function applySideReflMul() { applyReflMul(sideMat, SIDE_RGB, (CONFIG.reflMul || {}).side); }
+  function applyAllReflMul() { applyCeilReflMul(); applyBackReflMul(); applySideReflMul(); }
+  applyAllReflMul();
 
   /* ---- F8: pilares — 2 filas de 3 caixas (secção 0,5×0,5 m, chão-teto), a ±halfX=2.5 em X (2,5 m
      das paredes laterais, halfW 5.0), espaçadas spacingZ=5 m em Z e CENTRADAS na sala: com rows=3 o
@@ -145,5 +191,9 @@ export function buildRoom(scene, CONFIG) {
   }
   applyPillarToggles();
 
-  return { planes, pillars, material: roomMat, floorMaterial: floorMat, applyFloorColor, applyPillarToggles };
+  return {
+    planes, pillars, material: roomMat, floorMaterial: floorMat, applyFloorColor, applyPillarToggles,
+    // F10: refletividade por superfície — main.js chama applyAllReflMul() quando qualquer knob 'refl: *' muda.
+    applyCeilReflMul, applyBackReflMul, applySideReflMul, applyAllReflMul,
+  };
 }
