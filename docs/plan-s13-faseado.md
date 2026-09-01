@@ -23,7 +23,7 @@ pista as fases são em série, cada uma com stop visual do David.
  pista S · SYNC (A→D)      S0 debate ─► S1 relógio ─► S2 hero ─► S3 abater relógios ─► S4 gestos sala ─► S5 audição
                             (David)     (Opus)        (Opus)     (Opus ×3 stops)       (Opus)            (David)
  pista V · VISUAL (B)      V0 G1+G2 ─► V1 dots ─► V2 fog ─► V3 exposição ─► V4 tileTone ─► V5 sombras ─► V6 mikado TI
-                            (Sonnet)   (Sonnet)  (Sonnet)  (Opus)          (David)        (Opus)         (Opus, se G2 pedir)
+                            (Opus)     (Opus)    (Opus)    (Opus)          (David)        (Opus)         (Opus, se G2 pedir)
  pista K · CONFIG (E)      K1 sala/pools p/ knobs-default ─► K2 contrato "knob nasce em config" ─► (aplica-se a S e V)
                             (Sonnet)                          (Fable, 1 página no mapa)
 ```
@@ -38,7 +38,8 @@ pista as fases são em série, cada uma com stop visual do David.
   mesmo tempo — cada fase que lhe toca fecha e commita antes da seguinte abrir. O resto é disjunto.
 
 **Modelo por tarefa (plan.md §4.1):** Fable medium = orquestra, debate, docs, julga GROOVE/drops ·
-Opus = DSP, FSM, cena 3D, debug · Sonnet = patch bem especificado, renames, varrimentos.
+Opus = DSP, FSM, **tudo o que é visual/cena 3D** (David, S13: "nos visuais cuidado com Sonnet"), debug ·
+Sonnet = só mecânico puro: renames, config, regenerar gerados, varrimentos.
 
 ---
 
@@ -135,9 +136,9 @@ Objetivo: gastar parte dos ~13 ms de margem em **luz e ar**, não em geometria. 
 
 | Fase | O quê | Ficheiros | Modelo | Custo | Depende | Stop do David |
 |---|---|---|---|---|---|---|
-| **V0** | G1 `freezeWorldMatrix` sala/pilares + G2 **baseline medido** no pior caso (sala-toda + Ø3,0 + 80 vultos) | `room.js`, `main.js` (2 linhas) | Sonnet (patch) + **David** mede (tab em foco, `MB2.__perf()`) | -0,1..0,3 ms | — | registar `medianRenderMs`, meshes ativas, vértices em `docs/f17-visual.md` §0. Primeiro número limpo em 5 fases. |
-| **V1** | R1 dots em losango (herdam a forma da faceta) | `dots.js:44` | Sonnet | ~0 | — | "os pontos leem como espelho, não lanterna?" Reversível numa linha. |
-| **V2** | R2 `scene.fogMode` EXP + knob `fogDensity` (default quase impercetível) + `fogColor` | `main.js`, `config.js`, `panel.js` (knob, PERSIST) | Sonnet | ~0-0,2 ms | V0 fechada (main.js) | "os pilares do fundo perdem nitidez?" |
+| **V0** | G1 `freezeWorldMatrix` sala/pilares + G2 **baseline medido** no pior caso (sala-toda + Ø3,0 + 80 vultos) | `room.js`, `main.js` (2 linhas) | Opus + **David** mede (tab em foco, `MB2.__perf()`) | -0,1..0,3 ms | — | registar `medianRenderMs`, meshes ativas, vértices em `docs/f17-visual.md` §0. Primeiro número limpo em 5 fases. |
+| **V1** | R1 dots em losango (herdam a forma da faceta) | `dots.js:44` | Opus | ~0 | — | "os pontos leem como espelho, não lanterna?" Reversível numa linha. |
+| **V2** | R2 `scene.fogMode` EXP + knob `fogDensity` (default quase impercetível) + `fogColor` | `main.js`, `config.js`, `panel.js` (knob, PERSIST) | Opus | ~0-0,2 ms | V0 fechada (main.js) | "os pilares do fundo perdem nitidez?" |
 | **V3** | R3 exposição: `postExposure` default mais baixo + `ColorCurves` no pipeline (sombras frias, altas quentes) com knobs | `main.js` (pipeline), `config.js`, `panel.js` | **Opus** (é onde é fácil escurecer demais; precisa de juízo sobre a cadeia ACES existente) | ~0 | V2 fechada (main.js) | lado a lado com fotos lux2-lux12 de `f8-sala-lux.md`: "sala escura com picos?" |
 | **V4** | R4 decisão `tileTone: 'real'` como default | `knobs-default.json` | **David** (estética) | 0 | V3 | comparação lado a lado dos dois modos. |
 | **V5** | R5 `ShadowGenerator` em 2-4 luzes hero (spots da bola, mikado) | `main.js`, `ball.js`, `mikado.js` | **Opus** | 0,3-1,0 ms/luz | V0-V3 + S2 (para saber quais são as luzes hero) | `MB2.__perf()` antes/depois; sem acne nas facetas; "há sombra dura no chão?" |
@@ -195,8 +196,8 @@ nº3 (nomes ↔ localStorage) que já perdeu afinações do David, sem ganho sob
 
 | Sessão | Em série (bloqueia) | Em paralelo (subagentes) | Stop do David no fim |
 |---|---|---|---|
-| **S13** (esta) | **S0 debate** (Fable + David) | **V0** (Sonnet) · **V1** (Sonnet) · **K1** (Sonnet) | baseline registada; dots em losango sim/não; knobs novos sem mudança visual; `f16-sync.md` fechado |
-| S14 | **S1** relógio (Opus) | **V2** fog (Sonnet, após V0) · **K2** (Fable) | HUD com ticks a bater; pilares do fundo |
+| **S13** (esta) | **S0 debate** (Fable + David) | **V0** (Opus) · **V1** (Opus) · **K1** (Sonnet) | baseline registada; dots em losango sim/não; knobs novos sem mudança visual; `f16-sync.md` fechado |
+| S14 | **S1** relógio (Opus) | **V2** fog (Opus, após V0) · **K2** (Fable) | HUD com ticks a bater; pilares do fundo |
 | S15 | **S2** hero+reserva (Opus) | **V3** exposição (Opus, após V2) | replay: drops com mudança >90 %; sala escura com picos |
 | S16 | **S3a/b/c** (Opus, 3 stops; S3c serializado com main.js) | **V4** decisão tileTone (David) | chases a bater; rajada só no drop; painel não apagado |
 | S17 | **S4** gestos (Opus) | **V5** sombras (Opus, precisa das luzes hero de S2) | blackout pré-drop; sombra dura no chão; perf |
