@@ -103,6 +103,9 @@ export async function initPanel(CONFIG, hooks = {}) {
   // F13 §3: diâmetro da bola ao vivo — escala a bola, reaplica a cota (o clamp depende do raio),
   // regenera a clareira do mikado e refresca o probe.
   const onBallDiameterChanged = hooks.onBallDiameterChanged || noop;
+  // F14: posição da bola na PLANTA (X/Z) ao vivo — move a bola/corrente/probe, regenera a CLAREIRA
+  // do mikado no sítio novo e refresca o probe. Mesma cadeia (e mesma ordem) da altura/diâmetro.
+  const onBallPosChanged = hooks.onBallPosChanged || noop;
   /* ---- F13.5: PRESETS — a única porta para a CÂMARA ----
      O painel não conhece Babylon nem o objeto `camera`; o main.js passa dois closures:
        hooks.camGet()      -> {alpha,beta,radius,ty}  (pose atual, para GRAVAR)
@@ -343,6 +346,19 @@ export async function initPanel(CONFIG, hooks = {}) {
        4,6 mas o valor EFETIVO é clampado — `CONFIG.ballYEffective` é quem manda. */
     ['bola: diâmetro (m)', 2.0, 3.0, 0.5,
       v => { CONFIG.ballDiameterM = v; onBallDiameterChanged(); }, () => CONFIG.ballDiameterM],
+    /* ---- F14: POSIÇÃO da bola na PLANTA da sala, passo 1 m (spec do David) ----
+       O David pediu "X e Y na planta"; no mundo Babylon a planta são os eixos X e Z (Y é a
+       vertical, que já tem o knob 'bola: altura (m)'). 0 = CENTRO da sala, que é o default.
+       Faixa ±6 m: cobre a sala nominal (11 × 15 m) com folga e não precisa de mudar quando os knobs
+       ⟳ de geometria a esticam. Quem manda no limite REAL é o clamp do ball.js (paredes + pilares,
+       raio da bola + 0,30 m de folga): o slider vai até ao fim, a bola pára onde deve, e o valor
+       efetivo sai em `CONFIG.ballXEffective`/`ballZEffective` — exatamente como a faixa de altura,
+       que também vai aos 4,6 m e é clampada contra o pé-direito.
+       Ao vivo: `onBallPosChanged` move tudo e regenera a CLAREIRA do mikado no sítio novo. */
+    ['bola: posição X (m)', -6, 6, 1,
+      v => { CONFIG.ballPosXM = v; onBallPosChanged(); }, () => CONFIG.ballPosXM],
+    ['bola: posição Z (m)', -6, 6, 1,
+      v => { CONFIG.ballPosZM = v; onBallPosChanged(); }, () => CONFIG.ballPosZM],
     ['mikado (0/1)', 0, 1, 1, v => { CONFIG.mikado.on = v >= 0.5; }, () => (CONFIG.mikado.on === false ? 0 : 1)],
     // geometria (rebuild ao vivo)
     /* F12 §1: a contagem passou a DENSIDADE (barras/m² do miolo) — muda a geometria da sala e a
@@ -494,6 +510,11 @@ export async function initPanel(CONFIG, hooks = {}) {
       'corpos: lente ×', 'corpos: haste (0/1)', 'fundo: claridade (dark)',
       // ---- Fase 8: dimensões (RELOAD), wash, chapéus, cor ----
       'sala: pé-direito (m)', 'cor (0/1)',
+      /* F14 (spec do David): a POSIÇÃO da bola na planta vive no grupo "Sala" — é uma decisão de
+         SALA ("onde é que a bola está pendurada"), não uma afinação da bola. Os outros três knobs da
+         bola (on/off, altura, diâmetro) ficam onde estão, em "Mikado & Bola": foi o David que pediu
+         estes dois aqui, e é aqui que ele os vai procurar. */
+      'bola: posição X (m)', 'bola: posição Z (m)',
       'sala: wash (0-1)', 'sala: wash matiz',
       // ---- F10: refletividade por superfície (ao vivo) ----
       'refl: chão', 'refl: teto', 'refl: paredes fundo', 'refl: paredes laterais',

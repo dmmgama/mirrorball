@@ -401,6 +401,35 @@ window.CONFIG = {
   ballDiameterM: 2.0,          // knob 'bola: diâmetro (m)' — 2,0 / 2,5 / 3,0
   ballR: 1.0,                  // DERIVADO (= ballDiameterM/2). Nunca se escreve à mão: ver ballR() no main.js
 
+  /* ---- F14: POSIÇÃO DA BOLA NA PLANTA — knobs X e Z, passo 1 m ----
+     A F12 deu à bola o eixo VERTICAL (`ballHeightM`) e a F13 o TAMANHO (`ballDiameterM`); faltavam
+     os dois eixos da PLANTA. O David pediu-os por nome ("posição X e Y da bola na planta da sala,
+     passo 1 m, no menu Sala") — no mundo Babylon a planta é (X, Z), com Y a vertical, por isso os
+     knobs chamam-se 'bola: posição X (m)' e 'bola: posição Z (m)'.
+
+     0 = CENTRO da sala (a posição nominal da F8, onde tudo foi calibrado), que é também o default:
+     quem não mexer no knob vê exatamente a cena da F13. X cresce para a DIREITA da câmara; Z cresce
+     para o FUNDO da sala (a parede `room.back` está em Z negativo, a frente aberta em Z positivo).
+
+     PADRÃO (o mesmo das F12/F13, agora completo): o cálculo em CPU continua TODO no referencial da
+     BOLA e em RAIOS; a sala entra deslocada de −offset e as posições que saem para o mundo levam
+     +offset. Ver o comentário grande em `computeColors` (ball.js) — a F14 só acrescentou X e Z às
+     duas linhas onde a F12 já tinha posto o Y.
+
+     CLAMP (ball.js): a bola nunca entra nas paredes nem nos PILARES. O limite é
+     `halfW − raio − margem` em X e `|back| − raio − margem` em Z (margem 0,30 m), mais a rejeição
+     dos corredores dos pilares — ver `computeBallXZ`. O slider vai a ±6 m mas o valor EFETIVO sai
+     em `CONFIG.ballXEffective`/`ballZEffective`, que são a fonte de verdade ÚNICA (regra herdada
+     do `ballYEffective`: NINGUÉM deriva a posição do knob em cru).
+
+     ⚠ REGRA 3 do handoff S10, outra vez: os corpos dos focos/chapéus/robots NÃO se mexem quando a
+     bola anda pela sala — o que muda é a MIRA. Um pinspot montado em treliça não anda atrás da bola.
+     A CLAREIRA do mikado, essa, SEGUE a bola (spec da F14). */
+  ballPosXM: 0,                // knob 'bola: posição X (m)' — 0 = centro da sala
+  ballPosZM: 0,                // knob 'bola: posição Z (m)' — 0 = centro da sala
+  ballXEffective: 0,           // DERIVADO (já clampado) — publicado por ball.js, lido por mikado/main
+  ballZEffective: 0,           // DERIVADO (já clampado) — idem
+
   /* ---- F11 — MIKADO DO TETO (v2/mikado.js) ----
      ~36 barras compridas e finas cruzadas em várias camadas, SÓ no miolo (dentro do retângulo dos
      pilares). Cada barra = tubo luminoso + perfil/calha metálica + terminais + 2 tirantes ao teto.

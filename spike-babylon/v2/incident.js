@@ -129,8 +129,14 @@ export function createIncident(scene, CONFIG) {
      A geometria do cone é toda calculada no referencial da BOLA (a esfera de raio 1 na origem); a
      única coisa que muda é a translação final da mesh, que leva `+ballY`. O parâmetro é opcional —
      sem ele o comportamento é exatamente o anterior. */
+  /* F14: o 4º argumento passa a poder ser o CENTRO COMPLETO da bola ({x,y,z}) em vez de só a cota.
+     Aceita-se o número solto por compatibilidade (é o que a F12 passava) — quem passar um número
+     continua a ter o comportamento da F12, com X = Z = 0. */
   function update(mountedSpots, E, camera, ballY) {
-    const by = num(ballY, 0);
+    const C3 = (ballY && typeof ballY === 'object')
+      ? { x: num(ballY.x, 0), y: num(ballY.y, 0), z: num(ballY.z, 0) }
+      : { x: 0, y: num(ballY, 0), z: 0 };
+    const by = C3;
     // F7: `haze` já traz o fator da explosão — o cone incidente desvanece-se com `×(1 − 0.8·exS)`
     // (index-v2.html:517). Com a bola partida não há uma esfera a intercetar o feixe, só cacos.
     const exS = Math.min(1, Math.max(0, num(E && E.exS, 0)));
@@ -151,7 +157,7 @@ export function createIncident(scene, CONFIG) {
   }
 
   // devolve true se desenhou (pelo menos alpha0 > teto mínimo e geometria válida)
-  function setupSpot(perSpot, sp, haze, camPos, ballY) {
+  function setupSpot(perSpot, sp, haze, camPos, ballC) {
     const I = num(sp.I, 0);
     // a0 = incidentAlpha·E.haze·min(1,I) — verbatim :517 (sem exS/dk: Fase 3 não tem explosão nem skin
     // dark/white ligados ainda; ficam ⚠ documentados em PARITY quando essas fases existirem).
@@ -173,11 +179,13 @@ export function createIncident(scene, CONFIG) {
     /* `hit`/`src` nascem no referencial da BOLA (esfera de raio 1 na origem). F12 §3: leva-se `src`
        já para o MUNDO com `+ballY`, porque tanto o teste contra a câmara abaixo como a translação
        da mesh são em coordenadas absolutas. A DIREÇÃO (S) não muda com a translação.
-       F13 §3: `×rb` (raios → metros) ANTES do `+ballY`, que é uma cota do mundo. */
+       F13 §3: `×rb` (raios → metros) ANTES do `+ballY`, que é uma cota do mundo.
+       F14: a translação passou a ser o vetor completo (X, Y, Z) do centro da bola — mesma ordem
+       (escala primeiro, translação depois) e mesmas três linhas. */
     const src = [
-      (hit[0] + S[0] * far) * rb,
-      (hit[1] + S[1] * far) * rb + num(ballY, 0),
-      (hit[2] + S[2] * far) * rb,
+      (hit[0] + S[0] * far) * rb + num(ballC && ballC.x, 0),
+      (hit[1] + S[1] * far) * rb + num(ballC && ballC.y, 0),
+      (hit[2] + S[2] * far) * rb + num(ballC && ballC.z, 0),
     ];
 
     // não desenhar se a fonte cai perto/atrás da câmara (:523) — o original testa `src.z > camD-2.5`

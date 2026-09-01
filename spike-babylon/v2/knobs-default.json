@@ -118,6 +118,8 @@
   "bola (0/1)": 1,
   "bola: altura (m)": 3.5,
   "bola: diâmetro (m)": 2,
+  "bola: posição X (m)": 0,
+  "bola: posição Z (m)": 0,
   "mikado (0/1)": 1,
   "mikado: barras/m²": 0.81,
   "mikado: altura (m)": 4,

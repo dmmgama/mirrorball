@@ -1,7 +1,7 @@
 // v2/main.js — esqueleto do spike v2 (Fase 1): engine, sala, câmara, luzes mínimas, loop/HUD, painel `d`.
 // A malha da bola é responsabilidade do Opus (v2/ball.js); aqui só se importa dinamicamente com stub de recurso.
 import { buildRoom } from './room.js?v=4';
-import { initPanel } from './panel.js?v=13';
+import { initPanel } from './panel.js?v=14';
 import { applyColorToggle, hueToRgb } from './colorutil.js?v=1';
 
 const CONFIG = window.CONFIG;
@@ -156,8 +156,11 @@ function resetCameraPose() {
   camera.fov = computeFov();
   // F12 §3: repor a câmara volta a apontá-la ao centro da bola na cota em que ela está agora
   // (o loop reescreve isto por frame; aqui é só para o gesto da tecla `0` ser imediato).
-  camera.target.x = 0; camera.target.z = 0;
-  camera.target.y = num(CONFIG.ballHeightM, 3.5) - 3.5;
+  // F14: e no sítio da PLANTA em que ela está — antes assumia-se o centro da sala, o que com a bola
+  // deslocada punha a tecla `0` a apontar para o vazio durante um frame.
+  camera.target.x = num(CONFIG.ballXEffective, 0);
+  camera.target.z = num(CONFIG.ballZEffective, 0);
+  camera.target.y = num(CONFIG.ballYEffective, num(CONFIG.ballHeightM, 3.5) - 3.5);
 }
 addEventListener('keydown', (e) => { if (e.key === '0') resetCameraPose(); });
 
@@ -273,6 +276,18 @@ canvas.addEventListener('wheel', () => { camAnim.on = false; }, { passive: true 
     const d = num(CONFIG.ballDiameterM, 2.0) / 2;
     CONFIG.ballR = d < 1.0 ? 1.0 : d > 1.5 ? 1.5 : d;
   }
+  /* F14: MESMA razão pela QUARTA vez (bola on/off, cota, diâmetro e agora a planta) — o
+     `createMikado` corre ANTES do `ball.js` e a CLAREIRA é aberta à volta do CENTRO da bola. Sem a
+     posição pré-aplicada, quem tivesse a bola gravada a X = −4 m via o buraco no meio da sala e
+     barras a atravessar-lhe os espelhos, até tocar num knob.
+     Aqui só se pré-publica a ESTIMATIVA (o knob em cru); o clamp real (paredes + pilares) é do
+     `ball.js`, que reescreve `ballXEffective`/`ballZEffective` no arranque — e o main.js compara os
+     dois logo a seguir ao `createBall` e regenera o mikado se diferirem (ver o bloco F12/F14 lá em
+     baixo). É exatamente o padrão que a F12 usou para a cota. */
+  if (fin(stored['bola: posição X (m)'])) CONFIG.ballPosXM = stored['bola: posição X (m)'];
+  if (fin(stored['bola: posição Z (m)'])) CONFIG.ballPosZM = stored['bola: posição Z (m)'];
+  CONFIG.ballXEffective = num(CONFIG.ballPosXM, 0);
+  CONFIG.ballZEffective = num(CONFIG.ballPosZM, 0);
 })();
 
 /* ---------------- F13 §4: o banner "dimensões da sala mudaram" foi ELIMINADO ------------------------
@@ -350,7 +365,7 @@ try {
    escrito o `bola (0/1)` do localStorage. Ver o bloco F11 lá em cima. */
 let mikado = null;
 try {
-  const mod = await import('./mikado.js?v=7');
+  const mod = await import('./mikado.js?v=8');
   mikado = mod.createMikado(scene, CONFIG);
   console.log('mikado.js carregado —', mikado.barCount, 'barras.');
   /* mesmo fix S9 "parede de luz" dos robots: as PointLight do flash do mikado são fortes e estão
@@ -438,10 +453,16 @@ const WHITE = new BABYLON.Color3(1, 1, 1);
    `ball.centerY` é a fonte de verdade (0 = a cota nominal da F8; o slider 'bola: altura (m)'
    desloca-a). Devolve-se um Vector3 novo de propósito: quem chama faz `.subtract(pos)` e não pode
    escrever num vetor partilhado. Sem `ball` (arranque/stub) devolve a origem = comportamento antigo. */
+/* F14: e agora o centro COMPLETO — `ballCenter()` devolve (X, Y, Z), com os três eixos a virem do
+   `ball.js` já CLAMPADOS (`centerX`/`centerY`/`centerZ`). É a fonte de verdade única da posição da
+   bola para o main.js: mira dos focos, auréola, alvo da câmara e cone incidente leem daqui, nunca
+   dos knobs `ballPosXM`/`ballPosZM` em cru — a mesma regra que a F12 fixou para a cota. */
 function ballCenter() {
-  return new BABYLON.Vector3(0, num(ball && ball.centerY, 0), 0);
+  return new BABYLON.Vector3(ballCenterX(), ballCenterY(), ballCenterZ());
 }
 function ballCenterY() { return num(ball && ball.centerY, 0); }
+function ballCenterX() { return num(ball && ball.centerX, 0); }
+function ballCenterZ() { return num(ball && ball.centerZ, 0); }
 
 let activeSpotCount = 0, activeFlashCount = 0;
 function updateSpotLights() {
@@ -677,8 +698,11 @@ function updateHalo(E) {
   haloMat.alpha = clamp01(a);
   // F12 §3: a auréola é a névoa À VOLTA DA BOLA — tem de acompanhá-la quando ela sobe/desce
   // (é um billboard solto no mundo, não é filho do root da bola).
-  const by = ballCenterY();
-  if (haloMesh.position.y !== by) haloMesh.position.y = by;
+  // F14: nos três eixos (a auréola é um billboard solto no mundo, não é filha do root da bola).
+  const by = ballCenterY(), bx = ballCenterX(), bz = ballCenterZ();
+  if (haloMesh.position.y !== by || haloMesh.position.x !== bx || haloMesh.position.z !== bz) {
+    haloMesh.position.set(bx, by, bz);
+  }
   /* F13 §3: e tem de CRESCER com ela — `HALO_R` = 2,6 é em raios da bola (o plano nasceu com
      `size: HALO_R*2`, ou seja já com R=1 embutido). Escala-se a mesh em vez de a recriar: um
      `CreatePlane` novo por clique de knob deixava o `applyBallVisibility` a apontar para uma
@@ -693,7 +717,7 @@ function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
    Se ainda não existir (ou falhar), stub = esfera simples, só para se poder testar o resto. */
 let ball = null;
 try {
-  const mod = await import('./ball.js?v=4');
+  const mod = await import('./ball.js?v=5');
   ball = mod.createBall(scene, CONFIG);
   console.log('ball.js carregado —', ball && ball.tiles, 'tiles');
   // F8: pilares + chapéus + robots de teto entram na renderList do probe — a bola tem de espelhar a
@@ -709,11 +733,19 @@ try {
      `createBall` acabou de aplicar o CLAMP real (contra o pé-direito) e reescrever
      `CONFIG.ballYEffective`. Se os dois números não baterem certo, a clareira do mikado está aberta
      no sítio errado — regenera-se uma vez, aqui, e só nesse caso. */
+  /* F14: o mesmo teste para a PLANTA — o clamp da posição (paredes + pilares) só corre no ball.js,
+     e se ele mexeu na posição estimada a clareira ficou no sítio errado. */
   if (mikado && mikado.rebuild && Number.isFinite(ball.centerY)) {
     const est = num(CONFIG.ballHeightM, 3.5) - 3.5;
-    if (Math.abs(est - ball.centerY) > 1e-6) {
-      console.log('[MB2] F12: cota da bola clampada (' + est.toFixed(2) + ' → ' +
-        ball.centerY.toFixed(2) + ') — a regenerar a clareira do mikado.');
+    const estX = num(CONFIG.ballPosXM, 0), estZ = num(CONFIG.ballPosZM, 0);
+    const dY = Math.abs(est - ball.centerY);
+    const dX = Math.abs(estX - num(ball.centerX, 0));
+    const dZ = Math.abs(estZ - num(ball.centerZ, 0));
+    if (dY > 1e-6 || dX > 1e-6 || dZ > 1e-6) {
+      console.log('[MB2] F12/F14: posição da bola clampada (' +
+        estX.toFixed(2) + ',' + est.toFixed(2) + ',' + estZ.toFixed(2) + ' → ' +
+        num(ball.centerX, 0).toFixed(2) + ',' + ball.centerY.toFixed(2) + ',' +
+        num(ball.centerZ, 0).toFixed(2) + ') — a regenerar a clareira do mikado.');
       mikado.rebuild();
       if (ball.refreshProbe) ball.refreshProbe();
     }
@@ -824,7 +856,7 @@ function applyBallVisibility() {
    beams.js pode ainda não existir (Opus em paralelo) — tolera com try/catch, tal como o ball.js. */
 let beams = null;
 try {
-  const mod = await import('./beams.js?v=3');
+  const mod = await import('./beams.js?v=4');
   beams = mod.createBeams(scene, CONFIG, ball);
   console.log('beams.js carregado.');
 } catch (err) {
@@ -833,7 +865,7 @@ try {
 
 let incident = null;
 try {
-  const mod = await import('./incident.js?v=3');
+  const mod = await import('./incident.js?v=4');
   incident = mod.createIncident(scene, CONFIG);
   console.log('incident.js carregado.');
 } catch (err) {
@@ -1005,6 +1037,23 @@ const panelApi = await initPanel(CONFIG, {
       if (mikado && mikado.rebuild) mikado.rebuild();
       if (ball && ball.refreshProbe) ball.refreshProbe();
     } catch (e) { console.error('onBallHeightChanged:', e); }
+  },
+  /* ---- F14: POSIÇÃO da bola na PLANTA ('bola: posição X (m)' / 'bola: posição Z (m)') ----
+     A MESMA cadeia da altura, e pela mesma razão de ordem (armadilha nº1 da F12): quem lê a posição
+     tem de a ler já publicada e já CLAMPADA (paredes + pilares).
+       1. `ball.applyHeight()` — move o root/probe/corrente e publica `ballXEffective`/`ballZEffective`;
+       2. `mikado.rebuild()` — a CLAREIRA segue a bola (é a metade da spec da F14 que se vê melhor:
+          arrastar o slider abre o buraco no mikado no sítio novo e fecha-o no antigo);
+       3. `ball.refreshProbe()` — a bola mudou de sítio, o que ela espelha vem de outro ponto de vista.
+     O que NÃO acontece aqui, de propósito: os corpos dos focos/chapéus/robots não se mexem (regra 3
+     do handoff S10) — o `updateSpotLights` re-mira-os no frame seguinte, e a câmara/auréola seguem a
+     bola pelo loop. */
+  onBallPosChanged: () => {
+    try {
+      if (ball && ball.applyHeight) ball.applyHeight();
+      if (mikado && mikado.rebuild) mikado.rebuild();
+      if (ball && ball.refreshProbe) ball.refreshProbe();
+    } catch (e) { console.error('onBallPosChanged:', e); }
   },
   /* ---- F13 §3: DIÂMETRO da bola (2,0-3,0 m) ----
      A MESMA cadeia da altura, e a ORDEM é a mesma armadilha (F12, armadilha nº1): quem lê o raio
@@ -1505,7 +1554,8 @@ scene.registerBeforeRender(() => {
     catch (e) { console.error('beams.update:', e); }
   }
   if (incident && incident.update) {
-    try { incident.update(ball && ball.mountedSpots, E, camera, ballCenterY()); }   // F12 §3: cota da bola
+    // F12 §3 cota da bola → F14: o CENTRO completo (o incident.js aceita {x,y,z} ou o número solto)
+    try { incident.update(ball && ball.mountedSpots, E, camera, ballCenter()); }
     catch (e) { console.error('incident.update:', e); }
   }
   if (dots && dots.update) {
@@ -1534,10 +1584,14 @@ scene.registerBeforeRender(() => {
      alvo da ArcRotateCamera ficava na origem) e o David via a bola a fugir para fora do ecrã em vez
      de a ver subir. O `target` é o único que se mexe — o ângulo/raio de órbita são dele. */
   {
-    const by = ballCenterY();
-    // ⚠ escreve-se `target.y` DIRETO, não `setTarget()`: em ArcRotateCamera o `setTarget` recalcula
+    const by = ballCenterY(), bx = ballCenterX(), bz = ballCenterZ();
+    // ⚠ escreve-se `target.*` DIRETO, não `setTarget()`: em ArcRotateCamera o `setTarget` recalcula
     // alpha/beta/radius a partir da posição atual e dava um salto de órbita a cada mudança de cota.
+    // F14: os três eixos. A câmara ORBITA a bola onde quer que ela esteja na planta — sem isto,
+    // arrastar o slider de X mandava a bola para fora do enquadramento em vez de a mostrar a andar.
     if (camera.target.y !== by) camera.target.y = by;
+    if (camera.target.x !== bx) camera.target.x = bx;
+    if (camera.target.z !== bz) camera.target.z = bz;
   }
   excludeBallFromRoomLights(); // F8 (regra "nenhum foco inferior" + robots) — idempotente, ver acima
   // F8: chapéus e robots só ficam posicionados/ativados DEPOIS do 1º update() acima (attachProbe
@@ -1582,7 +1636,12 @@ scene.registerAfterRender(() => {
     // F12: barras + área do miolo (a contagem deriva da densidade) e a cota da bola
     `mikado ${mikado ? (CONFIG.mikado.on === false ? 'off'
       : `${mikado.barCount} barras (${(mikado.areaM2 || 0).toFixed(0)} m²)`) : '—'}` +
-    `  ·  bola ${CONFIG.ballOn === false ? 'off' : num(CONFIG.ballHeightM, 3.5).toFixed(2) + ' m'}\n` +
+    // F14: a posição na PLANTA entra no HUD ao lado da cota (só quando não é o centro, para a linha
+    // não crescer sem razão em quem nunca mexeu no knob).
+    `  ·  bola ${CONFIG.ballOn === false ? 'off'
+      : num(CONFIG.ballHeightM, 3.5).toFixed(2) + ' m'
+        + ((Math.abs(ballCenterX()) > 1e-6 || Math.abs(ballCenterZ()) > 1e-6)
+          ? `  (x ${ballCenterX().toFixed(1)} · z ${ballCenterZ().toFixed(1)})` : '')}\n` +
     // F12 §5: estrela corrente + o gesto que os chapéus usam quando lhes toca
     `estrela ${stardom ? (CONFIG.stardom.on === false ? 'off'
       : `${stardom.star} (${stardom.changes} trocas${stardom.star === 'hats'

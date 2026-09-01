@@ -294,12 +294,17 @@ export function createBeams(scene, CONFIG, ball) {
        longe do nominal, medir da origem dava um `camDir` inclinado e o teste `Rz` (feixe a vir para
        nós → brilho aditivo) escolhia os feixes errados. Recalcula-se com o centro real da bola,
        que o ball.js publica em `centerY`; sem essa propriedade (stub) o comportamento é o antigo. */
+    /* F14: e nos outros dois eixos — a bola já não está só a subir e a descer, anda pela planta.
+       Com ela encostada a um lado da sala, medir da origem dava um `camDir` torto exatamente como
+       dava com a cota fora do nominal. */
     {
       const by = num(ball && ball.centerY, 0);
-      if (by !== 0 && cam && cam.globalPosition) {
-        const p = cam.globalPosition, py = p.y - by;
-        const l2 = Math.hypot(p.x, py, p.z) || 1;
-        camDir.set(p.x / l2, py / l2, p.z / l2);
+      const bx = num(ball && ball.centerX, 0);
+      const bz = num(ball && ball.centerZ, 0);
+      if ((by !== 0 || bx !== 0 || bz !== 0) && cam && cam.globalPosition) {
+        const p = cam.globalPosition, px2 = p.x - bx, py = p.y - by, pz2 = p.z - bz;
+        const l2 = Math.hypot(px2, py, pz2) || 1;
+        camDir.set(px2 / l2, py / l2, pz2 / l2);
       }
     }
 

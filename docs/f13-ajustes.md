@@ -369,3 +369,13 @@ entra com `alpha`/`beta`/`radius` finitos. Um ficheiro corrompido não consegue 
   mas se incomodar, tirar a skin do `togglesGet` do preset é uma linha.
 - **Sem limite ao número de presets nem ao tamanho do `localStorage`**: cada preset são ~175 números
   (~4 KB). Umas centenas cabem à vontade; milhares não. Não se pôs guarda — é um spike.
+
+---
+
+## Continua em → `docs/f14-bola-xy.md`
+
+A **F14** (posição X/Z da bola na planta, sliders de passo 1 m no grupo "Sala", com a clareira do
+mikado a seguir a bola) estende o padrão da fronteira desta fase (§3: *o CPU trabalha em raios e
+converte-se só na fronteira*) aos dois eixos que faltavam. **175 → 177 knobs**; os dois novos entram
+nos presets da F13.5 de graça (verificado). Nada da F13/F13.5 mudou de nome, faixa ou default, e a
+tabela de medições da §3 (diâmetro) foi reproduzida exatamente como não-regressão.

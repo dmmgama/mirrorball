@@ -414,10 +414,16 @@ export function createMikado(scene, CONFIG) {
        knob a 4,2 m, a bola parava em +0,25 mas a clareira abria a +0,70 → barras a ATRAVESSAR a
        bola (distância mínima 0,85 quando o exigido era 1,50).
        Fallback para o knob só enquanto o ball.js ainda não correu (arranque). */
+    /* F14: a CLAREIRA SEGUE A BOLA NA PLANTA (spec do David). O X e o Z saem de
+       `CONFIG.ballXEffective`/`ballZEffective`, que é a posição JÁ CLAMPADA (paredes + pilares) que
+       o ball.js publica — a MESMA regra do `ballYEffective`, e pela mesma razão: derivar do knob em
+       cru dava um número diferente sempre que o clamp entrasse, e o buraco abria-se onde a bola não
+       está. Fallback para o knob em cru só enquanto o ball.js ainda não correu (arranque; o main.js
+       compara os dois logo a seguir ao `createBall` e regenera se diferirem). */
     const ballC = {
-      x: 0,
+      x: num(CONFIG.ballXEffective, num(CONFIG.ballPosXM, 0)),
       y: num(CONFIG.ballYEffective, num(CONFIG.ballHeightM, 3.5) - 3.5),
-      z: 0,
+      z: num(CONFIG.ballZEffective, num(CONFIG.ballPosZM, 0)),
     };
 
     const out = [];
