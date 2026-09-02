@@ -46,12 +46,16 @@
 // 1. PBR novo SEMPRE com `reflectionTexture` própria (RawCubeTexture 1×1 quase preta) — regressão
 //    S8 "tudo preto" (ver o comentário longo em v2/room.js). Aplica-se a TODOS os materiais daqui.
 // 2. `setEnabled` acompanha SEMPRE a contagem (bug S9 nº1): pool fixo de MAX_BARS, o que passa do
-//    `count` fica desligado.
+//    `count` fica desligado. V6 (S14): a contagem é `thinInstanceCount` por mesh base, e count=0
+//    desliga a própria base (armadilha: count=0 não é garantia de nada desenhar).
 // 3. Orientar com `rotationQuaternion` (Euler compõe YXZ e torce a barra) — armadilha S10.
 // 4. NaN-safe: todo o estado nasce com valor inicial e todo o knob passa por `num(v, default)`.
 // 5. Nada > 3 Hz.
 // 6. `meshes` = array ACHATADO de MESHES REAIS (nunca TransformNodes — rebentam o
 //    `_prepareRenderingManager` do ReflectionProbe em WebGPU). A bola TEM de espelhar o mikado.
+// 7. V6 (S14, research-gpu-offload §5 G3): THIN INSTANCES — 4 meshes base (tubo, calha, tampa,
+//    tirante) × MAX_BARS matrizes, cor por barra num instance buffer (como a corrente da bola).
+//    Era 6 meshes reais por barra (672) + 12 materiais de tubo escritos por frame.
 //
 // createMikado(scene, CONFIG) -> { meshes, lights, update(tSec, dt), rebuild(), barCount }
 
@@ -79,12 +83,10 @@ function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
    pede ~95 barras: a 72 o modo novo nascia CORTADO a meio e o aviso da consola disparava logo à
    primeira vez que o David clicasse no toggle — a densidade deixaria de ser densidade.
    112 cobre a sala nominal em modo sala-toda até ~0,95/m² e o miolo até ao topo do knob (1,6).
-   CUSTO: o pool é criado UMA vez no arranque, portanto são 112×6 = 672 meshes pequenas, das quais
-   só as em uso ficam `setEnabled(true)` — as outras não custam nada por frame (nem à cena nem ao
-   probe, que só desenha o que está enabled). O que custa é o REFRESH do probe (RENDER_ONCE, ver a
-   dívida registada na F12: a renderList é fixada com o pool inteiro no `attachProbe`). Fica na
-   mesma dívida, agora maior; a correção é refazer a renderList no `rebuild()` — fora do âmbito
-   fechado da F13, mas é o primeiro sítio a olhar se a perf incomodar. */
+   CUSTO (até V6): 112×6 = 672 meshes pequenas, só as em uso `setEnabled(true)`; a renderList do
+   probe levava o pool inteiro. V6 (S14): o pool passou a 4 meshes base com `MAX_BARS` (e 2×) thin
+   instances cada — o teto custa só memória de buffer (112×16 floats por base), e a renderList do
+   probe tem 4 entradas. A dívida da renderList fixa deixou de pesar. */
 const MAX_BARS_FALLBACK = 112;   // K1: fallback se CONFIG.mikado.maxBars faltar/for inválido (regra 7)
 const MIN_GAP_S = 1 / 3;      // teto ABSOLUTO de 3 Hz entre flashes (regra invariável da sala)
 
@@ -150,80 +152,77 @@ export function createMikado(scene, CONFIG) {
   railMat.maxSimultaneousLights = 4;   // perf: mesma nota de fixtures.js/robots.js
   railMat.reflectionTexture = darkCube;
 
-  /* TUBO luminoso: material PRÓPRIO POR BARRA? Não — os flashes são SIMULTÂNEOS e da MESMA cor
-     (spec §5), portanto bastam poucos materiais. Usa-se UM material por BLOCO (MAX_BLOCKS) para o
-     modo "blocos" poder acender um grupo e deixar os outros apagados, com custo fixo de shaders.
-     Escrever `.emissiveColor.set(...)` numa Color3 EXISTENTE (nunca reatribuir a propriedade —
-     recompila o shader, ver a nota de perf do estrobo em main.js). */
-  // K1 (2026-09-01): antes const MAX_BLOCKS=12 hardcoded. ⟳ reload: os materiais por bloco só se
-  // criam uma vez aqui. Mesmo valor de hoje por defeito.
+  /* TUBO luminoso — V6 (S14, thin instances): UM só material para TODOS os tubos. A cor/brilho
+     por BLOCO já não vive no material (antes: 12 `tubeMats`, um por bloco, com `.emissiveColor`
+     escrito por frame) — vive no INSTANCE BUFFER `color` (4 floats por barra), como a corrente da
+     bola (ball.js `chain`). Truque: o PBR `unlit` devolve `albedo × vColor` sem luz nem reflexão,
+     e com `albedoColor` branco o vColor É o emissivo de antes (os valores passam de 1 sem clamp —
+     o buffer é float32 e o shader não satura antes do tone-mapping). Zero recompilação de shader
+     por frame: o único write é `thinInstanceBufferUpdated('color')`, e só quando algo mudou. */
+  // K1 (2026-09-01): antes const MAX_BLOCKS=12 hardcoded. ⟳ reload. Mesmo valor de hoje por
+  // defeito. V6: já não há materiais por bloco — o teto continua a limitar o AGRUPAMENTO.
   const MAX_BLOCKS = num((CONFIG.mikado || {}).maxBlocks, 12);
-  const tubeMats = [];
-  for (let b = 0; b < MAX_BLOCKS; b++) {
-    const m = new BABYLON.PBRMaterial('mikadoTube' + b, scene);
-    m.albedoColor = new BABYLON.Color3(0.02, 0.02, 0.02);
-    m.emissiveColor = new BABYLON.Color3(0, 0, 0);
-    m.metallic = 0.0;
-    m.roughness = 0.35;
-    m.disableLighting = true;          // o tubo mostra o SEU emissivo, não reage à sala (como as lentes)
-    m.maxSimultaneousLights = 1;
-    /* ⚠ `disableLighting` NÃO isenta da regra 1: o PBR continua a amostrar o environmentTexture
-       para o termo de reflexão → ciclo write+read com o cubo do probe em WebGPU (regressão S8). */
-    m.reflectionTexture = darkCube;
-    tubeMats.push(m);
-  }
+  const tubeMat = new BABYLON.PBRMaterial('mikadoTube', scene);
+  tubeMat.albedoColor = new BABYLON.Color3(1, 1, 1);   // × vColor (instance buffer) = emissivo
+  tubeMat.emissiveColor = new BABYLON.Color3(0, 0, 0);
+  tubeMat.metallic = 0.0;
+  tubeMat.roughness = 0.35;
+  tubeMat.unlit = true;              // o tubo mostra a SUA cor, não reage à sala (como as lentes)
+  tubeMat.useVertexColor = true;     // liga o vColor (aqui vindo do instance buffer 'color')
+  tubeMat.maxSimultaneousLights = 1;
+  /* ⚠ `unlit` NÃO isenta da regra 1: mantém-se a reflectionTexture própria para o material nunca
+     cair no `scene.environmentTexture` (ciclo write+read com o cubo do probe em WebGPU, S8). */
+  tubeMat.reflectionTexture = darkCube;
 
-  /* ---- pool de barras ---------------------------------------------------------------------
-     Cada barra = 4 meshes reais + 2 tirantes:
-       tube   — cilindro fino, emissivo, POR BAIXO do perfil (é a luz)
-       rail   — a calha em U por cima do tubo (caixa achatada; a "costas" do perfil)
-       cap0/1 — terminais/tampas nas 2 pontas (caixinhas um pouco maiores que o perfil)
-       rod0/1 — tirantes verticais finos até ao teto (é o que a pendura; sem eles flutua)
-     Tudo filho de um TransformNode `root` por barra (posição+quaternion numa só escrita); os
-     tirantes são SOLTOS no mundo (têm de cair na VERTICAL, o root está rodado — mesma armadilha
-     da haste dos chapéus, hats.js). */
+  /* ---- pool de barras: 4 MESHES BASE + THIN INSTANCES (V6, S14) --------------------------------
+     Antes: 6 meshes REAIS por barra × 112 = 672 meshes (+112 TransformNodes), todas na renderList
+     do probe → 672 draws por face do cubo e 672 entradas na seleção de meshes por frame. Agora:
+       tube — 1 cilindro base, MAX_BARS thin instances (matriz + cor por barra)
+       rail — 1 caixa base, MAX_BARS thin instances
+       cap  — 1 caixa base, 2·MAX_BARS thin instances (as 2 tampas de cada barra)
+       rod  — 1 cilindro base, 2·MAX_BARS thin instances (os 2 tirantes; os que não cabem sob o
+              teto ficam FORA do buffer — pacote contíguo, ver `layout()`)
+     = 4 meshes na cena e 4 draws (1 por base). A geometria por barra é uma MATRIZ de mundo escrita
+     no `layout()` (só no rebuild, nunca por frame): `local(escala, offset) × root(quaternion, pos)`
+     — a mesma composição que o TransformNode fazia, feita à mão. Os tirantes continuam SOLTOS no
+     mundo (vertical, sem o root — armadilha da haste dos chapéus, hats.js).
+     Regra 2 mantém-se: o que passa da contagem não existe (`thinInstanceCount`), e a contagem
+     ZERO desliga a mesh base (armadilha documentada: count=0 não é garantia de nada desenhar).
+     `alwaysSelectAsActiveMesh`: o bounding da base é o do cilindro unitário, não o das instâncias
+     — sem isto o frustum culling (câmara E probe) escondia o mikado inteiro quando a base ficava
+     fora de vista. Mesma opção da corrente. */
+  const CAP = MAX_BARS;          // capacidade do pool (instâncias) — nunca se realoca
+  function makeBase(name, mesh, mat, cap) {
+    mesh.material = mat;
+    mesh.isPickable = false;
+    mesh.alwaysSelectAsActiveMesh = true;
+    const matrices = new Float32Array(cap * 16);   // zeros = instância colapsada (não se vê)
+    mesh.thinInstanceSetBuffer('matrix', matrices, 16, false);   // false = atualizável
+    mesh.thinInstanceCount = 0;
+    mesh.setEnabled(false);
+    return { name, mesh, matrices, cap, count: 0 };
+  }
+  const tubeBase = BABYLON.MeshBuilder.CreateCylinder('mikadoTube',
+    { diameter: 1, height: 1, tessellation: 10 }, scene);
+  tubeBase.rotation.x = Math.PI / 2;      // deitar o cilindro ao longo de +Z local
+  tubeBase.bakeCurrentTransformIntoVertices();
+  const B = {
+    tube: makeBase('tube', tubeBase, tubeMat, CAP),
+    rail: makeBase('rail', BABYLON.MeshBuilder.CreateBox('mikadoRail',
+      { width: 1, height: 1, depth: 1 }, scene), railMat, CAP),
+    cap: makeBase('cap', BABYLON.MeshBuilder.CreateBox('mikadoCap',
+      { width: 1, height: 1, depth: 1 }, scene), railMat, CAP * 2),
+    rod: makeBase('rod', BABYLON.MeshBuilder.CreateCylinder('mikadoRod',
+      { diameter: 1, height: 1, tessellation: 6 }, scene), railMat, CAP * 2),
+  };
+  // cor por barra (só o tubo): RGBA float, 1 por instância; escrita por frame em `update()`
+  const tubeColors = new Float32Array(CAP * 4);
+  for (let i = 0; i < CAP; i++) tubeColors[i * 4 + 3] = 1;
+  B.tube.mesh.thinInstanceSetBuffer('color', tubeColors, 4, false);
+
+  // por barra: só o que o `update()` precisa (bloco) — a geometria vive nas matrizes
   const bars = [];
-  for (let i = 0; i < MAX_BARS; i++) {
-    const root = new BABYLON.TransformNode('mikadoRoot' + i, scene);
-    root.rotationQuaternion = BABYLON.Quaternion.Identity(); // regra 3 (Euler compõe YXZ e torce)
-
-    // comprimento base 1 → escala-se em Z por barra (`scaling.z = comprimento`)
-    const tube = BABYLON.MeshBuilder.CreateCylinder('mikadoTube' + i,
-      { diameter: 1, height: 1, tessellation: 10 }, scene);
-    tube.rotation.x = Math.PI / 2;      // deitar o cilindro ao longo de +Z local
-    tube.bakeCurrentTransformIntoVertices();
-    tube.parent = root;
-    tube.isPickable = false;
-
-    const rail = BABYLON.MeshBuilder.CreateBox('mikadoRail' + i,
-      { width: 1, height: 1, depth: 1 }, scene);
-    rail.material = railMat;
-    rail.parent = root;
-    rail.isPickable = false;
-
-    const caps = [];
-    for (let k = 0; k < 2; k++) {
-      const c = BABYLON.MeshBuilder.CreateBox('mikadoCap' + i + '_' + k,
-        { width: 1, height: 1, depth: 1 }, scene);
-      c.material = railMat;
-      c.parent = root;
-      c.isPickable = false;
-      caps.push(c);
-    }
-
-    const rods = [];
-    for (let k = 0; k < 2; k++) {
-      const r = BABYLON.MeshBuilder.CreateCylinder('mikadoRod' + i + '_' + k,
-        { diameter: 1, height: 1, tessellation: 6 }, scene);
-      r.material = railMat;
-      r.isPickable = false;
-      r.setEnabled(false);
-      rods.push(r);
-    }
-
-    root.setEnabled(false);
-    bars.push({ root, tube, rail, caps, rods, block: 0, len: 1 });
-  }
+  for (let i = 0; i < MAX_BARS; i++) bars.push({ block: 0, len: 1 });
 
   /* ---- pool de PointLight -------------------------------------------------------------------
      O mikado é uma luz de TETO: quando pisca tem de pintar a sala (é o que se vê nas fotos — o
@@ -504,6 +503,9 @@ export function createMikado(scene, CONFIG) {
   function regroup(resetCursor) {
     const bs = clamp(Math.round(num(M().blockSize, 5)), 1, 12);
     for (let i = 0; i < generated.length; i++) generated[i].block = Math.floor(i / bs) % MAX_BLOCKS;
+    // V6: o mapa barra→bloco mudou — o `bars[i].block` e o instance buffer têm de acompanhar
+    for (let i = 0; i < Math.min(generated.length, MAX_BARS); i++) bars[i].block = generated[i].block;
+    colorsStale = true;
     /* O cursor e o bloco aceso referem-se à numeração ANTIGA — com menos blocos ficariam a apontar
        para um bloco que já não existe (o `update()` compara `bar.block === st.litBlock`, e um
        litBlock órfão deixava o mikado apagado até à rajada seguinte). Repõe-se o estado neutro. */
@@ -513,25 +515,55 @@ export function createMikado(scene, CONFIG) {
     }
   }
 
-  /* ---- aplicar a geometria gerada às meshes do pool (só no rebuild, nunca por frame) ----
-     `enabledPlan` guarda o que o layout decidiu ligar: por barra, se a barra está montada e se cada
-     tirante coube sob o teto. É o que `restoreEnabled()` repõe quando o knob 'mikado (0/1)' volta a
-     1 (ver o comentário do bug em `update`). Sem este plano, "voltar a ligar" teria de adivinhar. */
-  const enabledPlan = [];
-  for (let i = 0; i < MAX_BARS; i++) enabledPlan.push({ bar: false, rod0: false, rod1: false });
+  /* ---- aplicar a geometria gerada ao pool (só no rebuild, nunca por frame) ----
+     `enabledPlan` guarda o que o layout decidiu montar: a CONTAGEM de instâncias de cada base
+     (tubos/calhas = barras; tampas = 2×; tirantes = só os que couberam sob o teto). É o que
+     `restoreEnabled()` repõe quando o knob 'mikado (0/1)' volta a 1 (ver o comentário do bug em
+     `update`). O par é SIMÉTRICO: desligar = `setEnabled(false)` nas 4 bases (as contagens ficam
+     intactas), ligar = `setEnabled(count > 0)` + repor a mesma contagem. Nunca se mexe nos
+     buffers para ligar/desligar — é por isso que ligar/desligar N vezes seguidas não deriva. */
+  const enabledPlan = { tube: 0, rail: 0, cap: 0, rod: 0 };
+  /* cache da cor por bloco do último frame (V6): -1 = "nunca escrito" → o 1º frame faz upload.
+     `colorsStale` força a reescrita quando o MAPA barra→bloco muda (layout/regroup), mesmo que as
+     cores por bloco sejam as mesmas. */
+  const blockRGB = new Float32Array(MAX_BLOCKS * 3).fill(-1);
+  let colorsStale = true;
   /* estado "o grupo estava ligado no frame anterior" — declarado AQUI (e não junto ao `update`)
      porque o `rebuild()` do arranque já lhe escreve, e um `let` declarado depois dava TDZ. */
   let wasOn = true;
+  function applyCount(base, n) {
+    base.count = n;
+    base.mesh.thinInstanceCount = n;
+    // armadilha: count=0 não é garantia de nada desenhar — a mesh base desliga-se mesmo
+    base.mesh.setEnabled(n > 0);
+  }
   function restoreEnabled() {
-    for (let i = 0; i < MAX_BARS; i++) {
-      const p = enabledPlan[i], b = bars[i];
-      b.root.setEnabled(p.bar);
-      b.rods[0].setEnabled(p.rod0);
-      b.rods[1].setEnabled(p.rod1);
-    }
+    applyCount(B.tube, enabledPlan.tube);
+    applyCount(B.rail, enabledPlan.rail);
+    applyCount(B.cap, enabledPlan.cap);
+    applyCount(B.rod, enabledPlan.rod);
+  }
+  function disableAll() {
+    for (const k in B) B[k].mesh.setEnabled(false);
   }
 
   const tmpQ = new BABYLON.Quaternion();
+  const tmpS = new BABYLON.Vector3(), tmpT = new BABYLON.Vector3();
+  const rootM = new BABYLON.Matrix(), localM = new BABYLON.Matrix(), worldM = new BABYLON.Matrix();
+  const Q_ID = BABYLON.Quaternion.Identity();
+  // escreve `local(escala, offset) × root` na posição `slot` do buffer da base
+  function writeChild(base, slot, sx, sy, sz, ox, oy, oz) {
+    tmpS.set(sx, sy, sz); tmpT.set(ox, oy, oz);
+    BABYLON.Matrix.ComposeToRef(tmpS, Q_ID, tmpT, localM);
+    localM.multiplyToRef(rootM, worldM);          // filho × pai = mundo (convenção Babylon)
+    worldM.copyToArray(base.matrices, slot * 16);
+  }
+  // escreve uma matriz SOLTA no mundo (tirantes: sem root)
+  function writeWorld(base, slot, sx, sy, sz, px, py, pz) {
+    tmpS.set(sx, sy, sz); tmpT.set(px, py, pz);
+    BABYLON.Matrix.ComposeToRef(tmpS, Q_ID, tmpT, worldM);
+    worldM.copyToArray(base.matrices, slot * 16);
+  }
   function layout() {
     const cfg = M();
     const R = CONFIG.room || {};
@@ -541,65 +573,62 @@ export function createMikado(scene, CONFIG) {
     const railH = tubeD * 0.72;                              // e achatada
     const rodD = Math.max(0.008, tubeD * 0.14);              // tirante fino
 
-    const n = generated.length;
-    for (let i = 0; i < MAX_BARS; i++) {
+    const n = Math.min(generated.length, CAP);
+    let rodN = 0;   // tirantes montados — pacote contíguo no buffer (só os que cabem sob o teto)
+    for (let i = 0; i < n; i++) {
       const bar = bars[i];
-      if (i >= n) {
-        // regra 2: setEnabled acompanha SEMPRE a contagem (a base desenha-se na mesma se não o fizer)
-        bar.root.setEnabled(false);
-        bar.rods[0].setEnabled(false);
-        bar.rods[1].setEnabled(false);
-        enabledPlan[i].bar = enabledPlan[i].rod0 = enabledPlan[i].rod1 = false;
-        continue;
-      }
       const g = generated[i];
       bar.len = g.len;
       bar.block = g.block;
-      bar.tube.material = tubeMats[g.block % MAX_BLOCKS];
 
-      bar.root.position.set(g.x, g.y, g.z);
-      // regra 3: quaternion (yaw em Y, depois pitch em X) — Euler compunha YXZ e torcia a barra
+      // root da barra: posição + quaternion (regra 3: yaw em Y, depois pitch em X — Euler
+      // compunha YXZ e torcia a barra). Escala 1 — as escalas vão nos filhos.
       BABYLON.Quaternion.RotationYawPitchRollToRef(g.yaw, g.pitch, 0, tmpQ);
-      bar.root.rotationQuaternion.copyFrom(tmpQ);
+      tmpS.set(1, 1, 1); tmpT.set(g.x, g.y, g.z);
+      BABYLON.Matrix.ComposeToRef(tmpS, tmpQ, tmpT, rootM);
 
       /* TUBO por baixo, PERFIL por cima — é essa a montagem real (o perfil tapa o tubo visto de
          cima e reflete-lhe a luz para baixo). O tubo desce meio perfil para os dois corpos não
          se interpenetrarem. */
-      bar.tube.scaling.set(tubeD, tubeD, g.len);
-      bar.tube.position.set(0, -railH * 0.5, 0);
-
-      bar.rail.scaling.set(railW, railH, g.len * 1.005);
-      bar.rail.position.set(0, tubeD * 0.30, 0);
+      writeChild(B.tube, i, tubeD, tubeD, g.len, 0, -railH * 0.5, 0);
+      writeChild(B.rail, i, railW, railH, g.len * 1.005, 0, tubeD * 0.30, 0);
 
       // terminais nas 2 pontas: um pouco mais largos/altos que o perfil, curtos em Z
       const capL = Math.min(0.14, g.len * 0.035);
       for (let k = 0; k < 2; k++) {
-        const c = bar.caps[k];
-        c.scaling.set(railW * 1.32, railH * 1.9, capL);
-        c.position.set(0, tubeD * 0.10, (k === 0 ? -1 : 1) * (g.len / 2 - capL / 2));
+        writeChild(B.cap, i * 2 + k, railW * 1.32, railH * 1.9, capL,
+          0, tubeD * 0.10, (k === 0 ? -1 : 1) * (g.len / 2 - capL / 2));
       }
 
       /* TIRANTES verticais até ao teto — SOLTOS no mundo (o root está rodado; um tirante filho
          saía inclinado). Ancoram a ~25% e ~75% do comprimento, que é o que as fotos mostram
-         (nunca nas pontas). Se a barra estiver colada ao teto, escondem-se. */
+         (nunca nas pontas). Se a barra estiver colada ao teto, não se montam (ficam fora do
+         pacote — é o equivalente ao `setEnabled(false)` de antes). */
       const cp = Math.cos(g.pitch), sp = Math.sin(g.pitch);
       const dir = { x: Math.sin(g.yaw) * cp, y: -sp, z: Math.cos(g.yaw) * cp };
       for (let k = 0; k < 2; k++) {
         const t = (k === 0 ? -0.25 : 0.25) * g.len;
         const ax = g.x + dir.x * t, ay = g.y + dir.y * t + tubeD * 0.5, az = g.z + dir.z * t;
         const h = ceilY - ay;
-        const rod = bar.rods[k];
-        const fits = h > 0.03;
-        if (fits) {
-          rod.scaling.set(rodD, h, rodD);          // cilindro base height 1 → scaling.y = metros
-          rod.position.set(ax, ay + h / 2, az);
+        if (h > 0.03) {
+          // cilindro base height 1 → scaling.y = metros
+          writeWorld(B.rod, rodN++, rodD, h, rodD, ax, ay + h / 2, az);
         }
-        rod.setEnabled(fits);
-        enabledPlan[i][k === 0 ? 'rod0' : 'rod1'] = fits;
       }
-      bar.root.setEnabled(true);
-      enabledPlan[i].bar = true;
     }
+    // regra 2: a contagem manda — o que passa de `n` não existe (nem para a câmara nem para o probe)
+    enabledPlan.tube = n; enabledPlan.rail = n; enabledPlan.cap = n * 2; enabledPlan.rod = rodN;
+    // slots acima da contagem ficam a ZERO (instância colapsada) — nunca lixo de um layout antigo
+    for (const k in B) B[k].matrices.fill(0, enabledPlan[k] * 16);
+    /* ORDEM: contagem PRIMEIRO, upload DEPOIS — `thinInstanceBufferUpdated('matrix')` só envia
+       `thinInstanceCount` matrizes; com a contagem velha (menor) as barras novas ficavam com a
+       matriz zero na GPU (invisíveis) até ao rebuild seguinte. */
+    restoreEnabled();
+    for (const k in B) if (B[k].count > 0) B[k].mesh.thinInstanceBufferUpdated('matrix');
+    // bounding das instâncias (depois da contagem estar posta — só conta as montadas). Não é
+    // para culling (alwaysSelectAsActiveMesh), é para quem lê o bounding (sombras/inspeção).
+    for (const k in B) if (B[k].count > 0) B[k].mesh.thinInstanceRefreshBoundingInfo(false);
+    colorsStale = true;   // V6: mapa barra→bloco e contagem podem ter mudado
 
     // as luzes distribuem-se pelo volume do mikado (4 pontos no miolo, à cota do mikado)
     const yL = generated.length ? generated[0].y : 0;
@@ -620,11 +649,7 @@ export function createMikado(scene, CONFIG) {
     generate();
     layout();
     if ((M().on === false)) {
-      for (let i = 0; i < MAX_BARS; i++) {
-        bars[i].root.setEnabled(false);
-        bars[i].rods[0].setEnabled(false);
-        bars[i].rods[1].setEnabled(false);
-      }
+      disableAll();
       wasOn = false;
     } else {
       wasOn = true;
@@ -740,11 +765,7 @@ export function createMikado(scene, CONFIG) {
     if (!on) {
       if (wasOn) {
         // regra 2: tudo desligado quando o grupo está off (o David tira o mikado da sala)
-        for (let i = 0; i < MAX_BARS; i++) {
-          bars[i].root.setEnabled(false);
-          bars[i].rods[0].setEnabled(false);
-          bars[i].rods[1].setEnabled(false);
-        }
+        disableAll();
         for (const L of lights) L.setEnabled(false);
         wasOn = false;
       }
@@ -810,11 +831,30 @@ export function createMikado(scene, CONFIG) {
     const nrm = grey ? 1 / Math.max(0.08, toGrey(base[0], base[1], base[2])[0]) : 1;
     const gr = cr * nrm, gg = cg * nrm, gb = cb * nrm;
 
+    /* V6: brilho por BLOCO → cor por INSTÂNCIA (tubo). Calcula-se o `e` de cada bloco, e só se o
+       vetor (cor × e por bloco) mudou desde o último frame é que se reescreve o buffer e se faz o
+       upload (`thinInstanceBufferUpdated`) — em repouso (idle constante, sem rajada) o frame não
+       toca na GPU. Zero materiais escritos por frame, zero recompilações. */
     const blocks = nBlocks();
+    let dirty = false;
     for (let b = 0; b < MAX_BLOCKS; b++) {
       const activeBlock = (st.litBlock < 0) || (b === st.litBlock) || (blocks <= 1);
       const e = idle + (activeBlock ? st.lit * gain : 0);
-      tubeMats[b].emissiveColor.set(gr * e, gg * e, gb * e);
+      const r = gr * e, g = gg * e, bl = gb * e;
+      const o = b * 3;
+      if (blockRGB[o] !== r || blockRGB[o + 1] !== g || blockRGB[o + 2] !== bl) {
+        blockRGB[o] = r; blockRGB[o + 1] = g; blockRGB[o + 2] = bl;
+        dirty = true;
+      }
+    }
+    if (dirty || colorsStale) {
+      const n = B.tube.count;
+      for (let i = 0; i < n; i++) {
+        const o = (bars[i].block % MAX_BLOCKS) * 3, c = i * 4;
+        tubeColors[c] = blockRGB[o]; tubeColors[c + 1] = blockRGB[o + 1]; tubeColors[c + 2] = blockRGB[o + 2];
+      }
+      if (n > 0) B.tube.mesh.thinInstanceBufferUpdated('color');
+      colorsStale = false;
     }
 
     /* ---- luzes de sala: só durante o flash (o idle não acende luzes — seria luz constante a
@@ -835,10 +875,10 @@ export function createMikado(scene, CONFIG) {
     }
   }
 
-  /* regra 6: MESHES REAIS achatadas (nunca o TransformNode root) para a renderList do probe —
-     a bola TEM de espelhar o mikado, é o ponto todo da fase. */
-  const flatMeshes = [];
-  for (const b of bars) flatMeshes.push(b.tube, b.rail, b.caps[0], b.caps[1], b.rods[0], b.rods[1]);
+  /* regra 6: MESHES REAIS para a renderList do probe — a bola TEM de espelhar o mikado, é o ponto
+     todo da fase. V6: são as 4 BASES (as thin instances desenham-se com a base, também no probe);
+     a renderList passa de 672 entradas a 4. */
+  const flatMeshes = [B.tube.mesh, B.rail.mesh, B.cap.mesh, B.rod.mesh];
 
   return {
     meshes: flatMeshes,
