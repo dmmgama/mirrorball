@@ -147,3 +147,50 @@ o motor a mexer nas luzes/spots a cada frame provoca recompilação de shaders (
 `mapa-frentes.md` frente B: nº de luzes ativas muda → +7-17 ms por material). É uma dívida nova da
 frente B/D, a investigar como fase **V0b** (Opus) antes de V2: medir com `spotsMotor` a 0, com os
 spots a intensidade fixa, e com `engine.getCaps()`/`material.onCompiled` a contar compilações.
+
+
+## 1. V2 + V3 — fog nativo e exposição/ColorCurves (W2, S14, 2026-09-02)
+
+Ficheiros: `main.js` (região do pipeline, logo a seguir ao `DefaultRenderingPipeline`), `config.js`,
+`panel.js`, `knobs-default.json` (201 → **209** knobs). Não toca em luzes/spots (W1) nem em sombras (W5).
+
+### 1.1 V2 — névoa nativa (`scene.fogMode`)
+
+| Decisão | Valor | Porquê |
+|---|---|---|
+| Modo | **`FOGMODE_EXP`** (não EXP2) | com densidades desta ordem o EXP é legível ao knob: a 10 m 4 %, a 20 m 8 %; EXP2 é quadrático — quase nulo perto e abrupto ao fundo, pior para a pergunta do stop ("os pilares do fundo perdem nitidez?") |
+| `sala: névoa densidade` | **0.004** (0-0.05, passo 0.001) | quase impercetível por defeito (R2: "calibrado baixo primeiro"); sobe-se ao vivo, sem rebuild |
+| `sala: névoa cor (cinza)` | **0.03** (0-1) | cinza escuro coerente com `baseAlbedo` 0.055 meio iluminado; em skin white interpola para o mesmo branco do fundo (`applyBgGreySkin`), por isso a névoa nunca destoa do fundo |
+| Exclusões | materiais **ALPHA_ADD** (feixes `beamMat`/`beamGlowMat`, pontos `dotMat`, auréola `haloMat`, incidentes `incidentMat`) → `fogEnabled = false` | o fog mistura para `fogColor`; num material aditivo isso é luz somada do nada e mata o contraste dos feixes. A varredura (`applyFogExclusions`) só corre quando `scene.materials.length` muda — 0 custo por frame |
+
+O `haze` do motor continua a ser outra coisa (só pinta feixes/auréola) — os dois convivem.
+
+### 1.2 V3 — exposição e ColorCurves
+
+| Decisão | Valor | Porquê |
+|---|---|---|
+| `pós: exposição` default | **1 → 0.85** | aposta do David: exposição/range dinâmico é o maior ganho percetual num clube escuro; ACES mantém-se, só baixa o ponto de partida. Quem já tem `mb2.knobs` guardado fica com o seu valor (regra 9) |
+| `pós: curvas (0/1)` | **1** | ligado por defeito (critério §6 do plano: "fog, exposição e losangos ligados por defeito"), mas subtil |
+| `pós: sombras matiz` / `pós: sombras tinta` | **220 / 12** | azul frio nas sombras; `tinta` = `density` do `ColorCurves` (0-100), que é o que tinge — `saturation` só escala croma existente |
+| `pós: altas matiz` / `pós: altas tinta` | **40 / 10** | âmbar quente nas altas-luzes (focos/latão) |
+| `pós: curvas saturação` | **0** (-100..100) | escala global do croma, para o David puxar ou lavar |
+| Meios-tons | fixos a 0 | não há knob: as curvas são só "frio em baixo, quente em cima" |
+
+**Greyscale neutro (regra 6):** `updateColorCurves()` só liga `colorCurvesEnabled` se
+`curvesOn ≥ 0.5` **e** `CONFIG.colorOn !== false`. Com `cor (0/1)` a 0 as curvas desligam-se por
+completo (não basta pôr saturação a 0: a tinta é um multiplicador RGB e um cinza × tinta deixa de
+ser cinza). A cor do fog é um escalar cinza, logo neutra em qualquer modo. O toggle `cor (0/1)` não
+mudou (continua a chamar `updateWash`); a leitura é por frame, atua ao vivo.
+
+**Custo:** os valores das curvas são uniforms (não recompilam); só o `colorCurvesEnabled` é um
+define e só se escreve quando muda. O fog é um define por material (`FOG`) que já estava ligado
+por omissão (`fogEnabled = true` em todo o material) — mudar `fogMode` de NONE para EXP recompila
+uma vez no arranque, não por frame. **Por medir** pelo David com `MB2.__perf()` (protocolo §0).
+
+### 1.3 Stops do David
+
+1. V2: com/sem névoa (`sala: névoa densidade` 0 vs 0.004 vs 0.02) a olhar para os pilares do fundo.
+2. V3: `pós: curvas (0/1)` 0 vs 1 e `pós: exposição` 0.85 vs 1, lado a lado com as fotos lux2-lux12
+   de `f8-sala-lux.md` — "sala escura com picos?".
+3. `cor (0/1)` a 0 com curvas a 1: tem de ficar cinza puro.
+

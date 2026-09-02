@@ -1334,7 +1334,65 @@ pipe.imageProcessing.vignetteEnabled = true;
 pipe.imageProcessing.vignetteWeight = 0; // escrito por frame (× dk)
 pipe.imageProcessing.toneMappingEnabled = CONFIG.postTonemap !== 0;
 pipe.imageProcessing.toneMappingType = BABYLON.ImageProcessingConfiguration.TONEMAPPING_ACES;
-pipe.imageProcessing.exposure = num(CONFIG.postExposure, 1);
+pipe.imageProcessing.exposure = num(CONFIG.postExposure, 0.85);
+
+/* ---------------- V3 (S14): ColorCurves — sombras frias / altas quentes ----------------
+   research-realismo §5 R3. As curvas vivem no ImageProcessingConfiguration do pipeline; os valores
+   são uniforms (mudar não recompila), só o `colorCurvesEnabled` é um define — por isso só se
+   escreve quando muda. Greyscale (regra 6): com `CONFIG.colorOn === false` desligam-se — a tinta é
+   um multiplicador RGB e um cinza × tinta deixa de ser cinza. */
+const curves = new BABYLON.ColorCurves();
+pipe.imageProcessing.colorCurves = curves;
+pipe.imageProcessing.colorCurvesEnabled = false; // updatePostFx decide no 1.º frame
+let curvesKey = '';
+function updateColorCurves() {
+  const want = num(CONFIG.curvesOn, 1) >= 0.5 && CONFIG.colorOn !== false;
+  if (pipe.imageProcessing.colorCurvesEnabled !== want) pipe.imageProcessing.colorCurvesEnabled = want;
+  if (!want) return;
+  const sh = ((num(CONFIG.curvesShadowHue, 220) % 360) + 360) % 360;
+  const sd = clamp(num(CONFIG.curvesShadowDensity, 12), 0, 100);
+  const hh = ((num(CONFIG.curvesHighHue, 40) % 360) + 360) % 360;
+  const hd = clamp(num(CONFIG.curvesHighDensity, 10), 0, 100);
+  const sat = clamp(num(CONFIG.curvesSaturation, 0), -100, 100);
+  const key = sh + '|' + sd + '|' + hh + '|' + hd + '|' + sat;
+  if (key === curvesKey) return;
+  curvesKey = key;
+  curves.shadowsHue = sh; curves.shadowsDensity = sd; curves.shadowsSaturation = sat;
+  curves.midtonesHue = 0; curves.midtonesDensity = 0; curves.midtonesSaturation = sat;
+  curves.highlightsHue = hh; curves.highlightsDensity = hd; curves.highlightsSaturation = sat;
+  curves.globalSaturation = 0;
+}
+
+/* ---------------- V2 (S14): fog nativo (scene.fogMode EXP) ----------------
+   research-realismo §5 R2. EXP (não EXP2): com densidades desta ordem (0.004) o EXP dá uma queda
+   linear-ish e legível ao knob — a 10 m 4 %, a 20 m 8 %; EXP2 é quadrático, quase nulo perto e
+   abrupto longe, pior para "os pilares do fundo perdem nitidez?". A cor segue a skin como o fundo
+   (fogGrey em dark → fundo claro em white). Materiais ADITIVOS (feixes, pontos, auréola,
+   incidentes) ficam fora: o fog mistura para fogColor e num ALPHA_ADD isso é luz somada do nada. */
+scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
+scene.fogDensity = Math.max(0, num(CONFIG.fogDensity, 0.004));
+scene.fogColor = new BABYLON.Color3(0.03, 0.03, 0.03);
+const FOG_EXCLUDE = /^(haloMat|dotMat|incidentMat|beamFog|beamMat|fogMat)/;
+let fogExclSeen = -1;
+function applyFogExclusions() {
+  const mats = scene.materials;
+  if (mats.length === fogExclSeen) return; // só re-varre quando entram/saem materiais
+  fogExclSeen = mats.length;
+  for (const m of mats) {
+    const additive = m.alphaMode === BABYLON.Engine.ALPHA_ADD;
+    if ((additive || FOG_EXCLUDE.test(m.name)) && m.fogEnabled !== false) m.fogEnabled = false;
+  }
+}
+function updateFog() {
+  applyFogExclusions();
+  const d = Math.max(0, num(CONFIG.fogDensity, 0.004));
+  if (scene.fogDensity !== d) scene.fogDensity = d;
+  const g = clamp01(num(CONFIG.fogGrey, 0.03));
+  const wr = 243 / 255, wg = 247 / 255, wb = 249 / 255; // o mesmo branco de applyBgGreySkin
+  const r = g + (wr - g) * skinMix, gr = g + (wg - g) * skinMix, b = g + (wb - g) * skinMix;
+  const fc = scene.fogColor;
+  if (fc.r !== r || fc.g !== gr || fc.b !== b) fc.set(r, gr, b);
+}
 
 // grão: alpha calibrado a olho para parecer o pattern 256² da Canvas 2D (:691) — knob `grão` já
 // controla a intensidade "crua"; K é só o fator de escala entre as duas implementações.
@@ -1349,12 +1407,14 @@ function updatePostFx(dk) {
   // documentada em PARITY §1.11 (grão estático em vez de reposicionado a cada 400 ms).
   pipe.imageProcessing.vignetteWeight = Math.max(0, num(CONFIG.vignette, 0.55)) * dk * 15; // calibrado a olho (ver PARITY §1.11)
   pipe.imageProcessing.toneMappingEnabled = num(CONFIG.postTonemap, 1) >= 0.5;
-  pipe.imageProcessing.exposure = Math.max(0.05, num(CONFIG.postExposure, 1));
+  pipe.imageProcessing.exposure = Math.max(0.05, num(CONFIG.postExposure, 0.85));
   // skin white (item 6 do brief F4): aproximação do filtro `#tone` (LUT SVG de 33 valores,
   // index-v2.html:53-58, que crava as sombras a ~8% e levanta o meio-tom) via
   // `imageProcessing.contrast` — sobe com skinMix (1 − dk). Divergência documentada em PARITY §1.15:
   // não é a LUT exata (3 tabelas de 33 valores), é uma aproximação de contraste/exposição.
   pipe.imageProcessing.contrast = 1 + 0.6 * (1 - dk);
+  updateColorCurves(); // V3
+  updateFog();         // V2
 }
 function applyBgGreySkin() {
   // chamada a cada frame (depois de updateSkin): sobrepõe o applyBgGrey estático (Fase 1) com o

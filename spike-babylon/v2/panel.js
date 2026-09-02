@@ -315,6 +315,15 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['vinheta', 0, 1, 0.02, v => CONFIG.vignette = v, () => CONFIG.vignette],
     ['pós: tonemap (0/1)', 0, 1, 1, v => CONFIG.postTonemap = v, () => CONFIG.postTonemap],
     ['pós: exposição', 0.3, 2, 0.02, v => CONFIG.postExposure = v, () => CONFIG.postExposure],
+    /* V3 (S14, research-realismo §5 R3): ColorCurves — sombras frias / altas quentes. 'tinta' é a
+       density do Babylon (0-100, o que tinge); 'saturação' escala o croma existente (-100..100).
+       Com 'cor (0/1)' a 0 as curvas desligam-se sozinhas (main.js: greyscale neutro, regra 6). */
+    ['pós: curvas (0/1)', 0, 1, 1, v => CONFIG.curvesOn = (v >= 0.5 ? 1 : 0), () => (CONFIG.curvesOn === 0 ? 0 : 1)],
+    ['pós: sombras matiz', 0, 360, 2, v => CONFIG.curvesShadowHue = v, () => CONFIG.curvesShadowHue],
+    ['pós: sombras tinta', 0, 100, 1, v => CONFIG.curvesShadowDensity = v, () => CONFIG.curvesShadowDensity],
+    ['pós: altas matiz', 0, 360, 2, v => CONFIG.curvesHighHue = v, () => CONFIG.curvesHighHue],
+    ['pós: altas tinta', 0, 100, 1, v => CONFIG.curvesHighDensity = v, () => CONFIG.curvesHighDensity],
+    ['pós: curvas saturação', -100, 100, 2, v => CONFIG.curvesSaturation = v, () => CONFIG.curvesSaturation],
     // ---- Fase 6 (Sonnet): corpos PAR36 visíveis ----
     ['corpos (0/1)', 0, 1, 1, v => { CONFIG.fixturesOn = v >= 0.5; }, () => (CONFIG.fixturesOn === false ? 0 : 1)],
     ['corpos: escala', 0.2, 3, 0.05, v => CONFIG.fixtureScale = v, () => CONFIG.fixtureScale],
@@ -362,6 +371,10 @@ export async function initPanel(CONFIG, hooks = {}) {
        (albedo próprio). */
     ['sala: albedo base', 0, 1, 0.005,
       v => { CONFIG.baseAlbedo = v; onRoomDimChanged(); }, () => CONFIG.baseAlbedo],
+    /* V2 (S14, research-realismo §5 R2): névoa NATIVA (scene.fogMode EXP), ao vivo. Não é o `haze`
+       (que só pinta feixes/auréola): atenua tudo o que está longe. Default quase impercetível. */
+    ['sala: névoa densidade', 0, 0.05, 0.001, v => CONFIG.fogDensity = v, () => CONFIG.fogDensity],
+    ['sala: névoa cor (cinza)', 0, 1, 0.005, v => CONFIG.fogGrey = v, () => CONFIG.fogGrey],
     // ---- F10: refletividade por superfície — multiplicador do albedo (0-3, default 1), AO VIVO
     // (room.js: applyXReflMul(), sem rebuild). NÃO afeta os pontos refletidos pela bola (dots.js usa
     // um material próprio, emissivo aditivo, alimentado por ball.dots — confirmado por leitura). ----
@@ -740,7 +753,7 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['Sala & Geometria', [
       'cor (0/1)', 'fundo: claridade (dark)', 'sala: wash (0-1)', 'sala: wash matiz',
       'luz indireta', 'indireta: área°', 'indireta: luz ×',
-      'sala: albedo base',
+      'sala: albedo base', 'sala: névoa densidade', 'sala: névoa cor (cinza)',
       'refl: chão', 'refl: teto', 'refl: paredes fundo', 'refl: paredes laterais',
       'sala: pé-direito (m)',
       'pilares: vão entre filas (m)', 'pilares: passo na fila (m)', 'pilares: lado (m)',
@@ -758,6 +771,8 @@ export async function initPanel(CONFIG, hooks = {}) {
     ['Pós & Skin', [
       'bloom: força', 'bloom: limiar', 'bloom: raio px', 'grão', 'vinheta',
       'pós: tonemap (0/1)', 'pós: exposição',
+      'pós: curvas (0/1)', 'pós: sombras matiz', 'pós: sombras tinta', 'pós: altas matiz', 'pós: altas tinta',
+      'pós: curvas saturação',
     ]],
     /* F13.5: grupo próprio para os PRESETS (vista + config). Sem sliders — a UI toda é construída
        à mão mais abaixo, como o grupo "Ficheiro". Fica ANTES de "Ficheiro" na barra porque é o que
