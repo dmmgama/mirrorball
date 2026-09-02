@@ -133,6 +133,12 @@ export function createRobots(scene, CONFIG) {
 
   const tmpTarget = new BABYLON.Vector3();
   const tmpDir = new BABYLON.Vector3();
+  /* S3b/V0b (f17-visual §0.5b): NUNCA `setEnabled` quando o dimmer cruza 0,005 — cada liga/desliga
+     muda a lista de luzes dos materiais (defines novos → shaders). A SpotLight fica ligada a I=0
+     durante `LIGHT_HOLD_S` e só depois se desliga (histerese dos focos, `SPOT_SLOT_HOLD_S`). */
+  const LIGHT_HOLD_S = 2.0;
+  let lastLitAt = -1e9;
+  const nowS = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() / 1000 : Date.now() / 1000;
 
   function update() {
     const cfg = R();
@@ -161,10 +167,18 @@ export function createRobots(scene, CONFIG) {
       tmpDir.set(p.tx - p.x, p.ty - p.y, p.tz - p.z).normalize();
       L.direction.copyFrom(tmpDir);
       L.angle = coneHalf * 2;          // Babylon: `angle` é a abertura TOTAL do cone
-      L.intensity = inten * 60;        // escala da SpotLight (mesma ordem de grandeza do wash/spotLightIntensity)
-      L.diffuse.set(cr, cg, cb);
-      L.specular.set(cr, cg, cb);
-      L.setEnabled(inten > 0.005);
+      const lit = inten > 0.005;
+      const t = nowS();
+      if (lit) lastLitAt = t;
+      if (lit) {
+        L.intensity = inten * 60;      // escala da SpotLight (mesma ordem de grandeza do wash/spotLightIntensity)
+        L.diffuse.set(cr, cg, cb);
+        L.specular.set(cr, cg, cb);
+        if (!L.isEnabled(false)) L.setEnabled(true);
+      } else if (L.isEnabled(false)) {
+        if (L.intensity !== 0) L.intensity = 0;
+        if ((t - lastLitAt) > LIGHT_HOLD_S) L.setEnabled(false);
+      }
 
       // a lente acompanha o dimmer (a luz "nasce" dela) — nunca acima de 1 por canal
       const e = Math.min(1, inten * 1.3);

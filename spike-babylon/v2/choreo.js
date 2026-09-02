@@ -9,7 +9,13 @@
  *  - o foco NUNCA varre a superfície: apaga (gain 1→0), SALTA de posição, acende (0→1);
  *  - `randomPose()` nunca aponta de frente para o público (az≈0): sorteia |az| em `azRange`
  *    e depois o sinal;
- *  - flashes = processo de Poisson (`flashAcc += dt·flashRate`), máx `flashSlots` vivos;
+ *  - flashes: máx `flashSlots` vivos, `flashRate` = flashes/s MÉDIOS — S3b (S14, f16-sync §1
+ *    decisões 2 e 9): já NÃO é Poisson por dt. Nascem em arestas de `beatTick` do relógio único
+ *    (`MUSIC.state`, W3) com um divisor `beatHz/flashRate`; sem tick há 1,5 s, cadência múltipla
+ *    do bombo (`bpmEst` é PERÍODO em ms) ou fixa `1/flashRate`. O random escolhe a POSE, nunca o
+ *    momento;
+ *  - retarget (se ligado): o `dwell` [s] converte-se em COMPASSOS e o salto acontece numa aresta
+ *    de `barTick` (S3b); sem relógio, conta segundos como antes. A pose continua aleatória;
  *  - `reducedMotion` congela tudo (o `step()` retorna logo).
  *
  * API: createChoreo(CONFIG) -> {
@@ -53,7 +59,26 @@ export function createChoreo(CONFIG) {
   ensure(spots().length);
 
   const flashes = [];
-  let flashAcc = 0;
+  /* ---- S3b: relógio S1 lido por poll (aresta por delta dos contadores monotónicos) ----
+     Regra 7: tudo nasce com valor. `clock` é diagnóstico ('beatTick' | 'bpmEst' | 'fixo' | 'none'). */
+  const CLOCK_DEAD_S = 1.5;
+  const clk = { lastBeatTick: -1, lastBarTick: -1, beatTick: 0, barTick: 0, lastBeatAt: -1e9,
+    edgeBeat: false, edgeBar: false, flashNextAt: -1e9, clock: 'none' };
+  const MSget = () => (typeof window !== 'undefined' && window.MUSIC && window.MUSIC.state) || null;
+  function beatPeriodS(MS) { const p = MS ? num(MS.bpmEst, 0) : 0; return p > 0 ? p / 1000 : 60 / 128; }
+  function pollClock(now) {
+    const MS = MSget();
+    clk.edgeBeat = clk.edgeBar = false;
+    if (!MS) { clk.clock = 'none'; return null; }
+    const bt = num(MS.beatTick, 0), bar = num(MS.barTick, 0);
+    if (clk.lastBeatTick >= 0) {
+      if (bt > clk.lastBeatTick) { clk.edgeBeat = true; clk.lastBeatAt = now; }
+      if (bar > clk.lastBarTick) clk.edgeBar = true;
+    }
+    clk.lastBeatTick = bt; clk.lastBarTick = bar; clk.beatTick = bt; clk.barTick = bar;
+    return MS;
+  }
+  let nowS = 0;   // relógio interno em segundos (soma dos dt) — só para o fallback sem tick
 
   // :253-257 verbatim (com `pair()` a defender de knobs em falta — regra 7: nada de NaN)
   function randomPose() {
@@ -77,6 +102,10 @@ export function createChoreo(CONFIG) {
     ensure(S.length);
     const move = Math.max(num(C.move, 0.08), 0.01);
     const dwell = pair(C.dwell, 4, 12);
+    nowS += dt;
+    const MS = pollClock(nowS);
+    const alive = !!MS && (nowS - clk.lastBeatAt) < CLOCK_DEAD_S;
+    const barS = beatPeriodS(MS) * 4;   // 4/4 assumido (o relógio S1 já conta assim sem grelha)
 
     for (let i = 0; i < S.length; i++) {
       const c = choreo[i];
@@ -94,26 +123,44 @@ export function createChoreo(CONFIG) {
         c.gain = c.mt < 1 ? 1 - c.mt : c.mt - 1;
         if (c.mt >= 2) { c.to = null; c.gain = 1; c.t = rnd(dwell[0], dwell[1]); }
       } else if (C.retarget) {
-        c.t -= dt;
-        if (c.t <= 0) { c.to = randomPose(); c.to.pending = true; c.mt = 0; }
+        /* S3b: com relógio vivo o `dwell` gasta-se em COMPASSOS (uma unidade por `barTick`) e o
+           salto dá-se NA aresta; sem relógio, segundos como antes. `c.t` fica em segundos nos dois
+           casos (é o que o painel/diagnóstico já lê); o passo por compasso desconta `barS`. */
+        if (alive) { if (clk.edgeBar) c.t -= barS; }
+        else c.t -= dt;
+        if (c.t <= 0 && (!alive || clk.edgeBar)) { c.to = randomPose(); c.to.pending = true; c.mt = 0; }
       }
     }
 
-    // flashes: processo de Poisson; cada um nasce num sítio novo e morre em ~0.1-0.2 s (:274-281)
+    // flashes: S3b — nascem em arestas de `beatTick` (divisor por `flashRate`), nunca por Poisson
     const slots = Math.max(0, Math.round(num(C.flashSlots, 4)));
     const fRad = pair(C.flashRadius, 0.10, 0.18);
     const fInt = pair(C.flashIntensity, 0.6, 1.0);
     const fLen = pair(C.flashLen, 0.09, 0.22);
-    flashAcc += dt * Math.max(0, num(C.flashRate, 0));
-    if (flashAcc > 20) flashAcc = 20;   // guarda: um dt gigante não deve gerar centenas de flashes
-    while (flashAcc >= 1) {
-      flashAcc -= 1;
-      if (flashes.length < slots) {
-        const p = randomPose();
-        flashes.push({ az: p.az, el: p.el, aim: p.aim,
-          radius: rnd(fRad[0], fRad[1]), intensity: rnd(fInt[0], fInt[1]),
-          life: Math.max(0.01, rnd(fLen[0], fLen[1])), age: 0 });
+    const rate = Math.max(0, num(C.flashRate, 0));
+    let spawn = false;
+    if (rate > 0) {
+      if (alive) {
+        clk.clock = 'beatTick';
+        if (clk.edgeBeat) {
+          const div = Math.max(1, Math.round((1 / beatPeriodS(MS)) / rate));
+          spawn = clk.beatTick % div === 0;
+        }
+      } else {
+        let period = 1 / rate;
+        if (MS && num(MS.bpmEst, 0) > 0) {
+          const beatS = beatPeriodS(MS);
+          period = Math.max(beatS, Math.round(period / beatS) * beatS);
+          clk.clock = 'bpmEst';
+        } else clk.clock = MS ? 'fixo' : 'none';
+        if (nowS >= clk.flashNextAt) { clk.flashNextAt = nowS + Math.max(1 / 3, period); spawn = true; }
       }
+    }
+    if (spawn && flashes.length < slots) {
+      const p = randomPose();
+      flashes.push({ az: p.az, el: p.el, aim: p.aim,
+        radius: rnd(fRad[0], fRad[1]), intensity: rnd(fInt[0], fInt[1]),
+        life: Math.max(0.01, rnd(fLen[0], fLen[1])), age: 0 });
     }
     for (let i = flashes.length - 1; i >= 0; i--) {
       flashes[i].age += dt;
@@ -161,7 +208,7 @@ export function createChoreo(CONFIG) {
   function setEnabled(on) { if (CONFIG && CONFIG.choreo) CONFIG.choreo.enabled = !!on; }
 
   function reset() {
-    flashes.length = 0; flashAcc = 0;
+    flashes.length = 0; clk.flashNextAt = -1e9;
     for (let i = 0; i < choreo.length; i++) { choreo[i].t = 1.5 + i * 1.7; choreo[i].to = null; choreo[i].mt = 1; choreo[i].gain = 1; }
   }
 
@@ -171,5 +218,7 @@ export function createChoreo(CONFIG) {
     get count() { return choreo.length; },
     /* estado interno por spot — diagnóstico (`{t, to, mt, gain}`), não escrever. */
     state: choreo,
+    /* S3b diagnóstico: que relógio comanda os flashes/retarget */
+    get clock() { return clk.clock; },
   };
 }

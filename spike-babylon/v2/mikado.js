@@ -89,6 +89,7 @@ function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
    probe tem 4 entradas. A dívida da renderList fixa deixou de pesar. */
 const MAX_BARS_FALLBACK = 112;   // K1: fallback se CONFIG.mikado.maxBars faltar/for inválido (regra 7)
 const MIN_GAP_S = 1 / 3;      // teto ABSOLUTO de 3 Hz entre flashes (regra invariável da sala)
+const LIGHT_HOLD_S = 2.0;     // S3b: PointLights ficam ligadas a I=0 este tempo antes de `setEnabled(false)`
 
 /* Paleta fixada na spec: vermelho, branco, azul. Ordem = índice do knob 'mikado: cor (0=rot)'.
    1 = vermelho · 2 = branco · 3 = azul · 0 = rotação (roda a cada rajada). */
@@ -240,6 +241,7 @@ export function createMikado(scene, CONFIG) {
     L.setEnabled(false);
     lights.push(L);
   }
+  let lightsLastLitAt = -1e9;   // S3b: tSec do último frame com as luzes acesas (histerese)
 
   /* ================================ GERAÇÃO DA DISPOSIÇÃO ================================
      Determinística (RNG com seed do knob). Corre no arranque e sempre que um knob de GEOMETRIA
@@ -669,12 +671,54 @@ export function createMikado(scene, CONFIG) {
     lit: 0,            // envelope 1→0 do flash corrente
     litBlock: -1,      // bloco aceso (-1 = todos)
     colorIdx: 0,       // índice na PALETTE da rajada corrente
-    blockCursor: 0,    // qual o próximo bloco no modo "blocos"
-    autoAcc: 0,        // acumulador Poisson do modo autónomo
+    blockCursor: 0,    // qual o próximo bloco no modo "blocos" (S3b: sorteado em `barTick`)
     lastSnare: -1,     // contadores do motor no frame anterior (-1 = ainda não lidos)
     lastDrop: -1,
     warned: false,
+    /* ---- S3b (S14): RELÓGIO S1 + um escritor (f16-sync §1 decisões 2, 7, 9) ----
+       O mikado deixa de ter relógios próprios: nem Poisson (`autoAcc`), nem moeda por tarola
+       (`Math.random() < snareSens`), nem filtro probabilístico do estrelato. Tudo o que dispara
+       dispara numa ARESTA do relógio único do motor (`MUSIC.state.beatTick/barTick/phraseTick`,
+       W3): acentos em `beatTick` com um DIVISOR determinístico (sens × act × gain do estrelato),
+       sorteio do bloco em `barTick` (o random escolhe O QUÊ, o relógio decide QUANDO), e a
+       RAJADA MÁXIMA (drop) só uma vez por `mikadoCooldownPhrases` frases. Sem tick há 1,5 s
+       cai para a cadência do bombo (`bpmEst` é PERÍODO em ms) ou para o repouso. */
+    lastBeatTick: -1, lastBarTick: -1, lastPhraseTick: -1,   // últimos valores lidos (-1 = nunca)
+    lastBeatAt: -1e9,      // tSec da última aresta de beatTick (relógio morto se > CLOCK_DEAD_S)
+    edgeBeat: false, edgeBar: false, edgePhrase: false,       // arestas DESTE frame
+    beatTick: 0, barTick: 0, phraseTick: 0,                   // cópia finita do relógio
+    snarePending: false,   // houve tarola desde a última aresta de tempo (acento por quantizar)
+    dropPending: false,    // houve drop por executar (executa já se a aresta for próxima, senão na próxima)
+    dropPendingAt: -1e9,
+    lastMaxPhrase: -1e9,   // `phraseTick` da última rajada MÁXIMA (cool-down)
+    autoNextAt: -1e9,      // cadência própria sem relógio (modo autónomo / fallback)
+    clock: 'none',         // diagnóstico: 'beatTick' | 'bpmEst' | 'fixo' | 'silêncio' | 'off' | 'none'
+    writer: 'auto',        // diagnóstico: 'estrelato' (gain publicado) | 'auto' (sem estrelato)
+    lastBurst: { cause: '', at: -1e9, flashes: 0, max: false },
   };
+  const CLOCK_DEAD_S = 1.5;          // sem `beatTick` há 1,5 s → o relógio morreu (mesmo valor de hats.js)
+  const DROP_SNAP_S = 0.15;          // drop lido até 150 ms depois de uma aresta de tempo dispara já
+  const SYNC_DEFAULTS = { mikadoCooldownPhrases: 2, mikadoBurstMaxBeats: 4 };
+  /* knobs S3b: `MUSIC.sync` (music.js §TUNE, tuner `k`); sem motor → defaults. */
+  const SYNC = () => {
+    const Mc = (typeof window !== 'undefined' && window.MUSIC && window.MUSIC.config) || null;
+    const y = (Mc && Mc.sync && typeof Mc.sync === 'object') ? Mc.sync : {};
+    return {
+      cooldown: clamp(Math.round(num(y.mikadoCooldownPhrases, SYNC_DEFAULTS.mikadoCooldownPhrases)), 0, 16),
+      maxBeats: clamp(num(y.mikadoBurstMaxBeats, SYNC_DEFAULTS.mikadoBurstMaxBeats), 1, 16),
+    };
+  };
+  const MSget = () => (typeof window !== 'undefined' && window.MUSIC && window.MUSIC.state) || null;
+  /* o estrelato está montado E ligado? (é ele quem dá `gain.mikado`; o mikado só executa) */
+  function hasCommander() {
+    const S = CONFIG.stardom;
+    return !!(S && S.on !== false && S.gain);
+  }
+  function actNow(MS) { return MS && MS.act != null ? clamp(num(MS.act, 1), 0, 1) : 1; }
+  function beatPeriodS(MS) {
+    const p = MS ? num(MS.bpmEst, 0) : 0;            // bpmEst = PERÍODO em ms
+    return p > 0 ? p / 1000 : 60 / 128;
+  }
 
   function nBlocks() {
     const bs = clamp(Math.round(num(M().blockSize, 5)), 1, 12);
@@ -683,34 +727,64 @@ export function createMikado(scene, CONFIG) {
 
   /* Começa uma rajada. `cause` só para o log/HUD. Respeita o teto de 3 Hz: se a última flashada
      foi há menos de MIN_GAP_S, o pedido é IGNORADO (não se enfileira — enfileirar seria a mesma
-     coisa que exceder a frequência, só com atraso). */
-  function startBurst(tSec, cause) {
+     coisa que exceder a frequência, só com atraso). `flashes` = comprimento da rajada (já
+     decidido por quem chama); `isMax` marca a rajada máxima para o cool-down.
+     S3b: o filtro probabilístico do estrelato (`Math.random() >= sg`) saiu daqui — o ganho do
+     estrelato entra no DIVISOR das arestas (`accentDivisor`), determinístico. Ganho 0 = nada. */
+  function startBurst(tSec, cause, flashes, isMax, force) {
     const cfg = M();
-    if (tSec - st.lastFlashAt < MIN_GAP_S) return false;
+    if (tSec - st.lastFlashAt < MIN_GAP_S && !force) return false;   // `force` (drop): arranca na aresta, 1.º flash adiado até ao gap
     if (st.burstLeft > 0) return false;                      // já há rajada a decorrer
-    /* F12 §5: o ESTRELATO decide se o mikado tem palco agora. É um filtro PROBABILÍSTICO no
-       arranque da rajada (e não um mute do resultado) por duas razões: uma rajada começada nunca é
-       cortada a meio — lê-se como avaria —, e com ganho intermédio o mikado rareia em vez de
-       enfraquecer, que é como um técnico o usaria. Com ganho 0 (estrelato dos chapéus: exclusão
-       mútua) não arranca rajada nenhuma. */
-    const sg = starGain();
-    if (sg < 1 && Math.random() >= sg) return false;
-    st.burstLeft = clamp(Math.round(num(cfg.burst, 2)), 1, 8);
-    st.nextAt = tSec;
+    if (starGain() <= 0) return false;                       // exclusão mútua do estrelato
+    st.burstLeft = clamp(Math.round(num(flashes, num(cfg.burst, 2))), 1, 12);
+    st.nextAt = force ? Math.max(tSec, st.lastFlashAt + MIN_GAP_S) : tSec;
     // COR: fixa (1-3) ou rotação (0) — a rotação avança UMA vez por rajada, nunca dentro dela
     // (spec §5: "sempre a MESMA cor em simultâneo", e uma rajada lê-se como um só gesto).
     const pick = Math.round(num(cfg.color, 0));
     if (pick >= 1 && pick <= 3) st.colorIdx = pick - 1;
     else st.colorIdx = (st.colorIdx + 1) % PALETTE.length;
+    st.lastBurst.cause = cause; st.lastBurst.at = tSec; st.lastBurst.flashes = st.burstLeft; st.lastBurst.max = !!isMax;
+    if (isMax) st.lastMaxPhrase = st.phraseTick;
     return true;
   }
 
-  /* Lê os triggers do motor de música. NÃO toca em music.js: faz poll de `window.MUSIC.state`,
-     onde `snareCount`/`dropCount` são contadores MONOTÓNICOS (sobem a cada evento). Comparar com
-     o valor do frame anterior dá o evento sem callbacks nem patches no motor. */
+  /* Comprimento da RAJADA MÁXIMA (drop): `burst × dropBurstMul`, mas nunca mais do que cabe em
+     `mikadoBurstMaxBeats` tempos à frequência da rajada (teto 3 Hz mantém-se em `MIN_GAP_S`). */
+  function maxBurstFlashes(MS) {
+    const cfg = M();
+    const hz = clamp(num(cfg.hz, 2.4), 0.2, 3);
+    const beats = SYNC().maxBeats;
+    const cap = Math.max(1, Math.floor(beats * beatPeriodS(MS) * hz + 1e-6));
+    return clamp(Math.min(Math.round(num(cfg.burst, 2) * num(cfg.dropBurstMul, 2)), cap), 1, 12);
+  }
+  /* cool-down da rajada máxima em FRASES do relógio (default 2 = 16 compassos, f16 §2) */
+  function cooldownLeft() {
+    const cd = SYNC().cooldown;
+    if (st.lastMaxPhrase <= -1e8) return 0;
+    return Math.max(0, cd - (st.phraseTick - st.lastMaxPhrase));
+  }
+
+  /* Divisor das arestas de tempo para os ACENTOS (determinístico, substitui a moeda `snareSens`):
+     sens 1 × act 1 × ganho 1 → todos os tempos com tarola; sens 0,55 → um em dois; `act` baixo e
+     ganho do estrelato < 1 espaçam mais. 0 → nunca. */
+  function accentDivisor(MS) {
+    const cfg = M();
+    const sens = clamp(num(cfg.snareSens, 0.55), 0, 1);
+    const sg = clamp(starGain(), 0, 2);
+    const dens = sens * (0.5 + 0.5 * actNow(MS)) * Math.min(1, sg);
+    if (dens <= 0.01) return 0;
+    return clamp(Math.round(1 / dens), 1, 8);
+  }
+
+  /* ---- lê o relógio S1 e os contadores do motor; marca as arestas deste frame ----
+     NÃO toca em music.js: poll de `window.MUSIC.state`. `snareCount`/`dropCount` continuam a ser
+     lidos por delta, mas já não disparam nada por si — só marcam `snarePending`/`dropPending`,
+     que a aresta do relógio consome. */
   function pollMusic(tSec) {
     const cfg = M();
-    const MS = (typeof window !== 'undefined' && window.MUSIC && window.MUSIC.state) || null;
+    const MS = MSget();
+    st.edgeBeat = st.edgeBar = st.edgePhrase = false;
+    st.writer = hasCommander() ? 'estrelato' : 'auto';
     if (!MS) {
       if (!st.warned && cfg.snareOn !== false) {
         st.warned = true;
@@ -718,32 +792,111 @@ export function createMikado(scene, CONFIG) {
           'inertes; o mikado corre em modo autónomo (knob "mikado: auto /min"). Sem sidecar isto é ' +
           'esperado; a tecla `g` do motor liga o gerador sintético para testar.');
       }
-      return;
+      st.clock = 'none';
+      return null;
     }
+
+    // relógio S1: arestas por delta dos contadores monotónicos (1.ª leitura só regista)
+    const bt = num(MS.beatTick, 0), bar = num(MS.barTick, 0), ph = num(MS.phraseTick, 0);
+    if (st.lastBeatTick >= 0) {
+      if (bt > st.lastBeatTick) { st.edgeBeat = true; st.lastBeatAt = tSec; }
+      if (bar > st.lastBarTick) st.edgeBar = true;
+      if (ph > st.lastPhraseTick) st.edgePhrase = true;
+    }
+    st.lastBeatTick = bt; st.lastBarTick = bar; st.lastPhraseTick = ph;
+    st.beatTick = bt; st.barTick = bar; st.phraseTick = ph;
 
     const snare = num(MS.snareCount, 0), drop = num(MS.dropCount, 0);
     // 1ª leitura: só regista (senão o mikado disparava uma rajada por cada evento já acumulado)
-    if (st.lastSnare < 0) { st.lastSnare = snare; st.lastDrop = drop; return; }
-
-    // ---- DROP: o gesto grande. Rajada mais longa e prioritária. ----
+    if (st.lastSnare < 0) { st.lastSnare = snare; st.lastDrop = drop; return MS; }
     if (drop > st.lastDrop) {
       st.lastDrop = drop;
-      if (cfg.dropOn !== false) {
-        const saved = st.burstLeft;
-        st.burstLeft = 0;                                     // o drop interrompe uma rajada de tarola
-        if (!startBurst(tSec, 'drop')) st.burstLeft = saved;
-        else st.burstLeft = clamp(Math.round(num(cfg.burst, 2) * num(cfg.dropBurstMul, 2)), 1, 12);
+      if (cfg.dropOn !== false) { st.dropPending = true; st.dropPendingAt = tSec; }
+    }
+    if (snare > st.lastSnare) {
+      st.lastSnare = snare;
+      if (cfg.snareOn !== false) st.snarePending = true;
+    }
+    return MS;
+  }
+
+  /* ---- S3b: quem decide QUANDO — arestas do relógio (ou cadência própria sem relógio) ----
+     Dispara no máximo UMA rajada por chamada (nunca rajadas por dt gigante). */
+  function schedule(MS, tSec) {
+    const cfg = M();
+    const alive = !!MS && (tSec - st.lastBeatAt) < CLOCK_DEAD_S;
+
+    // sorteio do bloco: só em `barTick` (modo "blocos"); dentro da rajada avança sequencialmente
+    if (st.edgeBar && Math.round(num(cfg.mode, 0)) >= 1) {
+      const blocks = nBlocks();
+      if (blocks > 1) st.blockCursor = (Math.random() * blocks) | 0;
+    }
+
+    if (MS && MS.silent === true) { st.clock = 'silêncio'; st.snarePending = false; return; }
+
+    // ---- DROP: a rajada máxima — uma vez por cool-down; fora dele vale como acento ----
+    if (st.dropPending) {
+      const snap = alive && (tSec - st.lastBeatAt) <= DROP_SNAP_S;   // aresta acabou de passar
+      const fire = !alive || st.edgeBeat || snap;
+      if (fire) {
+        st.dropPending = false;
+        const isMax = cooldownLeft() <= 0;
+        const n = isMax ? maxBurstFlashes(MS) : clamp(Math.round(num(cfg.burst, 2)), 1, 8);
+        st.burstLeft = 0;                                          // o drop interrompe uma rajada de acento
+        startBurst(tSec, isMax ? 'drop' : 'drop (cool-down)', n, isMax, true);
+        st.snarePending = false;
+        return;
       }
     }
 
-    // ---- TAROLA (snare): o acento seco. `sens` 0-1 = probabilidade de cada tarola disparar. ----
-    if (snare > st.lastSnare) {
-      const missed = snare - st.lastSnare;
-      st.lastSnare = snare;
-      if (cfg.snareOn !== false && missed > 0) {
-        const sens = clamp(num(cfg.snareSens, 0.55), 0, 1);
-        if (Math.random() < sens) startBurst(tSec, 'snare');
+    if (alive) {
+      st.clock = 'beatTick';
+      if (!st.edgeBeat) return;
+      // ---- ACENTO na aresta de tempo: tarola desde a última aresta E divisor determinístico ----
+      const div = accentDivisor(MS);
+      const hadSnare = st.snarePending;
+      st.snarePending = false;
+      if (div > 0 && hadSnare && st.beatTick % div === 0) {
+        startBurst(tSec, 'tarola', clamp(Math.round(num(cfg.burst, 2)), 1, 8), false);
+        return;
       }
+      // sem tarola (motor sem tarola detetada): o modo autónomo quantizado ao tempo
+      autoQuantized(MS, tSec, true);
+      return;
+    }
+
+    // ---- sem relógio vivo: cadência própria (múltiplo do bombo estimado ou fixa) ----
+    autoQuantized(MS, tSec, false);
+  }
+
+  /* modo AUTÓNOMO (knob `autoPerMin`; 0 = nunca): SEM Poisson. Com relógio vivo dispara nas
+     arestas de tempo múltiplas de um divisor (`beatHz / wantHz`); sem relógio, período múltiplo
+     do bombo estimado ou fixo `60/autoPerMin`. Com estrelato montado o autónomo só corre quando o
+     ganho do mikado é > 0 (o estrelato decide se há palco). */
+  function autoQuantized(MS, tSec, onEdge) {
+    const perMin = Math.max(0, num(M().autoPerMin, 4));
+    if (perMin <= 0) { if (!onEdge) st.clock = 'off'; return; }
+    if (starGain() <= 0) return;
+    const wantHz = perMin / 60;
+    if (onEdge) {
+      const beatHz = 1 / beatPeriodS(MS);
+      const div = Math.max(1, Math.round(beatHz / Math.max(0.01, wantHz) / Math.max(0.05, Math.min(1, starGain()))));
+      if (st.beatTick % div !== 0) return;
+      startBurst(tSec, 'auto', clamp(Math.round(num(M().burst, 2)), 1, 8), false);
+      st.autoNextAt = tSec + 1 / wantHz;
+      return;
+    }
+    let period = 1 / wantHz;
+    if (MS && num(MS.bpmEst, 0) > 0) {
+      const beatS = beatPeriodS(MS);
+      period = Math.max(beatS, Math.round(period / beatS) * beatS);
+      st.clock = 'bpmEst';
+    } else {
+      st.clock = MS ? 'fixo' : 'none';
+    }
+    if (tSec >= st.autoNextAt) {
+      st.autoNextAt = tSec + Math.max(MIN_GAP_S, period);
+      startBurst(tSec, 'auto', clamp(Math.round(num(M().burst, 2)), 1, 8), false);
     }
   }
 
@@ -779,14 +932,8 @@ export function createMikado(scene, CONFIG) {
     const d = Number.isFinite(dt) ? clamp(dt, 0, 0.1) : 0.016;
     const t = Number.isFinite(tSec) ? tSec : 0;
 
-    pollMusic(t);
-
-    /* modo AUTÓNOMO: sem motor (ou com ele calado) o mikado ainda vive — rajadas Poisson a
-       `autoPerMin`. É também o que dá ao David algo para ver ao mexer nos knobs sem música. */
-    const autoRate = Math.max(0, num(cfg.autoPerMin, 4)) / 60;
-    st.autoAcc += d * autoRate;
-    if (st.autoAcc > 4) st.autoAcc = 4;
-    while (st.autoAcc >= 1) { st.autoAcc -= 1; startBurst(t, 'auto'); }
+    const MS = pollMusic(t);
+    schedule(MS, t);
 
     /* agendador da rajada. `hz` é a frequência DENTRO da rajada; clampada a 3 Hz no knob E aqui
        (MIN_GAP_S), para nenhuma escrita externa no CONFIG poder passar do teto da sala. */
@@ -862,15 +1009,21 @@ export function createMikado(scene, CONFIG) {
     const lightMul = Math.max(0, num(cfg.lightMul, 1));
     const li = st.lit * gain * 6 * lightMul;
     const lightsOn = li > 0.05;
+    /* S3b/V0b: NUNCA `setEnabled` por rajada — cada liga/desliga muda a lista de luzes dos materiais
+       (defines novos → shaders novos, f17-visual §0.5b). As luzes ficam ligadas a I=0 durante
+       `LIGHT_HOLD_S` depois do último flash e só depois se desligam (mesma histerese dos focos,
+       `SPOT_SLOT_HOLD_S` em main.js). Escritas idempotentes. */
+    if (lightsOn) lightsLastLitAt = t;
+    const hold = (t - lightsLastLitAt) <= LIGHT_HOLD_S;
     for (const L of lights) {
       if (lightsOn) {
         L.intensity = li;
         L.diffuse.set(gr, gg, gb);
         L.specular.set(gr, gg, gb);
-        L.setEnabled(true);
-      } else if (L.isEnabled()) {
-        L.intensity = 0;   // zera junto com o setEnabled: um valor "vivo" numa luz apagada lê-se mal na inspeção
-        L.setEnabled(false);
+        if (!L.isEnabled(false)) L.setEnabled(true);
+      } else if (L.isEnabled(false)) {
+        if (L.intensity !== 0) L.intensity = 0;
+        if (!hold) L.setEnabled(false);
       }
     }
   }
@@ -889,6 +1042,11 @@ export function createMikado(scene, CONFIG) {
     regroup: () => regroup(true),
     get barCount() { return generated.length; },
     get litBlock() { return st.litBlock; },
+    /* S3b diagnóstico (HUD/consola): quem manda, que relógio, última rajada, cool-down restante */
+    get writer() { return st.writer; },
+    get clock() { return st.clock; },
+    get lastBurst() { return { cause: st.lastBurst.cause, at: st.lastBurst.at, flashes: st.lastBurst.flashes, max: st.lastBurst.max }; },
+    get cooldownLeft() { return cooldownLeft(); },
     /* Diagnóstico (auditoria de knobs, 2026-09-01): o plano de blocos — `[block por barra]`. Serve
        para verificar pela consola que 'mikado: tam. bloco' reagrupa SEM re-sortear a disposição
        (as posições ficam iguais, este array muda). Cópia: ninguém escreve no `generated` de fora. */
