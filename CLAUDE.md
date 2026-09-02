@@ -26,7 +26,7 @@ MirrorBall-Start.bat / -Stop.bat            bola manual/câmara em :8080 (python
 - **Fora do OS:** atalho `Mirrors-of-Emotions-Start` → abre `http://127.0.0.1:3739/app/index-v2.html?src=music`.
 - **No OS:** tab `/mirrors-emotions` (modo música) ou bola **M** no seletor da sidebar. Ficheiros desta pasta são servidos **do disco** — alterar `music.js`/`index-v2.html` = recarregar a página, sem build. Só mudanças em `agent-os/source/` exigem `npm run build` + restart.
 - Cache-buster: ao alterar `music.js`, **bump** `music.js?v=N` no `index-v2.html`.
-- Teclas na bola: `m` HUD do motor (linha BOMBO), `p` perfil, `g` gerador sintético, `n` próxima fase, `w` skin, `d` sliders, `e` HUD emoções.
+- Teclas na bola 2D (`index-v2.html`): `m` HUD do motor (linha BOMBO), `p` perfil, `g` gerador sintético, `n` próxima fase, `w` skin, `d` sliders, `e` HUD emoções. **No spike Babylon** o HUD é `h` (sem linha BOMBO; o motor lê-se no bpm da linha dos vultos e nas trocas da linha "estrela"); `k` é o tuner do motor.
 - Antes de "afinar", **medir**: gravar 15 s de features reais (script `cap.js` — ver handoff) e correr `replay-real.js`. Adivinhar limiares já custou uma noite.
 
 ## Regras do motor (fixadas pelo David, não reabrir)

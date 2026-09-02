@@ -125,3 +125,25 @@ Expectativa do research: Δ `medianRenderMs` entre −0,1 e −0,3 ms; `activeMe
 
 **Regra que fica:** se um knob passar a mexer `position`/`rotation`/`scaling` de um plano ou pilar ao
 vivo, tem de chamar `unfreezeWorldMatrix()` antes — está anotado nos dois comentários do `room.js`.
+
+
+### 0.5 Leituras reais do David (2026-09-02 00:00, S13) — NÃO é a baseline limpa
+
+Feitas ao vivo, HUD `h` (`render` = mediana do `scene.render`), depois de restart do PC e de trocar
+de browser (o Chrome com extensões/tabs dava 180-443 ms). Cenário: knobs por defeito no browser novo
+(filas 48). Não foi o protocolo §0.2 (pior caso) — é uma leitura de sanidade.
+
+| Cenário | Backend | render (ms) |
+|---|---|---|
+| V3, manual, `pontos: losango` 0 | WebGPU | ~180 (browser velho) → ~70 (browser novo) |
+| V3, manual | WebGL2 (`?webgl=1`) | **~30** |
+| V3, `?src=music` com música | WebGL2 | **~70** |
+| master (`:8098`), mesmos dois modos | WebGL2 | "mais ou menos parecido" |
+
+**Conclusões:** (1) os merges V0/V1/K1 **não** são a causa — o master dá o mesmo; (2) há um custo
+base de ~30 ms muito acima dos 4-7 ms medidos em S9-S11 — a máquina ainda parece degradada, repetir
+noutro dia; (3) **o modo música custa +40 ms dentro do `scene.render`** — suspeita principal:
+o motor a mexer nas luzes/spots a cada frame provoca recompilação de shaders (armadilha nº5 de
+`mapa-frentes.md` frente B: nº de luzes ativas muda → +7-17 ms por material). É uma dívida nova da
+frente B/D, a investigar como fase **V0b** (Opus) antes de V2: medir com `spotsMotor` a 0, com os
+spots a intensidade fixa, e com `engine.getCaps()`/`material.onCompiled` a contar compilações.
