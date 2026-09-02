@@ -400,7 +400,7 @@ const room = buildRoom(scene, CONFIG);
    entrarem na renderList do ReflectionProbe — é o coração da F8: a bola TEM de os espelhar. */
 let hats = null;
 try {
-  const mod = await import('./hats.js?v=16');
+  const mod = await import('./hats.js?v=17');
   hats = mod.createHats(scene, CONFIG);
   console.log('hats.js carregado.');
 } catch (err) {
@@ -474,7 +474,7 @@ try {
    os módulos leem `gain` com fallback 1 e correm como na F11. */
 let stardom = null;
 try {
-  const mod = await import('./stardom.js?v=4');
+  const mod = await import('./stardom.js?v=5');
   stardom = mod.createStardom(CONFIG, { hats });
   console.log('stardom.js carregado.');
 } catch (err) {
@@ -2332,7 +2332,7 @@ console.log('MB2 pronto —', engine.isWebGPU ? 'WebGPU' : 'WebGL2');
       MUSIC_BASES[0] + ').');
     // Ids de DOM esperados pelos 3 scripts: só `#mus` (web/music.js:2388, HUD tecla `m`) — já existe
     // em v2/index.html, escondido por omissão (.on liga/desliga, mesmo padrão do Canvas 2D).
-    const files = ['core.js?v=1', 'music.js?v=61', 'tuner.js?v=2'];
+    const files = ['core.js?v=1', 'music.js?v=62', 'tuner.js?v=3'];
     let i = 0;
     function next() {
       if (i >= files.length) { console.log('[F5 music] core.js/music.js/tuner.js carregados.'); return; }
