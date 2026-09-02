@@ -15,16 +15,16 @@ web/bridge.js         ESP32 (Web Serial / WS)
 web/test-music-f2.js  harness Node vm (node web/test-music-f2.js) — 16 asserções
 web/replay-real.js    replay de features REAIS gravadas do sidecar (node web/replay-real.js feat.json)
 firmware/             ESP32
-Mirror-V3-Start.bat / Mirror-V3-Kill.bat    ÚNICOS .bat: spike v3 (sidecar :3739 + serve.py :8099); `manual` como arg = sem motor.
-                                             Atalhos no Desktop: start-Mirror-v3 / kill-Mirror-v3. Bola 2D antiga: abrir web/index-v2.html
-                                             via http://127.0.0.1:3739/app/index-v2.html?src=music (o sidecar serve-a).
+Mirror-V3-Start.bat / Mirror-V3-Kill.bat    spike v3 (sidecar :3739 + serve.py :8099); `manual` como arg = sem motor. Kill mata as 2 portas.
+Mirror-2D-Start.bat                          bola 2D (web/index-v2.html) em música, servida pelo sidecar em :3739/app/.
+                                             ÚNICOS .bat. Atalhos no Desktop: start-Mirror-v3 / start-Mirror-2D / kill-Mirror-v3.
 ```
 
 **O áudio vem de fora:** `agent-os/audio-sidecar/` (repo do OS, porta **3739**, WASAPI loopback via `loopback-capture`). Emite a 50 Hz `{rms,bass,mid,high,sub,hat,centroid,density,onset,subOnset,loudness,silence}` (bandas em dB com referência própria = máximo lento ~40 s; **nunca** normalizar bandas umas contra as outras — foi o bug que fez `bass≡1.0`). Serve esta pasta em `http://127.0.0.1:3739/app/*` e o token em `/app-token` (same-origin). Contrato completo no cabeçalho de `web/music.js`.
 
 ## Como testar
 
-- **Fora do OS:** atalho `start-Mirror-v3` (spike v3, música). Bola 2D: `http://127.0.0.1:3739/app/index-v2.html?src=music` com o sidecar a correr.
+- **Fora do OS:** atalho `start-Mirror-v3` (spike v3, música) ou `start-Mirror-2D` (bola 2D, `http://127.0.0.1:3739/app/index-v2.html?src=music`).
 - **No OS:** tab `/mirrors-emotions` (modo música) ou bola **M** no seletor da sidebar. Ficheiros desta pasta são servidos **do disco** — alterar `music.js`/`index-v2.html` = recarregar a página, sem build. Só mudanças em `agent-os/source/` exigem `npm run build` + restart.
 - Cache-buster: ao alterar `music.js`, **bump** `music.js?v=N` no `index-v2.html`.
 - Teclas na bola 2D (`index-v2.html`): `m` HUD do motor (linha BOMBO), `p` perfil, `g` gerador sintético, `n` próxima fase, `w` skin, `d` sliders, `e` HUD emoções. **No spike Babylon** o HUD é `h` (sem linha BOMBO; o motor lê-se no bpm da linha dos vultos e nas trocas da linha "estrela"); `k` é o tuner do motor.
