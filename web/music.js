@@ -478,6 +478,9 @@ const MUSIC = {
     allOnReservePhrases: 8,   // frases (de `phraseBars`) entre dois all-on (2-16)
     breakdownBallHero: 0,     // 0 = bola discreta (techno) · 1 = bola+wash protagonistas (disco/pop)
     breakdownWash: 0.3,       // wash da sala no breakdown discreto (0-1)
+    /* S3b (f16-sync §2-3) — lidos pelo mikado (`mikado.js`) por poll em `MUSIC.sync` */
+    mikadoCooldownPhrases: 2, // frases (de `phraseBars`) entre duas rajadas MÁXIMAS do mikado (drop)
+    mikadoBurstMaxBeats: 4,   // comprimento máx. da rajada do drop, em tempos (teto 3 Hz mantém-se)
   },
 
   /* ---- Camada 3: máquina de estados com áudio real, SEM `hint` (§0.1 / ponto 5) ---- */
@@ -587,6 +590,8 @@ const TUNE = {
       { path: 'sync.allOnReservePhrases', range: [2, 16], step: 1,    label: 'sync: all-on reserva (frases)' },
       { path: 'sync.breakdownBallHero',   range: [0, 1],  step: 1,    label: 'sync: breakdown bola protagonista (0/1)' },
       { path: 'sync.breakdownWash',       range: [0, 1],  step: 0.05, label: 'sync: breakdown wash' },
+      { path: 'sync.mikadoCooldownPhrases', range: [1, 8], step: 1,   label: 'sync: mikado cool-down (frases)' },
+      { path: 'sync.mikadoBurstMaxBeats',   range: [1, 16], step: 1,  label: 'sync: mikado rajada máx (tempos)' },
     ],
   },
   profile: {
