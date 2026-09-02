@@ -1698,6 +1698,164 @@ window.dispatchEvent(new Event('mb2-ready'));
 
 /* ================================ fim do bloco F5 choreo/API ==================================== */
 
+/* ---------------- V5 (S14): SOMBRAS projetadas — ShadowGenerator nas luzes "hero" ----------------
+   research-realismo.md §4 #5 / §5 R5; docs/f17-visual.md §2. Default DESLIGADO (`sombras (0/1)`).
+
+   Quem projeta (casters, sempre): a bola (facetas + núcleo), a corrente + gancho (thin instances),
+   as 4 bases do mikado (thin instances, V6), os pilares; os vultos só com
+   `sombras: vultos projetam (0/1)` (640 meshes × passes = caro). Quem recebe: os 5 planos e os
+   pilares (`receiveShadows` já vinha do room.js) e os vultos (ligado aqui, reposto ao desligar).
+   A BOLA NÃO RECEBE: a única luz que lhe bate é o próprio pinspot, e uma esfera não se auto-sombreia
+   do lado iluminado — era só acne nas facetas (risco n.º 1 da fase) por nada.
+
+   ⚠ Uma sombra só aparece em quem a luz ILUMINA. Os focos da bola, os robots e o flash do mikado
+   têm os 5 planos em `excludedMeshes` (fix S9 "parede de luz") — logo, com a fonte 0/1 a sombra
+   da bola/mikado só cai nos pilares e nos vultos. `sombras: chão recebe (0/1)` tira SÓ O CHÃO da
+   exclusão dessas luzes enquanto as sombras estiverem ligadas (e repõe ao desligar). Os chapéus
+   (fonte 2) já pintam chão/paredes/pilares por si, com alcance 3 m.
+
+   Filtragem: PCF (`usePercentageCloserFiltering`, WebGL2/WebGPU) — um pinspot é uma fonte pequena,
+   a sombra física é DURA com orla limpa; PCF dá isso sem passes de blur extra. PCSS
+   (`useContactHardeningShadow`) fica como nível 3 do knob `sombras: suavização` — custa 2-4× mais
+   (busca de bloqueadores + 32/64 taps) e só compensa se o David quiser penumbra a crescer com a
+   distância. `transparencyShadow` + `enableSoftTransparentShadow`: a bola em raio-X
+   (`sphereOpacity` < 1 → material ALPHABLEND) continua a projetar, mais leve conforme a opacidade.
+
+   Custo por frame: 1 passe de profundidade por SpotLight ativa, 6 por PointLight (cubo) — a luz
+   desligada (`setEnabled(false)`, gesto do motor a 0) não renderiza o mapa: o custo cai sozinho,
+   sem tocar no generator por frame (nada de `setEnabled` no generator — a regra da armadilha 5).
+   `MB2.__perf()` expõe `shadowMaps`/`shadowPasses`/`shadowCasters`/`shadowMapPx`.
+
+   O rig (generators + exclusões + receivers) só se (re)constrói quando muda um knob ESTRUTURAL
+   (on/fonte/luzes/mapa/suavização/chão/vultos) — `shadowRig.key`; darkness/bias/orla são uniforms
+   e escrevem-se só quando mudam. A renderList refresca-se quando a bola é reconstruída
+   (`ball.mesh` novo) ou a corrente muda (`chainGen`). Par liga/desliga SIMÉTRICO (armadilha F11):
+   `disposeShadowRig` repõe minZ/maxZ das luzes, a exclusão do chão e o `receiveShadows` dos vultos. */
+const shadowRig = { gens: [], lights: [], key: '', uniKey: '', floorPatched: [], crowdPrev: null, castersKey: '' };
+const SHADOW_Q = [
+  () => BABYLON.ShadowGenerator.QUALITY_LOW,
+  () => BABYLON.ShadowGenerator.QUALITY_MEDIUM,
+  () => BABYLON.ShadowGenerator.QUALITY_HIGH,
+];
+function shadowSourceLights(src, maxN) {
+  const n = Math.max(1, Math.min(4, Math.round(num(maxN, 2))));
+  if (src === 1) return (mikado && mikado.lights ? mikado.lights : []).slice(0, n);
+  if (src === 2) return (hats && hats.lights ? hats.lights : []).slice(0, n);
+  return spotLights.slice(0, Math.min(n, N_SPOT_SLOTS));   // fonte 0: os pinspots montados (nunca os slots de flash)
+}
+function shadowCasters() {
+  const out = [];
+  if (ball) for (const m of [ball.mesh, ball.core, ball.chain, ball.chainHook]) if (m && !m.isDisposed()) out.push(m);
+  if (mikado && mikado.meshes) out.push(...mikado.meshes);
+  if (room && room.pillars) out.push(...room.pillars);
+  if (num(CONFIG.shadowCrowdCasts, 0) >= 0.5 && crowd && crowd.meshes) out.push(...crowd.meshes);
+  return out;
+}
+function roomFloorMesh() {
+  const pl = (room && room.planes) || [];
+  return pl.find(p => p && p.name === 'room_floor') || null;
+}
+function disposeShadowRig() {
+  for (const g of shadowRig.gens) { try { g.dispose(); } catch (e) { console.error('shadow dispose:', e); } }
+  for (const r of shadowRig.lights) {           // repõe o intervalo de profundidade de cada luz
+    r.light.shadowMinZ = r.minZ; r.light.shadowMaxZ = r.maxZ;
+  }
+  const floor = roomFloorMesh();                 // repõe a exclusão do chão nas luzes que a tinham
+  for (const L of shadowRig.floorPatched) if (floor && L.excludedMeshes.indexOf(floor) === -1) L.excludedMeshes.push(floor);
+  if (shadowRig.crowdPrev && crowd && crowd.meshes) {   // repõe `receiveShadows` dos vultos
+    crowd.meshes.forEach((m, i) => { if (m && !m.isDisposed()) m.receiveShadows = !!shadowRig.crowdPrev[i]; });
+  }
+  shadowRig.gens = []; shadowRig.lights = []; shadowRig.floorPatched = []; shadowRig.crowdPrev = null;
+  shadowRig.uniKey = ''; shadowRig.castersKey = '';
+}
+function buildShadowRig() {
+  const src = Math.round(num(CONFIG.shadowSource, 0));
+  const px = Math.round(num(CONFIG.shadowMapPx, 1024));
+  const size = px >= 2048 ? 2048 : px >= 1024 ? 1024 : 512;
+  const q = Math.round(num(CONFIG.shadowQuality, 1));
+  const lights = shadowSourceLights(src, CONFIG.shadowMaxLights);
+  const floor = roomFloorMesh();
+  const floorOn = num(CONFIG.shadowFloorOn, 0) >= 0.5;
+  for (const L of lights) {
+    const rec = { light: L, minZ: L.shadowMinZ, maxZ: L.shadowMaxZ };
+    // intervalo de profundidade apertado = precisão no mapa (menos acne): spot a ~spotDist da
+    // bola até à parede oposta; PointLight até ao seu `range` (14 mikado / 3 chapéus).
+    if (L instanceof BABYLON.PointLight) { L.shadowMinZ = 0.1; L.shadowMaxZ = Math.max(1, num(L.range, 14)); }
+    else { L.shadowMinZ = 0.5; L.shadowMaxZ = Math.max(10, num(CONFIG.spotDist, 6) + 30); }
+    shadowRig.lights.push(rec);
+    let g;
+    try { g = new BABYLON.ShadowGenerator(size, L); }
+    catch (e) { console.error('[MB2] ShadowGenerator falhou em', L.name, e); continue; }
+    if (q >= 3) { g.useContactHardeningShadow = true; g.contactHardeningLightSizeUVRatio = 0.05; }
+    else { g.usePercentageCloserFiltering = true; g.filteringQuality = SHADOW_Q[Math.max(0, Math.min(2, q))](); }
+    g.transparencyShadow = true;          // a bola em raio-X (ALPHABLEND) continua a projetar
+    g.enableSoftTransparentShadow = true; // …mais leve conforme a opacidade
+    shadowRig.gens.push(g);
+    // fonte 0/1: o chão só recebe se o knob o tirar da exclusão (repõe-se em disposeShadowRig)
+    if (floorOn && floor && src !== 2) {
+      const i = L.excludedMeshes.indexOf(floor);
+      if (i !== -1) { L.excludedMeshes.splice(i, 1); shadowRig.floorPatched.push(L); }
+    }
+  }
+  if (crowd && crowd.meshes) {
+    shadowRig.crowdPrev = crowd.meshes.map(m => !!(m && m.receiveShadows));
+    for (const m of crowd.meshes) if (m && !m.isDisposed()) m.receiveShadows = true;
+  }
+  refreshShadowCasters(true);
+}
+function refreshShadowCasters(force) {
+  const key = (ball && ball.mesh ? ball.mesh.uniqueId : 0) + '|' + num(ball && ball.chainGen, 0) + '|' +
+    (num(CONFIG.shadowCrowdCasts, 0) >= 0.5 ? 1 : 0);
+  if (!force && key === shadowRig.castersKey) return;
+  shadowRig.castersKey = key;
+  const casters = shadowCasters();
+  for (const g of shadowRig.gens) {
+    const map = g.getShadowMap();
+    if (map) map.renderList = casters.slice();
+  }
+}
+function updateShadows() {
+  const on = num(CONFIG.shadowsOn, 0) >= 0.5;
+  const key = on ? [
+    Math.round(num(CONFIG.shadowSource, 0)), Math.round(num(CONFIG.shadowMaxLights, 2)),
+    Math.round(num(CONFIG.shadowMapPx, 1024)), Math.round(num(CONFIG.shadowQuality, 1)),
+    num(CONFIG.shadowFloorOn, 0) >= 0.5 ? 1 : 0, num(CONFIG.shadowCrowdCasts, 0) >= 0.5 ? 1 : 0,
+    // a fonte pode ainda não existir no arranque (módulos dinâmicos): entra na chave para o rig
+    // nascer quando a lista de luzes ficar disponível
+    shadowSourceLights(Math.round(num(CONFIG.shadowSource, 0)), CONFIG.shadowMaxLights).length,
+  ].join('|') : '';
+  if (key !== shadowRig.key) {
+    disposeShadowRig();
+    shadowRig.key = key;
+    if (on) { try { buildShadowRig(); } catch (e) { console.error('buildShadowRig:', e); } }
+  }
+  if (!shadowRig.gens.length) return;
+  refreshShadowCasters(false);
+  // uniforms (não recompilam): só quando mudam
+  const dark = 1 - clamp01(num(CONFIG.shadowStrength, 0.75));
+  const bias = clamp(num(CONFIG.shadowBias, 0.001), 0, 0.05);
+  const nbias = clamp(num(CONFIG.shadowNormalBias, 0.01), 0, 0.5);
+  const edge = clamp01(num(CONFIG.shadowEdge, 0.15));
+  const uni = dark + '|' + bias + '|' + nbias + '|' + edge;
+  if (uni === shadowRig.uniKey) return;
+  shadowRig.uniKey = uni;
+  for (const g of shadowRig.gens) {
+    g.setDarkness(dark); g.bias = bias; g.normalBias = nbias; g.frustumEdgeFalloff = edge;
+  }
+}
+function shadowPerf() {
+  let maps = 0, passes = 0, casters = 0;
+  for (const g of shadowRig.gens) {
+    const L = g.getLight();
+    if (!L || !L.isEnabled()) continue;
+    maps++;
+    passes += (L instanceof BABYLON.PointLight) ? 6 : 1;
+    const map = g.getShadowMap();
+    casters += map && map.renderList ? map.renderList.length : 0;
+  }
+  return { shadowMaps: maps, shadowPasses: passes, shadowCasters: casters, shadowMapPx: shadowRig.gens.length ? shadowRig.gens[0].mapSize : 0 };
+}
+
 /* ---------------- loop, tempo, HUD ----------------
    getDeltaTime() mente com o tab em segundo plano (docs/babylon-reference.md §9) — mede-se o
    custo REAL de scene.render() via onBeforeRenderObservable/onAfterRenderObservable. */
@@ -1862,6 +2020,7 @@ scene.registerBeforeRender(() => {
     if (camera.target.z !== bz) camera.target.z = bz;
   }
   excludeBallFromRoomLights(); // F8 (regra "nenhum foco inferior" + robots) — idempotente, ver acima
+  updateShadows();             // V5 (S14): sombras — rig só muda com knob; uniforms só quando mudam
   // F8: chapéus e robots só ficam posicionados/ativados DEPOIS do 1º update() acima (attachProbe
   // correu antes disso, com os meshes ainda em posição/estado por omissão) — força mais UM refresh
   // do probe assim que souberem onde estão, para a bola os espelhar na posição certa desde já.
@@ -1929,7 +2088,7 @@ window.MB2 = {
   scene, engine, camera, cfg: CONFIG, get ball() { return ball; },
   __perf: () => {
     const s = samples.slice().sort((a, b) => a - b);
-    return { medianRenderMs: s.length ? s[s.length >> 1] : 0, n: s.length, tiles: tileCount() };
+    return Object.assign({ medianRenderMs: s.length ? s[s.length >> 1] : 0, n: s.length, tiles: tileCount() }, shadowPerf());
   },
   /* Skin dark/white (Fase 4, Regra 1: só tecla `w`/botão/API — nenhum motor lhe toca). */
   setSkin,

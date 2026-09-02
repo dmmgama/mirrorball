@@ -194,3 +194,94 @@ uma vez no arranque, não por frame. **Por medir** pelo David com `MB2.__perf()`
    de `f8-sala-lux.md` — "sala escura com picos?".
 3. `cor (0/1)` a 0 com curvas a 1: tem de ficar cinza puro.
 
+## 2. V5 — sombras projetadas (`ShadowGenerator`) (W5, S14, 2026-09-02)
+
+Ficheiros: `main.js` (bloco novo "V5: SOMBRAS", antes de "loop, tempo, HUD"; chamada `updateShadows()`
+no frame depois de `excludeBallFromRoomLights()`; campos novos em `MB2.__perf()`), `config.js`,
+`panel.js` (grupo Sala & Geometria), `knobs-default.json` (209 → **220** knobs). Não toca em
+`setSpot`/`updateSpotLights` (W1) nem no pipeline (W2). **Default desligado** até o David aprovar.
+
+### 2.1 O que o código faz
+
+| Decisão | Valor | Porquê |
+|---|---|---|
+| Luzes com sombra | as **N primeiras** da fonte escolhida (`sombras: fonte`): 0 = pinspots da bola (`spot0..`, nunca os slots de flash), 1 = pool do mikado (4 PointLight), 2 = flashes dos chapéus (PointLight, alcance 3 m) | as luzes de enchimento (wash, hemisféricas, RectAreaLight) nunca projetam — é o "hero" do research §4 #5 |
+| Casters | bola (facetas + núcleo), corrente + gancho (thin instances), 4 bases do mikado (thin instances V6), pilares; vultos só com `sombras: vultos projetam (0/1)` | vultos = 640 meshes por passe (×6 num PointLight): só por medição |
+| Receivers | 5 planos + pilares (`receiveShadows` já vinha do `room.js`), vultos (ligado ao ligar o rig, reposto ao desligar). **A bola não recebe** | a única luz que bate na bola é o próprio pinspot; uma esfera não se auto-sombreia do lado iluminado — só daria acne nas facetas (o risco n.º 1) |
+| Filtragem | **PCF** (`usePercentageCloserFiltering`), `sombras: suavização` 0/1/2 = LOW/MEDIUM/HIGH; **3 = PCSS** (`useContactHardeningShadow`, `contactHardeningLightSizeUVRatio` 0.05) | pinspot = fonte pequena → sombra dura de orla limpa, PCF dá isso sem passes de blur; PCSS custa 2-4× (busca de bloqueadores + 32/64 taps), fica opcional |
+| Profundidade | SpotLight `shadowMinZ` 0.5 / `shadowMaxZ` spotDist+30; PointLight 0.1 / `range` | intervalo apertado = precisão no mapa = menos acne; reposto ao desligar |
+| Transparência | `transparencyShadow` + `enableSoftTransparentShadow` | a bola em raio-X (`sphereOpacity` < 1 → ALPHABLEND) continua a projetar, mais leve conforme a opacidade |
+| Bias | `sombras: bias` 0.001, `sombras: normal bias` 0.01, `sombras: orla` 0.15 (`frustumEdgeFalloff`) | pontos de partida para 1024 px; o David afina ao vivo, são uniforms |
+| Escuridão | `sombras: escuridão` 0.75 (1 = preto) → Babylon `darkness = 1 − knob` | o knob lê-se como "quanto escurece" |
+
+**Armadilha que o research não viu:** uma sombra só aparece em quem a luz **ilumina**. Os pinspots,
+os robots e o flash do mikado têm os 5 planos em `excludedMeshes` (fix S9 "parede de luz") — com a
+fonte 0/1 a sombra da bola/mikado só cai nos **pilares e vultos**. `sombras: chão recebe (0/1)`
+tira **só o chão** da exclusão dessas luzes enquanto as sombras estão ligadas (e repõe ao desligar).
+Com os pinspots a 900 lm isso vai acender o chão por baixo da bola (é o cone a continuar para lá
+dela) — é uma experiência para o David, não um default. Os chapéus (fonte 2) já pintam
+chão/paredes/pilares por si: a sombra dos vultos no chão a cada flash sai sem tocar em exclusões,
+mas cada chapéu é PointLight (6 passes) com alcance 3 m.
+
+**Custo e motor:** 1 passe de profundidade por SpotLight ativa e por frame, 6 por PointLight (cubo).
+Uma luz `setEnabled(false)` (gesto do motor a 0, `updateSpotLights`) não renderiza o mapa — o custo
+cai sozinho, sem tocar no generator por frame. O rig só se (re)constrói quando muda um knob
+estrutural (on/fonte/luzes/mapa/suavização/chão/vultos); darkness/bias/orla escrevem-se só quando
+mudam; a renderList refresca-se quando `ball.mesh` muda (rebuild) ou `chainGen` muda (altura).
+Ligar/desligar recompila uma vez os materiais dos receivers (define `SHADOW`), não por frame.
+Par 0→1→0 simétrico: dispose dos generators, minZ/maxZ repostos, chão devolvido à exclusão,
+`receiveShadows` dos vultos reposto.
+
+### 2.2 Knobs (todos em `config.js`, grupo Sala & Geometria)
+
+| Knob | Default | Faixa |
+|---|---|---|
+| `sombras (0/1)` | **0** | toggle |
+| `sombras: fonte (0=focos,1=mikado,2=chapéus)` | 0 | 0-2 |
+| `sombras: luzes máx` | 2 | 1-4 |
+| `sombras: mapa (px)` | 1024 | 512/1024/2048 |
+| `sombras: escuridão` | 0.75 | 0-1 |
+| `sombras: suavização` | 1 (PCF médio) | 0-3 |
+| `sombras: bias` | 0.001 | 0-0.02 |
+| `sombras: normal bias` | 0.01 | 0-0.1 |
+| `sombras: orla` | 0.15 | 0-1 |
+| `sombras: chão recebe (0/1)` | 0 | toggle |
+| `sombras: vultos projetam (0/1)` | 0 | toggle |
+
+Regra 9: presets antigos sem estes knobs assumem os defaults (sombras desligadas). Greyscale
+não é afetado (sombra é atenuação, não cor).
+
+### 2.3 Protocolo de medição (David, tab em foco, `MB2.__perf()`)
+
+Campos novos: `shadowMaps` (mapas renderizados este frame = luzes ligadas com generator),
+`shadowPasses` (1 por spot, 6 por PointLight), `shadowCasters` (meshes na renderList),
+`shadowMapPx`. Cenário do §0.2 (pior caso), 20 s cada leitura:
+
+1. `sombras (0/1)` 0 → baseline do dia (`medianRenderMs`).
+2. `sombras` 1, fonte 0, luzes máx **1 / 2 / 4**, mapa 1024 → custo por spot.
+3. Mapa **512 / 1024 / 2048** com luzes máx 2.
+4. Suavização **1 vs 3** (PCF vs PCSS).
+5. `vultos projetam` 1 → o salto grande, se houver.
+6. Fonte **1** (mikado) e **2** (chapéus) com luzes máx 2 → custo de PointLight (×6).
+7. `chão recebe` 1 com fonte 0: é para VER, não para medir — o chão por baixo da bola acende.
+
+Aceitação: ≤ 1 ms por spot a 1024 (research estimava 0,3-1,0). Acima disso, a fonte 0 a 512 px.
+
+### 2.4 Riscos ao vivo (por verificar)
+
+1. Acne nos **pilares** (caixas, faces a rasar o cone): subir `normal bias`; se sobrar, `bias`.
+2. Sombra a **vazar por trás** de um pilar fino: `orla` mais baixa, mapa 2048.
+3. WebGPU: PCF usa comparison sampler — se a sombra sair preta uniforme, testar `?webgl=1`.
+4. Thin instances (corrente, mikado) a projetar: se não aparecerem, é a versão do bundle
+   (`vendor/babylon.js`) — a corrente é o teste mais visível (links no chão com `chão recebe` 1).
+5. `mikado (0/1)` 1→0 com sombras: as bases ficam `setEnabled(false)` e saem do mapa sozinhas.
+6. `bola (0/1)` 0 com fonte 0: os pinspots continuam ligados mas sem bola → sem sombra (correto).
+
+### 2.5 Stops do David
+
+1. Fonte 0, luzes máx 2, `chão recebe` 0: há sombra da bola/corrente nos **pilares** quando o
+   pinspot varre? (é pouco — a exclusão dos planos limita)
+2. `chão recebe` 1: a sombra da bola no chão é "aquilo"? E o chão aceso vale a pena ou torra?
+3. Fonte 1 (mikado) num drop: as barras riscam os pilares/vultos?
+4. Fonte 2 (chapéus): silhuetas dos vultos no chão a cada flash?
+5. Decidir o default de `sombras (0/1)` e da fonte com o número do §2.3 na mão.
