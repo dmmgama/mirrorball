@@ -365,6 +365,57 @@ function check(name, ok, detail) { results.push({ name, ok, detail }); }
     `health antes=${hBefore.toFixed(2)} · chegou a 0 em ${tZero === null ? 'nunca' : (tZero / 1000).toFixed(2) + ' s'} · rpm final=${env.CONFIG.rotationRpm.toFixed(3)}`);
 }
 
+/* ---- (n,o,p,q) §CLOCK — relógio único (S1, f16-sync.md §1) ---- */
+{
+  // (n) com grelha: ticks monotónicos, índices dentro do intervalo, nada NaN, cadência ≈ bombo
+  const env = makeEnv({ owner: 'music', seed: 777 });
+  const S = env.sandbox.MUSIC.state;
+  env.sandbox.MUSIC.gen.toggle();
+  const CLK = ['beatTick', 'barTick', 'phraseTick', 'beatIdx', 'barIdx', 'clockConf', 'clockAgeMs'];
+  let mono = true, idxOk = true, finite = true, prev = { b: 0, c: 0, f: 0 };
+  // `feed` ancora a fase ao início de cada chamada → alimentar um TEMPO por chamada (1 bombo/chunk)
+  const PERIOD = 60000 / 126;
+  let beatsFed = 0;
+  const t0 = env.clock;
+  while (env.clock - t0 < 40000) {
+    env.feed(PERIOD, { kicks: true, bpm: 126, loud: 0.62 }); beatsFed++;
+    if (S.beatTick < prev.b || S.barTick < prev.c || S.phraseTick < prev.f) mono = false;
+    prev = { b: S.beatTick, c: S.barTick, f: S.phraseTick };
+    if (S.beatIdx < 0 || S.beatIdx > 3 || S.barIdx < 0 || S.barIdx > 7) idxOk = false;
+    for (const k of CLK) if (!Number.isFinite(S[k])) finite = false;
+  }
+  check('(n) relógio: ticks monotónicos, beatIdx 0-3, barIdx 0-7, sem NaN', mono && idxOk && finite,
+    `beatTick=${S.beatTick} (bombos ${beatsFed}) · barTick=${S.barTick} · phraseTick=${S.phraseTick} · src=${S.clockSrc} · conf=${S.clockConf.toFixed(2)}`);
+  check('(o) relógio com grelha: beatTick ≈ bombos, barTick ≈ beatTick/4, frase de 8 compassos',
+    S.clockSrc === 'grid' && Math.abs(S.beatTick - beatsFed) <= 6 &&
+    Math.abs(S.barTick - S.beatTick / 4) <= 2 && Math.abs(S.phraseTick - S.barTick / 8) <= 1.5,
+    `beatTick=${S.beatTick} vs ${beatsFed} · barTick=${S.barTick} · phraseTick=${S.phraseTick} · idade=${Math.round(S.clockAgeMs)}ms`);
+}
+{
+  // (p) degradação: grelha inibida (conf. mínima impossível) → cada bombo é um tempo, 4/4,
+  //     e `state.bar` AVANÇA em vez de congelar (bug antigo dos >4 s sem grelha)
+  const env = makeEnv({ owner: 'music', seed: 778 });
+  const S = env.sandbox.MUSIC.state;
+  env.sandbox.MUSIC.gen.toggle();
+  env.sandbox.MUSIC.config.grid.staleMs = -1;      // grelha sempre "velha" → sem grelha, de facto
+  const bar0 = S.bar, t0 = env.clock, PERIOD = 60000 / 126;
+  let finite = true, beatsFed = 0;
+  while (env.clock - t0 < 20000) {
+    env.feed(PERIOD, { kicks: true, bpm: 126, loud: 0.62 }); beatsFed++;
+    for (const k of ['beatTick', 'barTick', 'clockConf', 'clockAgeMs']) if (!Number.isFinite(S[k])) finite = false;
+  }
+  check('(p) relógio sem grelha degrada para o bombo (4/4) e state.bar não congela',
+    S.clockSrc === 'kick' && finite && Math.abs(S.beatTick - beatsFed) <= 6 &&
+    S.barTick >= 8 && (S.bar - bar0) >= 8 && S.clockConf > 0 && S.clockConf <= 0.5,
+    `src=${S.clockSrc} · beatTick=${S.beatTick} vs ${beatsFed} · barTick=${S.barTick} · bar ${bar0}→${S.bar} · conf=${S.clockConf.toFixed(2)}`);
+  // (q) sem bombo o relógio pára de contar mas continua finito e a idade cresce
+  const bt = S.beatTick;
+  env.feed(5000, { kicks: false, loud: 0.45, high: 0.42, bassBase: 0.16 });
+  check('(q) relógio sem bombo: não inventa ticks, idade cresce, tudo finito',
+    S.beatTick === bt && S.clockAgeMs >= 4000 && Number.isFinite(S.clockConf) && Number.isFinite(S.clockAgeMs),
+    `beatTick ${bt}→${S.beatTick} · idade=${Math.round(S.clockAgeMs)}ms · conf=${S.clockConf.toFixed(2)} · src=${S.clockSrc}`);
+}
+
 /* ==================================== relatório ==================================== */
 console.log('\n=== VERIFICAÇÃO FASE 5 (motor forte) ===');
 let failed = 0;

@@ -467,6 +467,15 @@ const MUSIC = {
     quantConf: 0.60,      // acima disto o rpm só muda na fronteira de COMPASSO
   },
 
+  /* ---- §CLOCK — relógio único da sala (S1, `f16-sync.md` §1 decisões 1-2) ----
+   * Publicado em `state` como contadores MONOTÓNICOS (`beatTick`/`barTick`/`phraseTick`) + posição
+   * (`beatIdx` 0-3, `barIdx` 0-7) + `clockConf`/`clockAgeMs`. Só este ficheiro escreve; as peças
+   * da sala leem por poll e detetam a aresta por delta (como já fazem com `snareCount`). */
+  sync: {
+    phraseBars: 8,        // compassos por frase DO RELÓGIO (a grelha mantém os seus 16 para a FSM)
+    gridMinConf: 0.30,    // abaixo disto o relógio ignora a grelha e segue o bombo em 4/4
+  },
+
   /* ---- Camada 3: máquina de estados com áudio real, SEM `hint` (§0.1 / ponto 5) ---- */
   fsm: {
     kickDeadSec: 1.5,         // bombo cai por > isto, com música a tocar → BREAKDOWN
@@ -564,6 +573,13 @@ const TUNE = {
       { path: 'snare.fbFloor',          range: [0.05, 0.80], step: 0.01, label: 'tarola piso (fallback)' },
       { path: 'snare.fbK',              range: [0.5, 8.0],   step: 0.1,  label: 'tarola k·MAD (fallback)' },
       { path: 'snare.refractMs',        range: [80, 600],    step: 10,   label: 'tarola refratário ms' },
+    ],
+  },
+  sync: {
+    label: 'Sync (relógio único)',
+    knobs: [
+      { path: 'sync.phraseBars',   range: [4, 16],     step: 4,    label: 'sync: compassos por frase' },
+      { path: 'sync.gridMinConf',  range: [0.0, 1.0],  step: 0.01, label: 'sync: conf. mín. da grelha' },
     ],
   },
   profile: {
@@ -898,6 +914,12 @@ const state = {
   // grelha recebida (a nossa, ou a de um emissor externo que a mande)
   grid: null, gridLocalT0: 0,
   bar: 0, phrase: 0, beatPhase: 0, barPhase: 0, phrasePhase: 0, lastBarSeen: -1,
+  // --- §CLOCK (S1): relógio único. Tudo finito à nascença (regra 7: NaN mata feixes). ---
+  beatTick: 0, barTick: 0, phraseTick: 0,   // contadores monotónicos (leitores: aresta por delta)
+  beatIdx: 0, barIdx: 0,                    // posição: tempo no compasso (0-3), compasso na frase (0-7)
+  clockConf: 0, clockAgeMs: 0,              // confiança 0-1 e ms desde o último beatTick
+  clockSrc: 'none',                         // 'grid' | 'kick' | 'none' (HUD/diagnóstico)
+  clockBeatAbs: -1, clockLastKickT: -Infinity, clockLastBeatT: 0,   // internos do §CLOCK
   // energia por compasso (inclinações da FSM)
   barEnergy: [], barEnergyAcc: 0, barEnergyN: 0,
   barHigh: [], barHighAcc: 0,
@@ -1666,19 +1688,87 @@ function updateGrid(nowL) {
   state.phrase = Math.floor(bar / bpp);
   state.phrasePhase = ((bar / bpp + state.barPhase / bpp) % 1 + 1) % 1;
 
-  if (bar !== state.bar) {
-    const prev = state.bar;
-    state.bar = bar;
-    if (state.barEnergyN > 0) {
-      state.barEnergy.push(state.barEnergyAcc / state.barEnergyN);
-      state.barHigh.push(state.barHighAcc / state.barEnergyN);
-      if (state.barEnergy.length > 12) state.barEnergy.shift();
-      if (state.barHigh.length > 12) state.barHigh.shift();
-    }
-    state.barEnergyAcc = 0; state.barHighAcc = 0; state.barEnergyN = 0;
-    onBarBoundary(bar, prev);
-  }
+  if (bar !== state.bar) advanceBar(bar);
   return true;
+}
+/* Fronteira de compasso: fecha a energia do compasso anterior e avisa a coreografia. Partilhado
+ * pela grelha e pelo relógio degradado (§CLOCK), para `state.bar` nunca mais congelar sem grelha. */
+function advanceBar(bar) {
+  const prev = state.bar;
+  state.bar = bar;
+  if (state.barEnergyN > 0) {
+    state.barEnergy.push(state.barEnergyAcc / state.barEnergyN);
+    state.barHigh.push(state.barHighAcc / state.barEnergyN);
+    if (state.barEnergy.length > 12) state.barEnergy.shift();
+    if (state.barHigh.length > 12) state.barHigh.shift();
+  }
+  state.barEnergyAcc = 0; state.barHighAcc = 0; state.barEnergyN = 0;
+  onBarBoundary(bar, prev);
+}
+
+/* ================================ §CLOCK — relógio único (S1) ================================
+ * Uma só fonte de "quando" para a sala. Com grelha confiante, os ticks vêm da grelha (o tempo
+ * absoluto floor(beats) muda → beatTick++). Sem grelha (arranque, conf baixa, grelha velha) o
+ * relógio DEGRADA para o bombo: cada kick é um tempo, 4 tempos um compasso, `sync.phraseBars`
+ * compassos uma frase — em vez de congelar. Os índices continuam de onde estavam na troca de
+ * fonte, para os leitores não verem saltos. Nada aqui renomeia campos existentes. */
+function updateClock(nowL, gridLive) {
+  const Y = MUSIC.sync, g = state.grid;
+  const bpb = (g && g.beatsPerBar) || MUSIC.bpm.beatsPerBar || 4;
+  const ppb = Math.max(1, Y.phraseBars | 0);
+  const gridOk = !!g && (nowL - state.gridLocalT0) <= MUSIC.grid.staleMs && state.gridConf >= Y.gridMinConf;
+
+  const tickBeat = (n) => {
+    for (let i = 0; i < n; i++) {
+      state.beatTick++;
+      state.beatIdx = (state.beatIdx + 1) % bpb;
+      if (state.beatIdx === 0) {
+        state.barTick++;
+        state.barIdx = (state.barIdx + 1) % ppb;
+        if (state.barIdx === 0) state.phraseTick++;
+      }
+    }
+    state.clockLastBeatT = nowL;
+  };
+
+  if (gridOk) {
+    // tempo absoluto na grelha; ancorar `beatIdx`/`barIdx` à grelha para o 1 do compasso ser o dela
+    const beats = (nowL - state.gridLocalT0) / g.beatPeriodMs;
+    const abs = g.barIndex * bpb + Math.floor(beats);
+    if (state.clockBeatAbs < 0 || state.clockSrc !== 'grid') {
+      // (re)sincronização: assume a posição da grelha sem disparar rajadas de ticks
+      state.clockBeatAbs = abs;
+      state.beatIdx = ((abs % bpb) + bpb) % bpb;
+      const barAbs = Math.floor(abs / bpb);
+      state.barIdx = ((barAbs % ppb) + ppb) % ppb;
+      state.clockLastBeatT = nowL;
+    } else if (abs !== state.clockBeatAbs) {
+      const d = abs - state.clockBeatAbs;
+      // salto normal = 1; a grelha reemitida pode encolher/esticar um tempo → nunca mais de 2
+      // ticks por frame, e um salto negativo (t0 re-ancorado) não desfaz nada: monotónico.
+      if (d > 0) tickBeat(Math.min(d, 2));
+      state.clockBeatAbs = abs;
+    }
+    state.clockSrc = 'grid';
+    state.clockConf = clamp(state.gridConf, 0, 1);
+  } else {
+    // degradação: cada bombo novo é um tempo (4/4 assumido)
+    if (state.lastKickT > state.clockLastKickT && state.lastKickT > -Infinity) {
+      tickBeat(1);
+      // `state.bar` acompanha (deixa de congelar sem grelha): um compasso a cada 4 bombos.
+      // Só quando a grelha está mesmo morta — viva mas pouco confiante, o `updateGrid` continua
+      // a ser o único escritor de `state.bar` (um escritor por campo).
+      if (!gridLive && state.beatIdx === 0) advanceBar(state.bar + 1);
+    }
+    state.clockSrc = state.lastKickT > -Infinity && state.kickPresence > 0.05 ? 'kick' : 'none';
+    // confiança baixa por definição: presença do bombo é o único suporte (teto 0.5)
+    state.clockConf = clamp(state.kickPresence, 0, 1) * 0.5;
+  }
+  state.clockLastKickT = state.lastKickT;
+  state.clockAgeMs = clamp(nowL - state.clockLastBeatT, 0, 99999);
+  // regra 7: nada disto pode ser NaN
+  if (!Number.isFinite(state.clockConf)) state.clockConf = 0;
+  if (!Number.isFinite(state.clockAgeMs)) state.clockAgeMs = 0;
 }
 
 function barsToPhraseEnd() {
@@ -2181,7 +2271,8 @@ function update(nowL) {
   if (dead) state.kickPresence = ease(state.kickPresence, 0, MUSIC.kick.presenceTau, dt);
 
   emitLocalGrid(nowL);
-  updateGrid(nowL);
+  const gridLive = updateGrid(nowL);
+  updateClock(nowL, gridLive);
   updateFsm(nowL, dt);
   updateGestures(nowL, dt);
   computeTargets();
@@ -2471,6 +2562,10 @@ function updateHud(o) {
       `  vazios ${state.spinCeilCount}  prob ${MUSIC.map.spinCeilChance.toFixed(2)}  teto ${MUSIC.map.spinCeilRpm.toFixed(2)} rpm`,
     `grelha  bar ${state.bar} (${posBar + 1}/${g ? g.barsPerPhrase : '—'})  frase ${state.phrase}  ${bpm ? bpm.toFixed(1) : '—'} bpm  conf ${state.gridConf.toFixed(2)}`,
     `batida  ${bar12(state.beatPhase, 16)}  bar ${bar12(state.barPhase, 16)}`,
+    // §CLOCK (S1): o relógio único que a sala lê. `src grid` = ticks da grelha; `src kick` =
+    // degradado (cada bombo é um tempo, 4/4 assumido). `idade` = ms desde o último beatTick.
+    `relógio tempo ${state.beatIdx + 1}/${(g && g.beatsPerBar) || MUSIC.bpm.beatsPerBar}  compasso ${state.barIdx + 1}/${MUSIC.sync.phraseBars}` +
+      `  ticks b${state.beatTick} c${state.barTick} f${state.phraseTick}  conf ${state.clockConf.toFixed(2)}  idade ${Math.round(state.clockAgeMs)}ms  src ${state.clockSrc}`,
     `gesto   ${(state.gest ? state.gest.name : '—').padEnd(12)} peso ${state.gestWeight.toFixed(2)}  fila [${state.gestQueue.join(' ')}]  total ${state.gestCount}`,
     `perfil  ${MUSIC.profile}  ${profMode()}  (tecla p)   skin ${MB && MB.getSkin ? MB.getSkin().mode : '—'} (tecla w — do utilizador, o motor não lhe toca)`,
     // §PROFAUTO: é esta linha que explica a decisão. `cv` é o sinal primário (regularidade dos
