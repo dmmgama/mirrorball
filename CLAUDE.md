@@ -69,7 +69,8 @@ Modelo mental `mirrorball-musica-emocoes`; factos com `document_id` `mirrorball-
 - **NotebookLM da repo:** "David - MirrorBall" — `https://notebook.google.com/notebook/52185ce4-d95a-498b-a840-f371cfa91433` (id `52185ce4-d95a-498b-a840-f371cfa91433`). Researches e planos vão para lá como source com o nome do ficheiro; slidedecks pedidos com o mesmo nome que a source.
 
 - `docs/plan.md` — plano v2 + §0.1 feedback da 1ª audição + §4.0 ritmo + §4.1 delegação.
-- `docs/handoff-<data>.md` — estado e próximo passo (ler primeiro numa sessão nova).
+- `docs/handoff-<data>.md` — estado e próximo passo (ler primeiro numa sessão nova). **`fases/`** — uma pasta por fase
+  entregue e por ver ao vivo (`start.bat` + `README.md` com o checklist); `fases/README.md` dá a ordem de revisão.
 - `docs/beat-detection-research.md` — Patin/Milkdrop/SoundSwitch: mediana, variância, presença relativa ao BPM (por aplicar).
 - Wiki do OS (`2ndBrain/WIKI-Projetos/AI - AgentOS-MissionControl.md`) só quando se toca no `agent-os` (sidecar, tab, sidebar).
 
