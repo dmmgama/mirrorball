@@ -20,6 +20,59 @@
   if (!M || !M.tune || typeof document === 'undefined') return;   // não é modo música: inerte
   const T = M.tune;                                               // API exposta pelo music.js
 
+  /* ---------------- S2 (f16-sync §3): knobs `sync` — secção LOCAL deste painel ----------------
+   * O esquema §TUNE do `music.js` é fechado (o `coerceKnob` só aceita caminhos do mapa construído
+   * ao carregar), e a S2 não pode tocar no `music.js` (W3 corre em paralelo no mesmo ficheiro).
+   * Por isso estes knobs vivem em `MUSIC.config.sync` — criado AQUI com os defaults do research —
+   * e são lidos pelo `stardom.js` por poll (com os mesmos defaults se o painel não existir).
+   * Persistência: localStorage `mb.tune.sync` (o `save` do ficheiro só serializa o esquema do
+   * motor). Quando o `music.js` passar a ter `sync` no §TUNE (S1/S4), esta secção DESAPARECE
+   * sozinha: o `if (!T.schema.sync)` abaixo deixa de entrar e o ficheiro passa a mandar. */
+  const SYNC_LS = 'mb.tune.sync';
+  const SYNC_SEC = {
+    label: 'Sync (sala) — S2',
+    knobs: [
+      { path: 'sync.allOnReservePhrases', range: [2, 16],  step: 1,    label: 'all-on reserva (frases)', def: 8 },
+      { path: 'sync.breakdownBallHero',   range: [0, 1],   step: 1,    label: 'breakdown bola protagonista (0/1)', def: 0 },
+      { path: 'sync.breakdownWash',       range: [0, 1],   step: 0.05, label: 'breakdown wash', def: 0.3 },
+    ],
+  };
+  const CFG = M.config || null;
+  const useLocalSync = !!(CFG && !T.schema.sync);
+  if (useLocalSync) {
+    if (!CFG.sync || typeof CFG.sync !== 'object') CFG.sync = {};
+    for (const k of SYNC_SEC.knobs) {
+      const key = k.path.split('.')[1];
+      if (!Number.isFinite(CFG.sync[key])) CFG.sync[key] = k.def;   // regra 7: valor inicial finito
+    }
+    try {
+      const saved = JSON.parse(localStorage.getItem(SYNC_LS) || 'null');
+      if (saved && typeof saved === 'object') for (const k of SYNC_SEC.knobs) {
+        const key = k.path.split('.')[1];
+        const v = Number(saved[key]);
+        if (Number.isFinite(v)) CFG.sync[key] = Math.min(k.range[1], Math.max(k.range[0], v));
+      }
+    } catch (e) { /* localStorage indisponível: defaults */ }
+  }
+  const isSync = (path) => useLocalSync && path.startsWith('sync.');
+  const syncKey = (path) => path.split('.')[1];
+  const syncGet = (path) => CFG.sync[syncKey(path)];
+  function syncSet(path, v) {
+    const k = SYNC_SEC.knobs.find(x => x.path === path);
+    if (!k || !Number.isFinite(v)) return false;
+    CFG.sync[syncKey(path)] = Math.min(k.range[1], Math.max(k.range[0], v));
+    try {
+      const o = {}; for (const kk of SYNC_SEC.knobs) o[syncKey(kk.path)] = CFG.sync[syncKey(kk.path)];
+      localStorage.setItem(SYNC_LS, JSON.stringify(o));
+    } catch (e) { /* sem persistência: fica só na sessão */ }
+    return true;
+  }
+  const syncDef = (path) => { const k = SYNC_SEC.knobs.find(x => x.path === path); return k ? k.def : 0; };
+  // acessores unificados: caminho `sync.*` local, resto pelo motor
+  const kGet = (path) => (isSync(path) ? syncGet(path) : T.get(path));
+  const kSet = (path, v) => (isSync(path) ? syncSet(path, v) : T.set(path, v));
+  const kDef = (path) => (isSync(path) ? syncDef(path) : T.defaults[path]);
+
   /* ---------------- estilo: o mesmo vocabulário do HUD `m` e dos sliders `d` ---------------- */
   const css = `
   #tun{position:fixed;top:12px;left:12px;width:300px;max-height:88vh;overflow-y:auto;
@@ -71,7 +124,8 @@
   el.appendChild(pathLine);
 
   const rows = [];
-  for (const [secKey, sec] of Object.entries(T.schema)) {
+  const SECTIONS = Object.entries(T.schema).concat(useLocalSync ? [['sync', SYNC_SEC]] : []);
+  for (const [secKey, sec] of SECTIONS) {
     const h = document.createElement('div');
     h.className = 'sec';
     const body = document.createElement('div');
@@ -93,11 +147,11 @@
       inp.min = k.range[0]; inp.max = k.range[1]; inp.step = k.step;
       const vl = document.createElement('span'); vl.className = 'vl';
       const df = document.createElement('span'); df.className = 'df';
-      df.textContent = fmt(T.defaults[k.path], k.step);
+      df.textContent = fmt(kDef(k.path), k.step);
       df.title = 'valor por defeito no código';
       // input = a cada gesto, escreve JÁ no CONFIG vivo. É o ponto todo do painel.
       inp.addEventListener('input', () => {
-        T.set(k.path, parseFloat(inp.value));
+        kSet(k.path, parseFloat(inp.value));
         sync();
       });
       row.appendChild(nm); row.appendChild(inp); row.appendChild(vl); row.appendChild(df);
@@ -148,7 +202,11 @@
     if (r && r.ok) setFlash('ok', 'gravado ✓'); else setFlash('err', (r && r.error) || 'falhou');
     sync();
   };
-  bReset.onclick = () => { T.reset(); sync(); };
+  bReset.onclick = () => {
+    T.reset();
+    if (useLocalSync) for (const k of SYNC_SEC.knobs) syncSet(k.path, k.def);
+    sync();
+  };
   bCopy.onclick = async () => {
     const p = T.state.path || '(sem ficheiro)';
     try {
@@ -191,11 +249,11 @@
   function sync() {
     if (!el.classList.contains('on')) return;
     for (const r of rows) {
-      const v = T.get(r.k.path);
-      const n = typeof v === 'number' && isFinite(v) ? v : T.defaults[r.k.path];
+      const v = kGet(r.k.path);
+      const n = typeof v === 'number' && isFinite(v) ? v : kDef(r.k.path);
       if (document.activeElement !== r.inp) r.inp.value = n;
       r.vl.textContent = fmt(n, r.k.step);
-      r.row.classList.toggle('mod', Math.abs(n - T.defaults[r.k.path]) > 1e-9);
+      r.row.classList.toggle('mod', Math.abs(n - kDef(r.k.path)) > 1e-9);
     }
     syncLocations();
     if (document.activeElement !== sel) pathEl.textContent = pathForId(sel.value || T.state.active);
@@ -212,6 +270,7 @@
       `${T.state.loaded ? 'carregado: ' + (T.state.msg || '') : (T.state.msg || 'defaults do código')}<br>` +
       (dirty ? `<span class="warn">${dirty} knob(s) alterados — por gravar</span>` : 'sem alterações por gravar') +
       (T.state.canSave ? '' : '<br><span class="warn">save só quando servida pelo sidecar (/app/)</span>');
+    if (useLocalSync) stEl.innerHTML += '<br>knobs «Sync (sala)»: guardados no browser (localStorage), não no ficheiro';
     void flashCls;
   }
 
