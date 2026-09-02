@@ -474,6 +474,10 @@ const MUSIC = {
   sync: {
     phraseBars: 8,        // compassos por frase DO RELÓGIO (a grelha mantém os seus 16 para a FSM)
     gridMinConf: 0.30,    // abaixo disto o relógio ignora a grelha e segue o bombo em 4/4
+    /* S2 (f16-sync §3) — lidos pelo estrelato (`stardom.js`) por poll em `MUSIC.sync` */
+    allOnReservePhrases: 8,   // frases (de `phraseBars`) entre dois all-on (2-16)
+    breakdownBallHero: 0,     // 0 = bola discreta (techno) · 1 = bola+wash protagonistas (disco/pop)
+    breakdownWash: 0.3,       // wash da sala no breakdown discreto (0-1)
   },
 
   /* ---- Camada 3: máquina de estados com áudio real, SEM `hint` (§0.1 / ponto 5) ---- */
@@ -580,6 +584,9 @@ const TUNE = {
     knobs: [
       { path: 'sync.phraseBars',   range: [4, 16],     step: 4,    label: 'sync: compassos por frase' },
       { path: 'sync.gridMinConf',  range: [0.0, 1.0],  step: 0.01, label: 'sync: conf. mín. da grelha' },
+      { path: 'sync.allOnReservePhrases', range: [2, 16], step: 1,    label: 'sync: all-on reserva (frases)' },
+      { path: 'sync.breakdownBallHero',   range: [0, 1],  step: 1,    label: 'sync: breakdown bola protagonista (0/1)' },
+      { path: 'sync.breakdownWash',       range: [0, 1],  step: 0.05, label: 'sync: breakdown wash' },
     ],
   },
   profile: {
