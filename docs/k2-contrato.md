@@ -45,6 +45,11 @@ lista para o David decidir.
 
 **23 constantes novas de comportamento encontradas · 11 propostas como knob · 12 ficam no código.**
 
+**Estado (K2b, 2026-09-02):** feitos os 3 achados que eram **bug ou ligação em falta**, não decisão
+do David — **#5** (`CLOCK_DEAD_S` ×4 → um knob), **#8** (`PHRASE_BARS` a ignorar o knob que já
+existia) e **#10/#11** (rampas dos gestos e `tau` do blackout sem entrada no §TUNE). Nenhum default
+mudou. Os restantes (#1-#4, #6, #7, #9) continuam à espera de decisão do David. Detalhe em §4.
+
 Nota de mérito: o lado do **motor** passou no contrato antes de ele existir — S1/S2/S3b/S4 puseram
 os 9 números de comportamento em `MUSIC.sync` **com** entradas no §TUNE. A dívida está quase toda
 do lado da **cena** (`spike-babylon/v2/*.js`), onde as fases S criaram histereses, timeouts e
@@ -58,13 +63,13 @@ tabelas de ganhos como constantes de módulo.
 | 2 | `LIGHT_HOLD_S` | `mikado.js:92` | `2.0` s | `mikado: luz hold s` (0.5-6) | S3b. Mesmo argumento do #1, para as PointLights do mikado. Está duplicado com o #3 sem ser o mesmo elemento — dois knobs, não um. |
 | 3 | `LIGHT_HOLD_S` | `robots.js:139` | `2.0` s | `robots: luz hold s` (0.5-6) | S3b. Idem, nos robots. Hoje o David não consegue baixar o hold dos robots sem mexer no do mikado (nem sequer isso — é código). |
 | 4 | `PENDING_TIMEOUT_S` | `stardom.js:131` | `3.0` s | `estrelato: troca timeout s` (1-10) | S2. Quanto tempo uma troca de estrela fica pendente antes de disparar sem `barTick`. Governa **quão teimosa** é a sala à espera do compasso quando o relógio morre — decisão de sensação, não de segurança. |
-| 5 | `CLOCK_DEAD_S` | `stardom.js:132` · `mikado.js:699` · `hats.js:381` (`AUTO_CLOCK_DEAD_S`) · `choreo.js:64` | `1.5` s (×4) | `sync: relógio morto s` (0.5-5) — **um só**, no motor (`MUSIC.sync`) | S1/S2/S3. É o mesmo conceito repetido em 4 ficheiros com o mesmo valor e comentários a dizerem "mesmo valor de hats.js". Um só knob no `MUSIC.sync` (a cena já lê `MUSIC.sync` por poll) resolve as 4; os 4 locais ficam com o fallback local a 1.5 (regra 1.1 acima). **A divergência entre eles é um bug à espera de acontecer.** |
+| 5 | `CLOCK_DEAD_S` | `stardom.js:132` · `mikado.js:699` · `hats.js:381` (`AUTO_CLOCK_DEAD_S`) · `choreo.js:64` | `1.5` s (×4) | `sync: relógio morto (s)` (0.5-5) — **um só**, no motor (`MUSIC.sync`) | **FEITO (K2b).** S1/S2/S3. Era o mesmo conceito repetido em 4 ficheiros com o mesmo valor e comentários a dizerem "mesmo valor de hats.js". Um só knob `sync.clockDeadS` no `MUSIC.sync` (default 1.5, step 0.1) resolve as 4; os 4 leem-no por poll e mantêm 1.5 só como fallback local (regra §1.1). **A divergência entre eles era um bug à espera de acontecer.** |
 | 6 | `DROP_SNAP_S` | `mikado.js:700` | `0.15` s | `mikado: drop snap s` (0.05-0.5) | S3b. Janela em que um drop lido logo a seguir a uma aresta de tempo dispara já em vez de esperar a seguinte. É a diferença entre a rajada cair *no* drop ou meio tempo depois — precisamente o que a pista S existe para afinar. |
 | 7 | `KICK_EDGE` | `stardom.js:130` | `0.5` | `estrelato: aresta kick` (0.1-0.9) | S2. Limiar de subida do `kickFlash` que conta como bombo novo. É um **limiar de deteção** — a família de números que o CLAUDE.md manda medir antes de adivinhar (`replay-real.js`). |
-| 8 | `PHRASE_BARS` | `stardom.js:128` | `8` | — usar `MUSIC.sync.phraseBars` (já existe) | S2. **Duplicado**: `sync.phraseBars` já é knob no §TUNE (range 4-16) e o `stardom.js` tem a sua própria constante fixa a 8. Se o David mexer no knob, o estrelato não segue. Não é knob novo — é ligar o que existe (e deixar 8 só como fallback). |
+| 8 | `PHRASE_BARS` | `stardom.js:128` | `8` | — usar `MUSIC.sync.phraseBars` (já existe) | **FEITO (K2b).** S2. Era **duplicado**: `sync.phraseBars` já é knob no §TUNE (range 4-16) e o `stardom.js` tinha a sua própria constante fixa a 8, pelo que mexer no knob não movia o estrelato. Não foi knob novo — foi ligar o que existe: os 6 usos passam por `SYNC().phraseBars` (poll de `MUSIC.config.sync`), com 8 só como fallback em `SYNC_DEFAULTS`. Semântica confirmada igual à do relógio S1: `barIdx` percorre `0..phraseBars-1` e `phraseTick` sobe a cada `phraseBars` compassos. |
 | 9 | `PROFILE` + `HERO` (tabelas de ganhos) | `stardom.js:99-126` | 5×4 + 7×5 valores | `estrelato: …` (grupo próprio) ou ficheiro `stardom-profile.json` | S2. O próprio comentário no código diz: *"os números são de SENSAÇÃO (é isto que o David vai querer afinar ao vivo)"*. São ~55 valores — knob a knob afogava o painel; a proposta é um **ficheiro de perfil** carregado como o `music-config.json`, ou os 4-5 mais mexidos (`ball`/`mikado`/`hats`/`wash` do `smooth` e do `all`) como knobs e o resto no ficheiro. **Decisão do David: é a maior peça desta lista.** |
-| 10 | `rampInSec` / `rampOutSec` | `web/music.js:512` | `0.8` / `1.2` s | `gesto: rampa entra s` / `gesto: rampa sai s` no §TUNE (0.1-3) | Pré-existente mas **exposto pelo S4**: o blackout precisou de contornar a rampa de entrada (`instant:true`) porque 300 ms com rampa de 0,8 s nunca chega a ser escuro. Vivem em `MUSIC.gesture` (logo carregam do JSON) mas **não têm entrada no §TUNE** — sem slider `k` e sem validação de range. Meio-knob: fechar. |
-| 11 | `tau = [0.04, 0.04]` do blackout | `web/music.js:1918` | `0.04` s | `sync: blackout ataque s` (0.01-0.2) no §TUNE | S4. O ataque do blackout — 40 ms. O `blackoutMs` (duração) virou knob, o **ataque** não. É a diferença entre um corte seco e um fade rápido; num gesto que é todo ele "corte seco", é o número que define o efeito. |
+| 10 | `rampInSec` / `rampOutSec` | `web/music.js:512` | `0.8` / `1.2` s | `gesto: rampa de entrada (s)` / `gesto: rampa de saída (s)` no §TUNE (0.1-3, step 0.05) | **FEITO (K2b).** Pré-existente mas **exposto pelo S4**: o blackout precisou de contornar a rampa de entrada (`instant:true`) porque 300 ms com rampa de 0,8 s nunca chega a ser escuro. Viviam em `MUSIC.gesture` (logo carregavam do JSON) mas **sem entrada no §TUNE** — sem slider `k` e sem validação de range. Fechado numa secção nova do §TUNE, `Gestos (rampas)`; defaults inalterados. |
+| 11 | `tau = [0.04, 0.04]` do blackout | `web/music.js:1918` | `0.04` s | `sync: blackout ataque (s)` + `sync: blackout regresso (s)` (0.01-0.2, step 0.01) no §TUNE | **FEITO (K2b).** S4. O `blackoutMs` (duração) já era knob, o ataque não. O `tau` é um par `[subida, descida]` do `ease` (`core.js`: alvo acima usa `tau[0]`, abaixo `tau[1]`); como o blackout puxa tudo para 0, é a **descida** que apaga a sala. Expostos **os dois** (`sync.blackoutAttackS` = descida, `sync.blackoutReleaseS` = subida) porque são efeitos distintos: um corte seco com regresso lento lê-se de outra maneira que um com regresso seco. Defaults inalterados (0,04 / 0,04). |
 
 ### 2.2 Fica no código
 
@@ -88,11 +93,58 @@ tabelas de ganhos como constantes de módulo.
 Nada disto foi convertido; é uma lista, não um plano fechado. Se for para avançar, a ordem que
 custa menos e rende mais:
 
-1. **#8 e #5** (ligar o `phraseBars` que já é knob; unificar `CLOCK_DEAD_S` num só knob do motor) —
-   são correções de duplicação, não knobs novos. Risco quase zero, tiram dois bugs latentes.
-2. **#10 e #11** (rampas dos gestos + ataque do blackout no §TUNE) — só do lado do motor, sem tocar
-   na cena, e o David já tem o tuner `k` aberto quando ouve.
+1. ~~**#8 e #5**~~ **— feito no K2b.** (ligar o `phraseBars` que já é knob; unificar `CLOCK_DEAD_S`
+   num só knob do motor) — eram correções de duplicação, não knobs novos.
+2. ~~**#10 e #11**~~ **— feito no K2b.** (rampas dos gestos + ataque do blackout no §TUNE) — só do
+   lado do motor, sem tocar na cena.
 3. **#1-#3 e #6** (holds e snap) — quatro knobs de cena, um `gen-knobs-default.js`, uma bateria.
 4. **#4 e #7** depois, se a afinação ao vivo os pedir.
 5. **#9 (`PROFILE`/`HERO`)** é a decisão grande e vale a pena discuti-la à parte: knobs no painel
    vs. ficheiro de perfil. Não fazer antes da audição S18.
+
+## 4. K2b — os 3 achados de bug/ligação (feito, 2026-09-02)
+
+Só os achados que eram **bug ou ligação em falta**. Nada que fosse decisão do David foi tocado, e
+**nenhum default mudou** — o que muda é passarem a ser afináveis no tuner `k` e a carregarem do
+`music-config.json` com validação de limites.
+
+### Knobs novos no `MUSIC.sync` / §TUNE (`web/music.js`)
+
+| Path | Default | Range · step | Label (§TUNE) | Achado |
+|---|---|---|---|---|
+| `sync.clockDeadS` | 1.5 | 0.5-5 · 0.1 | `sync: relógio morto (s)` | #5 |
+| `sync.blackoutAttackS` | 0.04 | 0.01-0.2 · 0.01 | `sync: blackout ataque (s)` | #11 |
+| `sync.blackoutReleaseS` | 0.04 | 0.01-0.2 · 0.01 | `sync: blackout regresso (s)` | #11 |
+| `gesture.rampInSec` | 0.8 | 0.1-3 · 0.05 | `gesto: rampa de entrada (s)` | #10 |
+| `gesture.rampOutSec` | 1.2 | 0.1-3 · 0.05 | `gesto: rampa de saída (s)` | #10 |
+
+Os dois últimos ficam numa secção nova do §TUNE, **`Gestos (rampas)`** — o §TUNE não tinha grupo
+para os gestos. `sync.phraseBars` **não** é knob novo: já existia (4-16); o que mudou foi passar a
+ser lido por quem o ignorava.
+
+### O que mudou no código
+
+- **#8 — `PHRASE_BARS` (`stardom.js`).** A constante local `= 8` foi removida; os **6** usos
+  (`readClock` ×5 + o relógio autónomo de `pollAndMaybeSwitch`) passam por `SYNC().phraseBars`,
+  poll de `MUSIC.config.sync` a cada frame, com clamp 4-16 e `Math.max(1, …)` para nunca haver
+  módulo 0. Semântica verificada igual à do relógio S1 no `music.js` (`updateClock`): `barIdx`
+  percorre `0..phraseBars-1` e `phraseTick` sobe quando `barIdx` volta a 0, ou seja a cada
+  `phraseBars` compassos. Smoke em Node (relógio derivado do bombo, 40 bombos = 10 compassos):
+  `phraseTick` = 1 com `phraseBars` 8, 2 com 4, 0 com 16 — o knob move mesmo o estrelato.
+- **#5 — `CLOCK_DEAD_S` (4 ficheiros).** Um só knob `sync.clockDeadS` no motor; os 4 leem-no por
+  poll (`stardom.js` e `mikado.js` pelos `SYNC()` que já tinham; `hats.js` e `choreo.js` com um
+  helper `clockDeadS()` novo, o mesmo padrão). Cada um mantém **1.5 como fallback local** — regra 7
+  (a cena arranca sem motor, sem tuner e sem ficheiro) e §1.1 acima (o fallback não é um segundo
+  knob). O motor **não** lê este knob: existe só para a cena.
+- **#10 / #11 — §TUNE (`web/music.js`).** As rampas já viviam em `MUSIC.gesture` e continuam onde
+  estavam; só ganharam entrada no §TUNE. O `tau = [0.04, 0.04]` do gesto `blackout` deixou de ser
+  literal e lê `sync.blackoutAttackS` / `blackoutReleaseS` (com clamp e fallback 0.04, regra 7).
+  O `tau` é um par `[subida, descida]` do `ease` (`core.js`) e o blackout puxa tudo para 0, logo é
+  a **descida** que apaga a sala: por isso `blackoutAttackS` é `tau[1]`, não `tau[0]`.
+
+### Verificação
+
+`node --check` nos 5 ficheiros · `node web/test-music-f2.js` 22/23 (a falha (c), rpm depois do
+bombo parar, é pré-existente e não foi tocada) · `node spike-babylon/v2/test-knobs-compat.js` 45/45
+(regra 9: presets de 193/201 knobs continuam a carregar). Os 5 knobs novos são todos do **motor**,
+logo o `knobs-default.json` da cena não muda e não houve `gen-knobs-default.js`.

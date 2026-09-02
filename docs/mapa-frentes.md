@@ -49,7 +49,8 @@ deste repo (opacidade F13, chapéus, `spotFadeMix` a 60 Hz, `spotGain`).
    stardom.js  → CONFIG.stardom.gain.{ball,mikado,hats,wash}                       ▲ disjuntores: beamsMotor / opacityMotor / spotsMotor
    mikado.js   → snare/drop deltas → rajadas                                       │ motorAllowed(kind,{fromMotor}) main.js:1479
    crowd.js    → beatPhase/bpmEst/gridConf/kickFlash → dança                       │
-   hats.js     → NADA do motor (Poisson próprio) + hats.pulse() via stardom         │ painel d (panel.js) escreve CONFIG diretamente
+   hats.js     → SÓ EXECUTA: hats.pulse() ← stardom.driveHats ← relógio S1         │ painel d (panel.js) escreve CONFIG diretamente
+                 (S3a matou o Poisson; agendador autónomo só sem estrelato)        │
                                                                                    │ e persiste em localStorage mb2.*
  main.js (rAF Babylon, ordem em main.js:1733-1775):
    effective()/health → E{spotGain,sphereOpacity,rotationRpm,...}

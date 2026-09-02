@@ -79,6 +79,8 @@
 //     sync.allOnReservePhrases   8    frases entre all-on (2-16)
 //     sync.breakdownBallHero     0    0 = bola discreta (techno) · 1 = bola+wash protagonistas
 //     sync.breakdownWash         0.3  wash da sala no breakdown discreto (0-1)
+//     sync.phraseBars            8    compassos por frase DO RELÓGIO (4-16) — K2b #8
+//     sync.clockDeadS            1.5  s sem `beatTick` → relógio morto (0.5-5) — K2b #5
 //
 // createStardom(CONFIG, deps) -> { update(tSec, dt), state }
 //   deps: { hats } — só para os gestos dos chapéus (`hats.pulse`). O mikado e a bola são comandados
@@ -89,9 +91,11 @@ function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
 const STARS = ['ball', 'mikado', 'hats', 'smooth', 'all'];
 
-/* Defaults dos knobs `sync` (f16 §2). Repetidos aqui (e no tuner.js) de propósito: o estrelato tem de
-   funcionar sem tuner, sem ficheiro e sem motor — regra 7, valor inicial finito. */
-const SYNC_DEFAULTS = { allOnReservePhrases: 8, breakdownBallHero: 0, breakdownWash: 0.3 };
+/* Defaults dos knobs `sync` (f16 §2). Repetidos aqui de propósito: o estrelato tem de funcionar sem
+   tuner, sem ficheiro e sem motor — regra 7, valor inicial finito. São o fallback local da regra
+   §1.1 do `k2-contrato.md` (não são um segundo knob) e têm de ficar IGUAIS aos do `MUSIC.sync`. */
+const SYNC_DEFAULTS = { allOnReservePhrases: 8, breakdownBallHero: 0, breakdownWash: 0.3,
+  phraseBars: 8, clockDeadS: 1.5 };
 
 /* Perfil de ganhos por estrela. Cada linha é "o que a sala faz quando X é a estrela".
    Os números são de SENSAÇÃO (é isto que o David vai querer afinar ao vivo) e estão todos
@@ -125,11 +129,13 @@ const HERO = {
   OUTRO:       { ball: 0.00, mikado: 0.00, hats: 0.00, smooth: 1.00, all: 0.00 },  // fade (perfil `fade`)
 };
 
-const PHRASE_BARS = 8;          // frase do relógio S1 (f16 §2: "frase de 8 compassos é a unidade")
 const BEATS_PER_BAR = 4;        // degradação sem grelha: 4/4 assumido (f16 §1-1)
 const KICK_EDGE = 0.5;          // aresta do `kickFlash`: subida > 0.5 num frame = bombo novo
 const PENDING_TIMEOUT_S = 3.0;  // troca pendente sem `barTick` há 3 s → executa na mesma (relógio morto)
-const CLOCK_DEAD_S = 1.5;       // sem `beatTick` há 1,5 s → acentos dos chapéus caem para timer próprio
+/* K2b (#5, #8): a frase e o "relógio morto" deixaram de ser constantes locais — são knobs do motor
+   (`MUSIC.sync.phraseBars` / `MUSIC.sync.clockDeadS`, §TUNE do `music.js`), lidos por `SYNC()` a
+   cada frame. Os valores em `SYNC_DEFAULTS` são só o fallback local exigido pela regra 7
+   (k2-contrato §1.1: fallback não é um segundo knob) e têm de ficar iguais aos do motor. */
 
 export function createStardom(CONFIG, deps = {}) {
   const hats = deps.hats || null;
@@ -146,6 +152,10 @@ export function createStardom(CONFIG, deps = {}) {
       reserve: clamp(Math.round(num(s.allOnReservePhrases, SYNC_DEFAULTS.allOnReservePhrases)), 1, 64),
       ballHero: num(s.breakdownBallHero, SYNC_DEFAULTS.breakdownBallHero) >= 0.5,
       bdWash: clamp(num(s.breakdownWash, SYNC_DEFAULTS.breakdownWash), 0, 1),
+      // K2b #8: a frase é do relógio (range do §TUNE 4-16). Inteiro ≥ 1 para nunca dar módulo 0.
+      phraseBars: Math.max(1, clamp(Math.round(num(s.phraseBars, SYNC_DEFAULTS.phraseBars)), 4, 16)),
+      // K2b #5: um só knob para os 4 ficheiros que tinham `CLOCK_DEAD_S = 1.5` (range 0.5-5)
+      clockDeadS: clamp(num(s.clockDeadS, SYNC_DEFAULTS.clockDeadS), 0.5, 5),
     };
   };
 
@@ -296,10 +306,11 @@ export function createStardom(CONFIG, deps = {}) {
      aresta do bombo com 4/4 assumido. Devolve sempre números finitos (regra 7). */
   function readClock(MS, tSec) {
     const c = st.clk;
+    const PB = SYNC().phraseBars;   // K2b #8: frase do relógio pelo knob `sync.phraseBars`
     if (Number.isFinite(MS.beatTick) && Number.isFinite(MS.barTick) && Number.isFinite(MS.phraseTick)) {
       c.beatTick = MS.beatTick; c.barTick = MS.barTick; c.phraseTick = MS.phraseTick;
       c.beatIdx = clamp(Math.round(num(MS.beatIdx, 0)), 0, BEATS_PER_BAR - 1);
-      c.barIdx = clamp(Math.round(num(MS.barIdx, 0)), 0, PHRASE_BARS - 1);
+      c.barIdx = clamp(Math.round(num(MS.barIdx, 0)), 0, PB - 1);
       c.conf = clamp(num(MS.clockConf, num(MS.gridConf, 0)), 0, 1);
       c.ageMs = Math.max(0, num(MS.clockAgeMs, 0));
       c.src = 's1';
@@ -312,21 +323,21 @@ export function createStardom(CONFIG, deps = {}) {
     if (beat) st.dBeat++;
     const haveGrid = !!MS.grid && num(MS.gridConf, 0) > 0.3 && Number.isFinite(MS.bar);
     if (haveGrid) {
-      const bar = Math.round(MS.bar), phrase = Math.round(num(MS.phrase, Math.floor(bar / PHRASE_BARS)));
+      const bar = Math.round(MS.bar), phrase = Math.round(num(MS.phrase, Math.floor(bar / PB)));
       if (st.prevBar >= 0 && bar !== st.prevBar) st.dBar += Math.max(1, Math.abs(bar - st.prevBar));
       if (st.prevPhrase >= 0 && phrase !== st.prevPhrase) st.dPhrase += Math.max(1, Math.abs(phrase - st.prevPhrase));
       st.prevBar = bar; st.prevPhrase = phrase;
       c.barTick = st.dBar; c.phraseTick = st.dPhrase;
-      c.barIdx = ((bar % PHRASE_BARS) + PHRASE_BARS) % PHRASE_BARS;
+      c.barIdx = ((bar % PB) + PB) % PB;
       c.beatIdx = clamp(Math.floor(num(MS.beatPhase, 0) * BEATS_PER_BAR), 0, BEATS_PER_BAR - 1);
       c.conf = clamp(num(MS.gridConf, 0), 0, 1);
       c.src = 'grelha';
     } else {
       // sem grelha: 4/4 assumido a partir do bombo — o relógio não congela (f16 §1-1)
       c.barTick = Math.floor(st.dBeat / BEATS_PER_BAR);
-      c.phraseTick = Math.floor(c.barTick / PHRASE_BARS);
+      c.phraseTick = Math.floor(c.barTick / PB);
       c.beatIdx = st.dBeat % BEATS_PER_BAR;
-      c.barIdx = c.barTick % PHRASE_BARS;
+      c.barIdx = c.barTick % PB;
       c.conf = 0.25;
       c.src = 'bombo';
     }
@@ -356,7 +367,8 @@ export function createStardom(CONFIG, deps = {}) {
       if (tSec >= st.autoNextAt) {
         st.autoNextAt = tSec + autoS;
         // o relógio autónomo conta como um compasso (para a reserva e o hold não ficarem parados)
-        st.clk.barTick++; if (st.clk.barTick % PHRASE_BARS === 0) st.clk.phraseTick++;
+        const pb = SYNC().phraseBars;   // K2b #8
+        st.clk.barTick++; if (st.clk.barTick % pb === 0) st.clk.phraseTick++;
         setStar(pickStar('GROOVE', 1), tSec, 'auto');
       }
       st.fsm = 'GROOVE';
@@ -449,7 +461,7 @@ export function createStardom(CONFIG, deps = {}) {
 
     if (st.star === 'hats' || st.star === 'all') {
       const kind = st.hatsGesture ? 'seq' : 'all';
-      const clockAlive = (tSec - st.lastBeatAt) < CLOCK_DEAD_S;
+      const clockAlive = (tSec - st.lastBeatAt) < SYNC().clockDeadS;   // K2b #5
       if (clockAlive && MS) {
         if (!edges.beat) return;
         // bpm real (bpmEst é PERÍODO em ms — mapa-frentes §1) → quantos tempos por acento

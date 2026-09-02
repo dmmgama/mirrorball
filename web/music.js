@@ -472,8 +472,16 @@ const MUSIC = {
    * (`beatIdx` 0-3, `barIdx` 0-7) + `clockConf`/`clockAgeMs`. Só este ficheiro escreve; as peças
    * da sala leem por poll e detetam a aresta por delta (como já fazem com `snareCount`). */
   sync: {
+    // K2b (#8): também o estrelato (`stardom.js`) lê este knob por poll — tinha um `PHRASE_BARS=8`
+    // fixo que o ignorava. Quem mexer aqui move o motor E a cena; não voltar a duplicar.
     phraseBars: 8,        // compassos por frase DO RELÓGIO (a grelha mantém os seus 16 para a FSM)
     gridMinConf: 0.30,    // abaixo disto o relógio ignora a grelha e segue o bombo em 4/4
+    /* K2b (#5) — SÓ A CENA o lê (`stardom.js`/`mikado.js`/`hats.js`/`choreo.js`, por poll):
+       "relógio morto" = quanto tempo sem aresta de `beatTick` até a sala assumir que o relógio
+       calou e cair para os seus timers próprios. Vivia como `CLOCK_DEAD_S = 1.5` repetido nos
+       quatro ficheiros; é agora um só knob aqui, e cada um mantém 1.5 apenas como fallback local
+       (regra 7 + `k2-contrato.md` §1.1). O motor não usa este valor. */
+    clockDeadS: 1.5,      // s sem `beatTick` → a cena assume relógio morto (0.5-5)
     /* S2 (f16-sync §3) — lidos pelo estrelato (`stardom.js`) por poll em `MUSIC.sync` */
     allOnReservePhrases: 8,   // frases (de `phraseBars`) entre dois all-on (2-16)
     breakdownBallHero: 0,     // 0 = bola discreta (techno) · 1 = bola+wash protagonistas (disco/pop)
@@ -484,6 +492,12 @@ const MUSIC = {
     /* S4 (f16-sync §1 decisão 4, §2) — blackout pré-drop: gesto `blackout` (ver §BLACKOUT) */
     blackoutMs: 300,          // duração do blackout (100-800); ½ tempo a 128 BPM = 234 ms
     blackoutKeepHaze: 1,      // 1 = o haze fica (não dissipa em 300 ms); 0 = apaga tudo mesmo
+    /* K2b (#11): o `tau` do gesto `blackout` era `[0.04, 0.04]` solto no §BLACKOUT. É um par
+       [subida, descida] do `ease`; a DESCIDA é o ataque (é ela que apaga a sala), a subida é o
+       regresso. Os dois expostos, porque são efeitos diferentes: um corte seco com regresso lento
+       lê-se de outra maneira que um corte seco com regresso seco. */
+    blackoutAttackS: 0.04,    // ataque (descida): 40 ms = corte seco (0.01-0.2)
+    blackoutReleaseS: 0.04,   // regresso (subida) depois do blackout (0.01-0.2)
   },
 
   /* ---- Camada 3: máquina de estados com áudio real, SEM `hint` (§0.1 / ponto 5) ---- */
@@ -597,6 +611,21 @@ const TUNE = {
       { path: 'sync.mikadoBurstMaxBeats',   range: [1, 16], step: 1,  label: 'sync: mikado rajada máx (tempos)' },
       { path: 'sync.blackoutMs',          range: [100, 800], step: 10, label: 'sync: blackout ms' },
       { path: 'sync.blackoutKeepHaze',    range: [0, 1],  step: 1,    label: 'sync: blackout mantém haze (0/1)' },
+      // K2b #11: ataque/regresso do blackout (era `tau = [0.04, 0.04]` solto no §BLACKOUT)
+      { path: 'sync.blackoutAttackS',     range: [0.01, 0.2], step: 0.01, label: 'sync: blackout ataque (s)' },
+      { path: 'sync.blackoutReleaseS',    range: [0.01, 0.2], step: 0.01, label: 'sync: blackout regresso (s)' },
+      // K2b #5: um só knob para o "relógio morto" das 4 peças da cena (só a cena o lê, por poll)
+      { path: 'sync.clockDeadS',          range: [0.5, 5], step: 0.1,  label: 'sync: relógio morto (s)' },
+    ],
+  },
+  /* K2b (#10): as rampas dos gestos vivem em `MUSIC.gesture` desde sempre (logo carregam do JSON),
+     mas não tinham entrada no §TUNE — sem slider `k` e sem validação de limites no merge. Meio-knob
+     fechado aqui; defaults inalterados (0.8 / 1.2). */
+  gestos: {
+    label: 'Gestos (rampas)',
+    knobs: [
+      { path: 'gesture.rampInSec',  range: [0.1, 3], step: 0.05, label: 'gesto: rampa de entrada (s)' },
+      { path: 'gesture.rampOutSec', range: [0.1, 3], step: 0.05, label: 'gesto: rampa de saída (s)' },
     ],
   },
   profile: {
@@ -1912,10 +1941,16 @@ const GESTURES = {
 /* §BLACKOUT (S4, f16-sync §1 decisão 4): "tudo apaga menos o haze". Gesto NOVO, não é o `freeze`
  * com contexto — o freeze mexe no rpm e nos feixes; este apaga focos, feixes e a bola (opacidade
  * ao mínimo) e NÃO toca no rpm (regra 2: com bombo a bola gira sempre; o `spinLock` manda).
- * Súbito por definição: tau 40 ms nos dois sentidos e peso instantâneo (ver `startGesture` `instant`).
+ * Súbito por definição: tau 40 ms nos dois sentidos (knobs `sync.blackoutAttackS`/`blackoutReleaseS`)
+ * e peso instantâneo (ver `startGesture` `instant`).
  * Haze: fica se `sync.blackoutKeepHaze` (default 1 — haze físico não dissipa em 300 ms). */
 GESTURES['blackout'] = () => {
-  const tau = [0.04, 0.04];   // [subida, descida] — a descida é o ataque do blackout: 40 ms
+  /* [subida, descida] do `ease` (core.js: tgt>cur usa tau[0], senão tau[1]). O blackout puxa tudo
+     para baixo → é `tau[1]` que APAGA a sala: `sync.blackoutAttackS`. `tau[0]` é o regresso.
+     K2b #11: eram os dois `0.04` soltos aqui; passam pelo §TUNE (0.01-0.2), defaults inalterados. */
+  const Y = MUSIC.sync || {};
+  const tau = [clamp(Number.isFinite(Y.blackoutReleaseS) ? Y.blackoutReleaseS : 0.04, 0.01, 0.2),
+               clamp(Number.isFinite(Y.blackoutAttackS) ? Y.blackoutAttackS : 0.04, 0.01, 0.2)];
   const p = { spot: { set: 0.0, tau }, beamInt: { set: 0.0, tau }, beams: { set: 0, tau },
               opacity: { set: MUSIC.outMin.opacity, tau } };
   if (!(MUSIC.sync && MUSIC.sync.blackoutKeepHaze >= 0.5)) p.haze = { set: MUSIC.outMin.haze, tau };

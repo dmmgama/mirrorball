@@ -61,7 +61,15 @@ export function createChoreo(CONFIG) {
   const flashes = [];
   /* ---- S3b: relógio S1 lido por poll (aresta por delta dos contadores monotónicos) ----
      Regra 7: tudo nasce com valor. `clock` é diagnóstico ('beatTick' | 'bpmEst' | 'fixo' | 'none'). */
-  const CLOCK_DEAD_S = 1.5;
+  /* K2b #5: "relógio morto" = knob único do motor (`MUSIC.sync.clockDeadS`, §TUNE do music.js),
+     lido por poll; o 1.5 é só o fallback local da regra 7 (k2-contrato §1.1). */
+  const CLOCK_DEAD_FALLBACK_S = 1.5;
+  const clockDeadS = () => {
+    const Mc = (typeof window !== 'undefined' && window.MUSIC && window.MUSIC.config) || null;
+    const y = (Mc && Mc.sync && typeof Mc.sync === 'object') ? Mc.sync : {};
+    const v = num(y.clockDeadS, CLOCK_DEAD_FALLBACK_S);
+    return v < 0.5 ? 0.5 : v > 5 ? 5 : v;
+  };
   const clk = { lastBeatTick: -1, lastBarTick: -1, beatTick: 0, barTick: 0, lastBeatAt: -1e9,
     edgeBeat: false, edgeBar: false, flashNextAt: -1e9, clock: 'none' };
   const MSget = () => (typeof window !== 'undefined' && window.MUSIC && window.MUSIC.state) || null;
@@ -104,7 +112,7 @@ export function createChoreo(CONFIG) {
     const dwell = pair(C.dwell, 4, 12);
     nowS += dt;
     const MS = pollClock(nowS);
-    const alive = !!MS && (nowS - clk.lastBeatAt) < CLOCK_DEAD_S;
+    const alive = !!MS && (nowS - clk.lastBeatAt) < clockDeadS();   // K2b #5
     const barS = beatPeriodS(MS) * 4;   // 4/4 assumido (o relógio S1 já conta assim sem grelha)
 
     for (let i = 0; i < S.length; i++) {

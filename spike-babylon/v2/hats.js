@@ -374,10 +374,18 @@ export function createHats(scene, CONFIG) {
      desligado sempre que o estrelato está montado e ligado; só volta em modo MANUAL (sem estrelato:
      `estrelato (0/1)` a 0 ou módulo falhou) — e mesmo aí sem dados: passos quantizados ao
      `beatTick` quando há relógio, ao período do bombo (`bpmEst` é PERÍODO em ms) quando há música
-     mas o relógio calou há 1,5 s, e a cadência fixa `60/flashPerMin` quando não há música nenhuma
+     mas o relógio calou há `sync.clockDeadS`, e a cadência fixa `60/flashPerMin` sem música nenhuma
      (é o que o David vê ao mexer nos knobs em silêncio). O Poisson e o timer da onda foram abatidos.
      Regra 7: tudo nasce com valor. */
-  const AUTO_CLOCK_DEAD_S = 1.5;
+  /* K2b #5: o "relógio morto" é um só knob do motor (`MUSIC.sync.clockDeadS`, §TUNE do music.js),
+     lido por poll. O 1.5 é o fallback local da regra 7 — a cena tem de arrancar sem motor, sem
+     tuner e sem ficheiro (k2-contrato §1.1: o fallback não é um segundo knob). */
+  const CLOCK_DEAD_FALLBACK_S = 1.5;
+  const clockDeadS = () => {
+    const Mc = (typeof window !== 'undefined' && window.MUSIC && window.MUSIC.config) || null;
+    const y = (Mc && Mc.sync && typeof Mc.sync === 'object') ? Mc.sync : {};
+    return clamp(num(y.clockDeadS, CLOCK_DEAD_FALLBACK_S), 0.5, 5);
+  };
   const auto = { lastBeatTick: -1, lastBeatAt: -1e9, nextAt: -1e9, edge: false };
   const MSget = () => (typeof window !== 'undefined' && window.MUSIC && window.MUSIC.state) || null;
   // diagnóstico (HUD/consola): quem escreveu o último gesto e com que relógio
@@ -485,7 +493,7 @@ export function createHats(scene, CONFIG) {
     }
     if (MS && MS.silent === true) { diag.clock = 'silêncio'; return; }   // parada suave: nada a bater
 
-    if ((t - auto.lastBeatAt) < AUTO_CLOCK_DEAD_S) {
+    if ((t - auto.lastBeatAt) < clockDeadS()) {
       diag.clock = 'beatTick';
       if (!auto.edge) return;
       const periodMs = num(MS.bpmEst, 0) > 0 ? MS.bpmEst : 60000 / 128;   // bpmEst = PERÍODO em ms

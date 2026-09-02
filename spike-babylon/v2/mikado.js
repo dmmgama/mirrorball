@@ -684,7 +684,7 @@ export function createMikado(scene, CONFIG) {
        RAJADA MÁXIMA (drop) só uma vez por `mikadoCooldownPhrases` frases. Sem tick há 1,5 s
        cai para a cadência do bombo (`bpmEst` é PERÍODO em ms) ou para o repouso. */
     lastBeatTick: -1, lastBarTick: -1, lastPhraseTick: -1,   // últimos valores lidos (-1 = nunca)
-    lastBeatAt: -1e9,      // tSec da última aresta de beatTick (relógio morto se > CLOCK_DEAD_S)
+    lastBeatAt: -1e9,      // tSec da última aresta de beatTick (relógio morto se > `sync.clockDeadS`)
     edgeBeat: false, edgeBar: false, edgePhrase: false,       // arestas DESTE frame
     beatTick: 0, barTick: 0, phraseTick: 0,                   // cópia finita do relógio
     snarePending: false,   // houve tarola desde a última aresta de tempo (acento por quantizar)
@@ -696,9 +696,11 @@ export function createMikado(scene, CONFIG) {
     writer: 'auto',        // diagnóstico: 'estrelato' (gain publicado) | 'auto' (sem estrelato)
     lastBurst: { cause: '', at: -1e9, flashes: 0, max: false },
   };
-  const CLOCK_DEAD_S = 1.5;          // sem `beatTick` há 1,5 s → o relógio morreu (mesmo valor de hats.js)
   const DROP_SNAP_S = 0.15;          // drop lido até 150 ms depois de uma aresta de tempo dispara já
-  const SYNC_DEFAULTS = { mikadoCooldownPhrases: 2, mikadoBurstMaxBeats: 4 };
+  /* K2b #5: o antigo `CLOCK_DEAD_S = 1.5` local (repetido em stardom/hats/choreo) passou a ser um
+     só knob do motor, `MUSIC.sync.clockDeadS`. O 1.5 aqui é apenas o fallback da regra 7
+     (k2-contrato §1.1: o fallback não é um segundo knob) e tem de ficar igual ao default do motor. */
+  const SYNC_DEFAULTS = { mikadoCooldownPhrases: 2, mikadoBurstMaxBeats: 4, clockDeadS: 1.5 };
   /* knobs S3b: `MUSIC.sync` (music.js §TUNE, tuner `k`); sem motor → defaults. */
   const SYNC = () => {
     const Mc = (typeof window !== 'undefined' && window.MUSIC && window.MUSIC.config) || null;
@@ -706,6 +708,7 @@ export function createMikado(scene, CONFIG) {
     return {
       cooldown: clamp(Math.round(num(y.mikadoCooldownPhrases, SYNC_DEFAULTS.mikadoCooldownPhrases)), 0, 16),
       maxBeats: clamp(num(y.mikadoBurstMaxBeats, SYNC_DEFAULTS.mikadoBurstMaxBeats), 1, 16),
+      clockDeadS: clamp(num(y.clockDeadS, SYNC_DEFAULTS.clockDeadS), 0.5, 5),   // K2b #5
     };
   };
   const MSget = () => (typeof window !== 'undefined' && window.MUSIC && window.MUSIC.state) || null;
@@ -824,7 +827,7 @@ export function createMikado(scene, CONFIG) {
      Dispara no máximo UMA rajada por chamada (nunca rajadas por dt gigante). */
   function schedule(MS, tSec) {
     const cfg = M();
-    const alive = !!MS && (tSec - st.lastBeatAt) < CLOCK_DEAD_S;
+    const alive = !!MS && (tSec - st.lastBeatAt) < SYNC().clockDeadS;   // K2b #5
 
     // sorteio do bloco: só em `barTick` (modo "blocos"); dentro da rajada avança sequencialmente
     if (st.edgeBar && Math.round(num(cfg.mode, 0)) >= 1) {
