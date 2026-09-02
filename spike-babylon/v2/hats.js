@@ -15,7 +15,8 @@
 // escuro + VIDRO no plano de corte + CALOTE CÔNCAVA emissiva por dentro do vidro (a lâmpada),
 // inclinada para a pista — ver o bloco "FORMA DO CHAPÉU" em buildHat() para a construção e para o
 // que estava errado antes. O dourado quente é contínuo ('chapéus: brilho') e a lâmpada
-// pisca RARAMENTE (Poisson no CONJUNTO TODO, não por chapéu —
+// pisca RARAMENTE (S3a/S14: já NÃO é Poisson — quem manda é o relógio S1 via estrelato; em modo
+// manual a cadência é fixa/quantizada — ver o bloco "UM ESCRITOR" em createHats; historicamente —
 // pedido do David: "piscam só às vezes") — o flash sobe o emissivo do chapéu que piscou E acende uma
 // PointLight fraca nele por 0.1-0.3 s, QUE ILUMINA A SALA (pilares/chão/paredes — a bola vê esse
 // reflexo indireto via o ReflectionProbe). A PointLight NÃO ilumina a bola diretamente — ela exclui
@@ -328,7 +329,8 @@ export function createHats(scene, CONFIG) {
 
      Estado por chapéu continua a ser `{age, life}` (envelope 1→0), porque é isso que dá o flash
      seco; o que muda é QUEM se acende:
-       modo 0 (sozinhos)  — Poisson da F8, um chapéu livre à sorte. É o repouso da sala.
+       modo 0 (sozinhos)  — um chapéu livre à sorte (o random escolhe QUAL; o QUANDO era Poisson
+                            até ao S3a/S14 — agora é o relógio). É o repouso da sala.
        modo 1 (juntos)    — todos os `n` chapéus montados no mesmo instante.
        modo 2 (sequência) — um PASSO de cada vez: em cada passo acendem os DOIS chapéus (um por
                             fila) que estão à mesma distância do topo da sala. As filas avançam em
@@ -365,6 +367,29 @@ export function createHats(scene, CONFIG) {
   /* estado da sequência ponta-a-ponta. `cursor` = índice do PAR (0..perLine-1), `dir` = sentido.
      Regra 7 (NaN-safe): tudo nasce com valor. */
   const seq = { cursor: 0, dir: 1, nextAt: -1e9, lastGestAt: -1e9 };
+  /* ---- S3a (S14): UM ESCRITOR + RELÓGIO S1 (docs/f16-sync.md §1 decisões 2, 7, 8, 9) ----
+     Quem decide QUANDO os chapéus flasham é o relógio único do motor (`MUSIC.state.beatTick/
+     barTick/phraseTick`, W3) e quem decide O QUÊ é o estrelato (`stardom.driveHats`, W4). hats.js
+     só EXECUTA (`pulse`). O agendador autónomo (Poisson `flashPerMin` + onda com timer
+     `seqStepMs`) era o SEGUNDO escritor apontado pelo audit (audit-sync-motor.md §c/§e-4) e fica
+     desligado sempre que o estrelato está montado e ligado; só volta em modo MANUAL (sem estrelato:
+     `estrelato (0/1)` a 0 ou módulo falhou) — e mesmo aí sem dados: passos quantizados ao
+     `beatTick` quando há relógio, ao período do bombo (`bpmEst` é PERÍODO em ms) quando há música
+     mas o relógio calou há 1,5 s, e a cadência fixa `60/flashPerMin` quando não há música nenhuma
+     (é o que o David vê ao mexer nos knobs em silêncio). O Poisson e o timer da onda foram abatidos.
+     Regra 7: tudo nasce com valor. */
+  const AUTO_CLOCK_DEAD_S = 1.5;
+  const auto = { lastBeatTick: -1, lastBeatAt: -1e9, nextAt: -1e9, edge: false };
+  const MSget = () => (typeof window !== 'undefined' && window.MUSIC && window.MUSIC.state) || null;
+  // diagnóstico (HUD/consola): quem escreveu o último gesto e com que relógio
+  const diag = { writer: 'manual', clock: 'none', lastKind: '', lastAt: -1e9, pulses: 0 };
+  /* `act` (regra 4, f16 §1-8): densidade espectral → DENSIDADE do gesto. A cadência já escala com
+     `act` no estrelato; aqui escala quantos chapéus entram num 'all' (fração 0,5-1, do centro da
+     sala para as pontas — determinístico, sem sorteio). Sem motor → 1. */
+  function actNow() {
+    const MS = MSget();
+    return MS && MS.act != null ? clamp(num(MS.act, 1), 0, 1) : 1;
+  }
 
   /* acende UM chapéu (respeitando o teto de 3 Hz por fixture). `life` em segundos. */
   function igniteHat(i, tSec, life) {
@@ -396,20 +421,92 @@ export function createHats(scene, CONFIG) {
     if (kind === 'all') {
       if (t - seq.lastGestAt < SEQ_MIN_MS / 1000) return false;
       seq.lastGestAt = t;
+      /* S3a: densidade por `act` — com pouca informação espectral acendem só os pares do MEIO da
+         sala (fração 0,5-1 dos pares, por fila simétrica); com muita, todos. Determinístico. */
+      const perLine = Math.ceil(n / 2);
+      const pairs = Math.max(1, Math.round(perLine * (0.5 + 0.5 * actNow())));
+      const mid = (perLine - 1) / 2;
+      // pares ordenados pela distância ao meio da sala (empate → o de Z menor); ficam os `pairs` 1.ºs
+      const order = [];
+      for (let k = 0; k < perLine; k++) order.push(k);
+      order.sort((a, b) => (Math.abs(a - mid) - Math.abs(b - mid)) || (a - b));
       let any = false;
-      for (let i = 0; i < n; i++) if (igniteHat(i, t, life)) any = true;
+      for (let j = 0; j < pairs && j < order.length; j++) {
+        const k = order[j];
+        if (igniteHat(k, t, life)) any = true;
+        const mirror = perLine + k;
+        if (mirror < n && igniteHat(mirror, t, life)) any = true;
+      }
+      noteWrite(kind, t);
       return any;
     }
     if (kind === 'seq') {
       if (t - seq.lastGestAt < SEQ_MIN_MS / 1000) return false;
       seq.lastGestAt = t;
+      noteWrite(kind, t);
       return stepSequence(n, t, life);
     }
     // 'one' (ou desconhecido): um chapéu livre à sorte — o gesto discreto da F8
     const free = [];
     for (let i = 0; i < n; i++) if (!flashState[i]) free.push(i);
     if (!free.length) return false;
+    noteWrite('one', t);
     return igniteHat(free[(Math.random() * free.length) | 0], t, life);
+  }
+  /* regista quem mandou (para o HUD): se o estrelato está montado, é ele; senão o agendador local. */
+  function noteWrite(kind, t) {
+    diag.lastKind = kind; diag.lastAt = t; diag.pulses++;
+    diag.writer = hasCommander() ? 'estrelato' : 'auto';
+  }
+  /* o estrelato está montado E ligado? (é ele o único escritor nesse caso) */
+  function hasCommander() {
+    const S = CONFIG.stardom;
+    return !!(S && S.on !== false && S.gain);
+  }
+
+  /* ---- S3a: agendador LOCAL (só sem estrelato) — quantizado, sem Poisson, sem timer da onda ----
+     `wantHz` vem dos knobs manuais: modo 2 → 1000/`seqStepMs`; modos 0/1 → `flashPerMin`/60.
+     Ordem de preferência do relógio: beatTick vivo → múltiplo do período do bombo → cadência fixa.
+     Dispara `pulse` no máximo uma vez por chamada (nunca rajadas por dt gigante). */
+  function autoSchedule(cfg, n, t, dt) {
+    const mode = Math.round(num(cfg.flashMode, 0));
+    const perMin = Math.max(0, num(cfg.flashPerMin, 8));
+    if (perMin <= 0) { diag.clock = 'off'; return; }   // 0 = nunca (também trava a onda, como antes)
+    const wantHz = mode === 2
+      ? 1000 / Math.max(SEQ_MIN_MS, num(cfg.seqStepMs, 380))
+      : perMin / 60;
+    const kind = mode === 2 ? 'seq' : mode === 1 ? 'all' : 'one';
+    const MS = MSget();
+
+    // aresta do relógio S1 (beatTick monotónico) — só marca, quem decide é abaixo
+    auto.edge = false;
+    if (MS && Number.isFinite(MS.beatTick)) {
+      if (auto.lastBeatTick >= 0 && MS.beatTick > auto.lastBeatTick) { auto.edge = true; auto.lastBeatAt = t; }
+      auto.lastBeatTick = MS.beatTick;
+    }
+    if (MS && MS.silent === true) { diag.clock = 'silêncio'; return; }   // parada suave: nada a bater
+
+    if ((t - auto.lastBeatAt) < AUTO_CLOCK_DEAD_S) {
+      diag.clock = 'beatTick';
+      if (!auto.edge) return;
+      const periodMs = num(MS.bpmEst, 0) > 0 ? MS.bpmEst : 60000 / 128;   // bpmEst = PERÍODO em ms
+      const beatHz = 1000 / periodMs;
+      const div = Math.max(1, Math.round(beatHz / Math.max(0.05, wantHz)));
+      if (MS.beatTick % div !== 0) return;
+      pulse(kind, t);
+      auto.nextAt = t + 1 / Math.max(0.05, wantHz);
+      return;
+    }
+    // sem tick: cadência própria — múltiplo do tempo se há bombo estimado, senão fixa
+    let period = 1 / Math.max(0.05, wantHz);
+    if (MS && num(MS.bpmEst, 0) > 0) {
+      const beatS = MS.bpmEst / 1000;
+      period = Math.max(beatS, Math.round(period / beatS) * beatS);
+      diag.clock = 'bpmEst';
+    } else {
+      diag.clock = 'fixo';
+    }
+    if (t >= auto.nextAt) { auto.nextAt = t + Math.max(1 / 3, period); pulse(kind, t); }
   }
 
   /* UM passo da sequência ponta-a-ponta. As duas filas são espelho uma da outra: `positions()`
@@ -481,6 +578,7 @@ export function createHats(scene, CONFIG) {
          posicionar/ativar tudo no loop abaixo, por isso não há nada a repor à mão. */
       for (let i = 0; i < N; i++) { flashState[i] = null; liveLightRank[i] = false; }
       flashAcc = 0; seq.cursor = 0; seq.dir = 1; seq.nextAt = -1e9;
+      auto.lastBeatTick = -1; auto.lastBeatAt = -1e9; auto.nextAt = -1e9; auto.edge = false;
       return;
     }
     const glow = clamp(num(cfg.glow, 0.35), 0, 3);
@@ -498,35 +596,20 @@ export function createHats(scene, CONFIG) {
     })();
     const flashGainNow = Math.max(0, num(cfg.flashGain, 4.2)) * starHats;
 
-    /* ---- F12 §4: agendador AUTÓNOMO dos chapéus ----
-       `flashPerMin` continua a ser a taxa TOTAL do conjunto (Poisson), agora com um `modo` que
-       decide o GESTO de cada disparo. É este caminho que corre sem motor de música (e o que o David
-       vê ao mexer nos knobs em silêncio); com motor, o estrelato (stardom.js) chama `pulse()` por
-       cima disto — os dois convivem porque `igniteHat` impõe o teto de 3 Hz por fixture.
-       Modo 2 (sequência) NÃO usa o Poisson para o ritmo: a sequência tem cadência PRÓPRIA
-       (`seqStepMs`), senão os passos vinham irregulares e não se lia como uma onda; o Poisson passa
-       a decidir só quando é que a onda ARRANCA. Para simplificar e ficar previsível para o David,
-       em modo 2 a onda corre em contínuo enquanto `flashPerMin > 0`. */
+    /* ---- agendamento: UM ESCRITOR (S3a, S14) ----
+       Com o estrelato montado e ligado, NADA se agenda aqui — `stardom.driveHats` chama `pulse()`
+       nas arestas do relógio S1 (acentos em `beatTick`, apoio em `barTick`) e os knobs manuais
+       `flash /min` / `modo` / `sequência ms/passo` ficam INERTES (são do modo manual). Sem
+       estrelato, o agendador local `autoSchedule` corre — quantizado ao relógio, sem Poisson.
+       (Antes, o Poisson `flashAcc` e a onda `seq.nextAt` corriam SEMPRE por baixo do estrelato:
+       era o duplo comando do audit; `igniteHat` só garantia os 3 Hz, não a coerência.) */
     const t = Number.isFinite(tSec) ? tSec : 0;
-    const mode = Math.round(num(cfg.flashMode, 0));
-    const rate = Math.max(0, num(cfg.flashPerMin, 8)) / 60;
-
-    if (mode === 2) {
-      if (rate > 0) {
-        const stepS = Math.max(SEQ_MIN_MS, num(cfg.seqStepMs, 380)) / 1000;
-        if (t >= seq.nextAt) {
-          seq.nextAt = t + stepS;
-          stepSequence(n, t, flashLifeOf(cfg));
-        }
-      }
+    if (hasCommander()) {
+      diag.writer = 'estrelato';
+      diag.clock = 'stardom';
+      flashAcc = 0; seq.nextAt = -1e9;   // o modo manual retoma limpo se o estrelato for desligado
     } else {
-      flashAcc += dt * rate;
-      if (flashAcc > 8) flashAcc = 8; // guarda: dt gigante não deve gerar rajada
-      while (flashAcc >= 1) {
-        flashAcc -= 1;
-        if (mode === 1) pulse('all', t);   // todos juntos
-        else pulse('one', t);              // o gesto discreto da F8
-      }
+      autoSchedule(cfg, n, t, dt);
     }
 
     /* ---- pré-passo: QUAIS os chapéus que podem acender uma PointLight neste frame ----
@@ -634,6 +717,13 @@ export function createHats(scene, CONFIG) {
        sequência ponta-a-ponta simétrica · 'one' = um chapéu (flash auxiliar discreto).
        O motor NUNCA liga/desliga chapéus — se o David os tiver desligados, isto devolve false. */
     pulse,
+    /* S3a (diagnóstico, HUD `h`/consola): quem mandou o último gesto ('estrelato' | 'auto' |
+       'manual'), que relógio o agendador local está a usar ('stardom' quando é o estrelato a
+       mandar; 'beatTick' | 'bpmEst' | 'fixo' | 'silêncio' | 'off' em modo manual), último gesto,
+       instante e total de gestos. */
+    get writer() { return diag.writer; },
+    get clock() { return diag.clock; },
+    get lastGesture() { return { kind: diag.lastKind, at: diag.lastAt, pulses: diag.pulses }; },
     // quantos chapéus estão MONTADOS agora (o estrelato usa isto para saber se são elegíveis)
     get mountedCount() {
       const cfg = H();
