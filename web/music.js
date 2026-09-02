@@ -481,6 +481,9 @@ const MUSIC = {
     /* S3b (f16-sync §2-3) — lidos pelo mikado (`mikado.js`) por poll em `MUSIC.sync` */
     mikadoCooldownPhrases: 2, // frases (de `phraseBars`) entre duas rajadas MÁXIMAS do mikado (drop)
     mikadoBurstMaxBeats: 4,   // comprimento máx. da rajada do drop, em tempos (teto 3 Hz mantém-se)
+    /* S4 (f16-sync §1 decisão 4, §2) — blackout pré-drop: gesto `blackout` (ver §BLACKOUT) */
+    blackoutMs: 300,          // duração do blackout (100-800); ½ tempo a 128 BPM = 234 ms
+    blackoutKeepHaze: 1,      // 1 = o haze fica (não dissipa em 300 ms); 0 = apaga tudo mesmo
   },
 
   /* ---- Camada 3: máquina de estados com áudio real, SEM `hint` (§0.1 / ponto 5) ---- */
@@ -592,6 +595,8 @@ const TUNE = {
       { path: 'sync.breakdownWash',       range: [0, 1],  step: 0.05, label: 'sync: breakdown wash' },
       { path: 'sync.mikadoCooldownPhrases', range: [1, 8], step: 1,   label: 'sync: mikado cool-down (frases)' },
       { path: 'sync.mikadoBurstMaxBeats',   range: [1, 16], step: 1,  label: 'sync: mikado rajada máx (tempos)' },
+      { path: 'sync.blackoutMs',          range: [100, 800], step: 10, label: 'sync: blackout ms' },
+      { path: 'sync.blackoutKeepHaze',    range: [0, 1],  step: 1,    label: 'sync: blackout mantém haze (0/1)' },
     ],
   },
   profile: {
@@ -947,6 +952,9 @@ const state = {
   // gestos
   gest: null, gestQueue: [], gestWeight: 0, gestUntil: 0, gestLast: null,
   gestNextGrooveBar: 24, gestCount: 0, gestSeen: {},
+  // §BLACKOUT (S4): um por drop. Tudo finito à nascença (regra 7).
+  blackoutCount: 0, blackoutAtDrop: -1, blackoutLastBeatTick: -1, blackoutT0: 0,
+  blackoutRearmPhrase: -1,   // PRE_DROP falhado (saiu sem drop): rearma uma frase depois (-1 = não armado)
   // saída
   out: null, target: {}, health: 1,
   owner: null, handoverT: 0, skinForced: false,
@@ -975,6 +983,11 @@ function setState(next, why) {
   state.fsmSince = MB_CLOCK.now();
   state.fsmBar = state.bar;
   if (next === 'DROP' && MUSIC.strobe && MUSIC.strobe.dropEnter > 0) fireStrobe('drop', MUSIC.strobe.dropEnter);
+  if (next === 'PRE_DROP') state.blackoutLastBeatTick = state.beatTick;   // §BLACKOUT: só ticks DEPOIS de entrar contam
+  // §BLACKOUT: um PRE_DROP que sai SEM drop (timeout → BUILD) gastou a munição em falso; o técnico
+  // volta a apagar no drop a sério, mas não a seguir — rearma só uma frase do relógio depois.
+  if (prev === 'PRE_DROP' && next !== 'DROP') state.blackoutRearmPhrase = state.phraseTick + 1;
+  if (next === 'DROP') state.blackoutRearmPhrase = -1;
   const DARK = next === 'BREAKDOWN' || next === 'BUILD' || next === 'PRE_DROP';
   const wasDark = prev === 'BREAKDOWN' || prev === 'BUILD' || prev === 'PRE_DROP';
   if (DARK && !wasDark) state.darkSince = state.fsmSince;
@@ -1633,6 +1646,7 @@ function strobeRate() { const MB = (typeof window !== 'undefined') && window.MIR
 function fireStrobe(why, n) {
   const S = MUSIC.strobe, MB = (typeof window !== 'undefined') && window.MIRRORBALL;
   if (!S || !S.on || !MB || typeof MB.strobe !== 'function' || !(MB.strobeEnabled && MB.strobeEnabled())) return;
+  if (blackoutActive()) return;                                        // §BLACKOUT: escuro é escuro
   // knob `strobe: frequência ×` do painel d: < 1 = sorteio para deixar passar só essa fração; > 1 encurta o intervalo em GROOVE (abaixo)
   const rate = strobeRate();
   if (rate <= 0 || (rate < 1 && RNG2() > rate)) return;
@@ -1652,6 +1666,7 @@ function fireStrobe(why, n) {
 function fireFlash(why, n) {
   const F = MUSIC.flash, MB = (typeof window !== 'undefined') && window.MIRRORBALL;
   if (!F || !F.on || !MB || typeof MB.flash !== 'function' || MB.config.spotsMotor === false) return;
+  if (blackoutActive()) return;                                        // §BLACKOUT: escuro é escuro
   const now = MB_CLOCK.now();
   if (now - state.lastFlashT < F.minGapMs) return;
   const k = Math.max(1, n | 0);
@@ -1894,6 +1909,18 @@ const GESTURES = {
     spot: { set: 0.25 }, haze: { set: 0.95 }, beamInt: { set: 0.14 }, beams: { set: 26 },
   }),
 };
+/* §BLACKOUT (S4, f16-sync §1 decisão 4): "tudo apaga menos o haze". Gesto NOVO, não é o `freeze`
+ * com contexto — o freeze mexe no rpm e nos feixes; este apaga focos, feixes e a bola (opacidade
+ * ao mínimo) e NÃO toca no rpm (regra 2: com bombo a bola gira sempre; o `spinLock` manda).
+ * Súbito por definição: tau 40 ms nos dois sentidos e peso instantâneo (ver `startGesture` `instant`).
+ * Haze: fica se `sync.blackoutKeepHaze` (default 1 — haze físico não dissipa em 300 ms). */
+GESTURES['blackout'] = () => {
+  const tau = [0.04, 0.04];   // [subida, descida] — a descida é o ataque do blackout: 40 ms
+  const p = { spot: { set: 0.0, tau }, beamInt: { set: 0.0, tau }, beams: { set: 0, tau },
+              opacity: { set: MUSIC.outMin.opacity, tau } };
+  if (!(MUSIC.sync && MUSIC.sync.blackoutKeepHaze >= 0.5)) p.haze = { set: MUSIC.outMin.haze, tau };
+  return p;
+};
 const GESTURE_NAMES = Object.keys(GESTURES);
 
 function pickGesture(pool) {
@@ -1908,8 +1935,8 @@ function startGesture(name, why, opts) {
   const bars = o.bars != null ? o.bars : Math.round(rngRange(MUSIC.gesture.barsRange));
   const secs = o.secs != null ? o.secs : rngRange(MUSIC.gesture.secRange);
   const barMs = state.bpmEst ? state.bpmEst * MUSIC.bpm.beatsPerBar : 1900;
-  const durMs = haveGrid ? bars * barMs : secs * 1000;
-  state.gest = { name, t0: nowL, until: nowL + durMs, period: rngRange([20, 30]), why };
+  const durMs = o.ms != null ? o.ms : haveGrid ? bars * barMs : secs * 1000;   // `ms`: duração absoluta (§BLACKOUT)
+  state.gest = { name, t0: nowL, until: nowL + durMs, period: rngRange([20, 30]), why, instant: !!o.instant };
   state.gestLast = name;
   state.gestCount++;
   state.gestSeen[name] = (state.gestSeen[name] || 0) + 1;
@@ -1939,8 +1966,49 @@ function updateGestures(nowL, dt) {
     else state.gest = null;
   }
   const want = state.gest ? 1 : 0;
+  // `instant` (§BLACKOUT): sem rampa de entrada — um blackout de 300 ms com rampa de 0.8 s nunca
+  // chegaria a ser escuro. A saída continua por rampa (`rampOutSec`), ou é atropelada pelo `all-on`.
+  if (want && state.gest.instant) { state.gestWeight = 1; return; }
   const tau = want ? MUSIC.gesture.rampInSec : MUSIC.gesture.rampOutSec;
   state.gestWeight = ease(state.gestWeight, want, [tau, tau], dt);
+}
+
+/* ==================== §BLACKOUT — quando disparar (S4, f16-sync §1-2) ====================
+ * Só em PRE_DROP (nunca GROOVE/BREAKDOWN), UM por drop (`blackoutAtDrop` guarda o `dropCount`
+ * em que disparou: PRE_DROP → BUILD → PRE_DROP sem drop no meio não dispara segundo).
+ *  · relógio com grelha e confiante: no ÚLTIMO tempo antes da fronteira de frase — o drop
+ *    previsto pela FSM (`barsToPhraseEnd`), i.e. quando faltam ≤ 1 tempo. É o `beatTick`
+ *    imediatamente antes do drop (§2: disparar o mais tarde possível gasta menos escuridão).
+ *  · relógio degradado (`kick`/`none`, ou conf abaixo de `gridMinConf`): no primeiro `beatTick`
+ *    depois de entrar em PRE_DROP.
+ * Se o drop chega ANTES do último tempo (bombo volta cedo), não há blackout — zero é permitido,
+ * dois não. Exceção: PRE_DROP falhado (timeout → BUILD) rearma uma frase depois — o blackout em
+ * falso não pode roubar o do drop verdadeiro. Duração `sync.blackoutMs` (100-800, teto duro).
+ * O `all-on` do DROP atropela-o. */
+function blackoutActive() { return !!(state.gest && state.gest.name === 'blackout'); }
+function updateBlackout(nowL) {
+  if (state.fsm !== 'PRE_DROP' || MUSIC.profile !== 'electronica') return;
+  const spent = state.blackoutAtDrop === state.dropCount;               // já houve um para este drop…
+  const rearmed = state.blackoutRearmPhrase >= 0 && state.phraseTick >= state.blackoutRearmPhrase;
+  if (spent && !rearmed) return;                                        // …e não foi em falso há ≥ 1 frase
+  const Y = MUSIC.sync;
+  const tickEdge = state.beatTick !== state.blackoutLastBeatTick;
+  state.blackoutLastBeatTick = state.beatTick;
+  const bpb = (state.grid && state.grid.beatsPerBar) || MUSIC.bpm.beatsPerBar;
+  const confident = state.clockSrc === 'grid' && state.clockConf >= Y.gridMinConf;
+  let fire;
+  if (confident) {
+    const beatsLeft = barsToPhraseEnd() * bpb;
+    fire = Number.isFinite(beatsLeft) && beatsLeft <= 1.0;
+  } else fire = tickEdge;
+  if (!fire) return;
+  const ms = clamp(Number.isFinite(Y.blackoutMs) ? Y.blackoutMs : 300, 100, 800);
+  state.gestQueue.length = 0;                                           // o que vinha encadeado já não interessa: o drop é já
+  startGesture('blackout', `pré-drop (${confident ? 'último tempo' : 'bombo'})`, { ms, instant: true });
+  state.blackoutAtDrop = state.dropCount;
+  state.blackoutRearmPhrase = -1;
+  state.blackoutCount++;
+  state.blackoutT0 = nowL;
 }
 function applyGesture(T) {
   const g = state.gest;
@@ -2216,7 +2284,8 @@ function applyToBall(o, gestInfo) {
    * por um release de 2 s é a definição de o tornar inaudível. Fração do que FALTA até 1, por
    * isso o teto nunca é excedido e o acento é maior justamente quando há espaço para ele. */
   const opDip = o.opacity * (1 - MUSIC.hat.opacityDip * (state.hatLevel || 0));
-  const opAcc = opDip + (1 - opDip) * MUSIC.snare.opacityKick * (state.snareAccent || 0);
+  const opAcc = blackoutActive() ? opDip                                   // §BLACKOUT: a tarola não acende a bola
+                                 : opDip + (1 - opDip) * MUSIC.snare.opacityKick * (state.snareAccent || 0);
   if (C.opacityMotor !== false) C.sphereOpacity = clamp(opAcc, MUSIC.outMin.opacity, 1);   // override do painel d ('opacidade: motor manda' = 0)
   /* §3.6: com o motor a mandar nos focos, os relógios INTERNOS da bola calam-se — os fades
    * (11/17/13 s) não são períodos musicais e os flashes Poisson (0.6/s) não são música; em `music`
@@ -2286,6 +2355,7 @@ function update(nowL) {
   const gridLive = updateGrid(nowL);
   updateClock(nowL, gridLive);
   updateFsm(nowL, dt);
+  updateBlackout(nowL);        // §BLACKOUT (S4): depois da FSM (estado atual), antes do peso do gesto
   updateGestures(nowL, dt);
   computeTargets();
   const gestInfo = applyGesture(state.target);
@@ -2351,7 +2421,11 @@ function update(nowL) {
     // garantir) não pode ser usado para o travar — o piso já está no alvo, aqui é o easing
     if (k === 'rpm' && spinLocked && gt) tau = MUSIC.tau.rpm;
     const slowAct = k === 'rpm' ? 1 : lerp(MUSIC.activity.slowMax, 1, state.act == null ? 1 : state.act);
-    o[k] = ease(o[k], state.target[k], [tau[0] * slow * slowAct, tau[1] * slow * slowAct], dt);
+    // §BLACKOUT: os taus de um gesto `instant` são ABSOLUTOS — nem a rampa de posse (`slow`) nem a
+    // atividade (`slowAct`) os esticam; um blackout de 300 ms com tau efetivo de 100 ms não chegava
+    // ao escuro (medido no harness: opacidade 0.08 ao fim de 288 ms).
+    const absTau = !!(gt && state.gest && state.gest.instant);
+    o[k] = ease(o[k], state.target[k], absTau ? [tau[0], tau[1]] : [tau[0] * slow * slowAct, tau[1] * slow * slowAct], dt);
     o[k] = clamp(o[k], MUSIC.outMin[k] != null ? MUSIC.outMin[k] : -Infinity,
                        MUSIC.outMax[k] != null ? MUSIC.outMax[k] : Infinity);
   }
@@ -2578,7 +2652,7 @@ function updateHud(o) {
     // degradado (cada bombo é um tempo, 4/4 assumido). `idade` = ms desde o último beatTick.
     `relógio tempo ${state.beatIdx + 1}/${(g && g.beatsPerBar) || MUSIC.bpm.beatsPerBar}  compasso ${state.barIdx + 1}/${MUSIC.sync.phraseBars}` +
       `  ticks b${state.beatTick} c${state.barTick} f${state.phraseTick}  conf ${state.clockConf.toFixed(2)}  idade ${Math.round(state.clockAgeMs)}ms  src ${state.clockSrc}`,
-    `gesto   ${(state.gest ? state.gest.name : '—').padEnd(12)} peso ${state.gestWeight.toFixed(2)}  fila [${state.gestQueue.join(' ')}]  total ${state.gestCount}`,
+    `gesto   ${(state.gest ? state.gest.name : '—').padEnd(12)} peso ${state.gestWeight.toFixed(2)}  fila [${state.gestQueue.join(' ')}]  total ${state.gestCount}  blackouts ${state.blackoutCount}`,
     `perfil  ${MUSIC.profile}  ${profMode()}  (tecla p)   skin ${MB && MB.getSkin ? MB.getSkin().mode : '—'} (tecla w — do utilizador, o motor não lhe toca)`,
     // §PROFAUTO: é esta linha que explica a decisão. `cv` é o sinal primário (regularidade dos
     // intervalos de bombo; baixo = regular = clube); `cob` é a cobertura da janela — com `cv —`

@@ -50,3 +50,30 @@ pontuação, hierarquia hero, quantização por frase). São pontos de partida; 
 | `sync: mikado rajada máx (tempos)` | `MUSIC` | a fixar em S3b (teto 3 Hz mantém-se) | S3b |
 
 Detalhe e proveniência de cada default: `docs/s0-defaults-research.md`.
+
+## 4. S4 implementado (S14, 2026-09-02) — gesto `blackout`
+
+Ficheiros: `web/music.js` (§BLACKOUT + gesto `blackout` em `GESTURES` + knobs `sync.blackoutMs` /
+`sync.blackoutKeepHaze` no §TUNE), `spike-babylon/v2/stardom.js` (consome o gesto), harness (r,s,t).
+
+| Decisão | Como ficou no código |
+|---|---|
+| Gesto novo, não é `freeze` | `GESTURES.blackout`: `spot` 0, `beamInt` 0, `beams` 0, `opacity` → `outMin.opacity` (0). **Não toca no rpm** (regra 2, `spinLock` manda). Haze fica se `blackoutKeepHaze` ≥ 0.5 (default 1); senão → `outMin.haze`. |
+| Súbito | `startGesture(..., { ms, instant: true })`: peso do gesto = 1 no próprio frame (sem `rampInSec`); taus do gesto 40 ms **absolutos** (a rampa de posse `slow` e a atividade não os esticam). Saída: `rampOutSec` 1.2 s ou o `all-on` do drop atropela-o (peso já a 1 → o drop entra seco). |
+| Quando | `updateBlackout()` depois da FSM, antes do peso do gesto. Só em PRE_DROP e perfil `electronica`. Relógio com grelha e `clockConf ≥ sync.gridMinConf`: dispara quando faltam **≤ 1 tempo** para a fronteira de frase (`barsToPhraseEnd()·beatsPerBar`) = o `beatTick` antes do drop previsto. Relógio degradado: no primeiro `beatTick` depois de entrar em PRE_DROP. |
+| Um por drop | `blackoutAtDrop` guarda o `dropCount`; enquanto não houver drop novo não dispara. Exceção: PRE_DROP que sai **sem** drop (timeout → BUILD) rearma **uma frase do relógio** depois (`blackoutRearmPhrase`), para o falso pré-drop não roubar o blackout do drop a sério. Drop que chega antes do último tempo → sem blackout (zero é permitido). |
+| Tudo apaga | `fireFlash`/`fireStrobe` devolvem sem disparar durante o gesto; o acento da tarola na opacidade (`snare.opacityKick`) não entra. No estrelato: `gain.ball/mikado/hats/wash = 0` sem rampa enquanto `MS.gest.name === 'blackout'`, `driveHats` cala-se, `gain.preDrop` continua 1. `stardom.blackout` (getter) para HUD/consola. |
+| Teto | `blackoutMs` clamp 100-800 no disparo, independentemente do knob. |
+
+Knobs (§TUNE «Sync», tuner `k`): `sync: blackout ms` 300 (100-800, passo 10) · `sync: blackout mantém haze (0/1)` 1.
+HUD `m`: linha `gesto` mostra `blackout` como os outros e `blackouts N` no total; o log de eventos regista
+`gesto blackout · 0.3s · pré-drop (último tempo|bombo)`.
+
+Harness (`node web/test-music-f2.js`, 22/23 — a (c) já falhava): (r) ≥ 1 no set de 10 min, nunca dois no
+mesmo PRE_DROP; (s) duração ≤ knob e, no último frame, feixes/spots/opacidade ≈ 0, haze > 0.1, rpm ≥ 1.2;
+(t) só em PRE_DROP. No sim: 3-4 blackouts de 288 ms, feixes 0.000, spot 0.00, op 0.00, haze 0.96.
+
+**Nota de timing** (por ver ao vivo): a 126 BPM o último tempo dura 476 ms; com 300 ms o blackout acaba
+~170 ms antes da fronteira e a saída começa a subir (1.2 s de rampa) quando o drop bate. Se o David quiser
+escuro até ao bang, `sync: blackout ms` ≈ duração de um tempo (470 a 126 BPM). Alternativa por decidir:
+`sync: blackout antecedência (tempos)` (§2) — não implementada.

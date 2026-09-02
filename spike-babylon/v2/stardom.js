@@ -34,8 +34,9 @@
 // pouco, e o random continua a escolher — mas dentro da hierarquia.
 //   GROOVE    → chapéus narrador rítmico, bola discreta
 //   BUILD     → chapéus aceleram (os robots convergem por conta do motor), mikado EM RESERVA
-//   PRE_DROP  → BLACKOUT (gesto novo, S4): aqui só o hook — o estrelato NÃO re-sorteia, segura a
-//               estrela do build e publica `gain.preDrop = 1` para quem vier a implementar o gesto
+//   PRE_DROP  → BLACKOUT (gesto `blackout` do motor, S4): o estrelato NÃO re-sorteia, segura a
+//               estrela do build e publica `gain.preDrop = 1`; enquanto `MS.gest.name === 'blackout'`
+//               TODOS os ganhos vão a 0 sem rampa (a sala apaga; o haze é do motor) e os chapéus calam
 //   DROP      → mikado protagonista, bola cede; ALL-ON se a reserva o permitir
 //   BREAKDOWN → duas leituras por knob (f16 §1-5): (a) bola+wash protagonistas (disco/pop) ou
 //               (b) bola DISCRETA, só rpm ao bombo (techno) — default (b). Mikado em reserva TOTAL.
@@ -70,7 +71,7 @@
 //     gain.mikado → mikado.js (probabilidade de rajada + brilho de repouso)
 //     gain.hats   → hats.js   (força do flash) — e o modo do gesto vem em `gain.hatsMode`
 //     gain.wash   → main.js  (o wash da sala recolhe quando os chapéus são estrela / no breakdown)
-//     gain.preDrop → hook do blackout (S4). Ninguém lê ainda. 0/1.
+//     gain.preDrop → 1 durante PRE_DROP (S4). Continua a 1 durante o blackout. 0/1.
 // Todos com rampa, todos NaN-safe (regra 7), todos a 1.0 quando o sistema está desligado.
 //
 // KNOBS S2 (f16 §3): vivem em `MUSIC.config.sync` (motor → `music-config.json`), desenhados pelo
@@ -162,6 +163,7 @@ export function createStardom(CONFIG, deps = {}) {
     fsm: 'GROOVE',         // FSM corrente (lida)
     lastFsm: '',           // FSM do frame anterior (deteção de transição)
     lastDrop: -1,          // dropCount do frame anterior (-1 = ainda não lido)
+    blackout: false,       // S4: gesto `blackout` do motor ativo neste frame (ganhos a 0, chapéus calados)
     pending: '',           // troca pendente ('' = nenhuma) — executa no próximo barTick
     pendingAt: 0,          // tSec em que ficou pendente (timeout se o relógio morrer)
     autoNextAt: 0,         // relógio autónomo (sem motor)
@@ -438,6 +440,7 @@ export function createStardom(CONFIG, deps = {}) {
     const MS = MSget();
     const hz = clamp(num(cfg.hatsHz, 2.2), 0.2, 3);            // TETO 3 Hz (regra da sala)
     const a = clamp(num(act, 1), 0, 1);
+    if (st.blackout) return;                  // S4: no blackout ninguém flasha
 
     if (st.star === 'hats' || st.star === 'all') {
       const kind = st.hatsGesture ? 'seq' : 'all';
@@ -507,6 +510,10 @@ export function createStardom(CONFIG, deps = {}) {
       setStar(pickStar(st.fsm, act), t, 'desmontado');
     }
 
+    /* S4 — blackout pré-drop: o motor publica o gesto `blackout` (PRE_DROP, último tempo antes do
+       drop, `sync: blackout ms`). Lido ANTES dos chapéus para os calar no mesmo frame. */
+    st.blackout = !!(MS && MS.gest && typeof MS.gest === 'object' && MS.gest.name === 'blackout');
+
     const edges = pollAndMaybeSwitch(t);
     driveHats(t, edges, act);
 
@@ -536,7 +543,10 @@ export function createStardom(CONFIG, deps = {}) {
     gain.hats = clamp(st.gHat, 0, 2);
     gain.wash = clamp(st.gWash, 0, 2);
     gain.hatsMode = st.hatsGesture;
-    gain.preDrop = st.fsm === 'PRE_DROP' ? 1 : 0;   // hook do blackout (S4)
+    gain.preDrop = st.fsm === 'PRE_DROP' ? 1 : 0;   // 1 em PRE_DROP, blackout incluído (S4)
+    /* S4: durante o blackout a sala apaga TODA, sem rampa — os `st.g*` continuam a correr por baixo
+       para a saída do gesto (ou o all-on do drop) repor tudo de imediato. O haze não é daqui. */
+    if (st.blackout) { gain.ball = 0; gain.mikado = 0; gain.hats = 0; gain.wash = 0; }
   }
 
   return {
@@ -548,6 +558,7 @@ export function createStardom(CONFIG, deps = {}) {
     get gain() { return gain; },
     // S2: diagnóstico do relógio e da reserva (`MB2.stardom.clock`, `.reserve`)
     get fsm() { return st.fsm; },
+    get blackout() { return st.blackout; },
     get pending() { return st.pending; },
     get clock() { return st.clk; },
     get reserve() {
