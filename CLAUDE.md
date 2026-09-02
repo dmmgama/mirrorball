@@ -51,6 +51,14 @@ Mirror-2D-Start.bat                          bola 2D (web/index-v2.html) em mús
    removidos/lixo são ignorados sem partir o load; (d) o `sanitizePreset` não rejeita ficheiros por
    lhes faltarem campos novos. Cada fase testa o load de um config da versão anterior. Bateria de
    verificação em `docs/f15-vultos.md` §7.
+10. **Todo o knob nasce em config** (K2, `docs/k2-contrato.md`): **constante nova de comportamento
+    = knob**, nunca um número solto no código. Se é da cena → `spike-babylon/v2/config.js` +
+    entrada no `PERSIST` do `panel.js` + `knobs-default.json` **regenerado** com
+    `node spike-babylon/v2/gen-knobs-default.js` (nunca à mão). Se é do motor → entrada em `MUSIC`
+    (§TUNE do `web/music.js`) → `web/music-config.json` (que nunca se commita). **Fica no código:**
+    tetos de segurança (`beamIntensity ≤ 0.18`, 3 Hz, 4 luzes vivas), tamanhos de buffer/pool GPU e
+    o mapa `RENAMED`. Nome com prefixo do elemento (`mikado:`, `sombras:`, `sync:`), valor inicial
+    finito (regra 7), toggles 0=off/1=on. Fecha com `node spike-babylon/v2/test-knobs-compat.js`.
 
 ## Memória durável — Hindsight bank `claude-code::MirrorBall`
 

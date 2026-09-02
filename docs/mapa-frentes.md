@@ -127,6 +127,9 @@ congela; estrelato inalcançável sem grelha (`if (!MS)` nunca é verdade com mu
 memória de assinatura, ball↔energia lenta, disciplina do mikado, chapéus=narrador rítmico). Fixar o
 plano em `docs/`, só depois implementar (Opus). Referência por aplicar: `beat-detection-research.md`.
 
+**K2 nesta frente.** Constante nova do motor = entrada em `MUSIC` **com** entrada no `TUNE`
+(`range`/`step`/`label`) — sem ela não há slider `k` nem validação do JSON. Ver §3 e regra 10.
+
 ### B · Motor visual & render
 
 **O que é.** A máquina que desenha: Babylon 9.23 vendorizado, WebGPU com fallback `?webgl=1`, malha
@@ -179,6 +182,10 @@ a forma da faceta), R2 `scene.fogMode` nativo com knob, R3 exposição/`ColorCur
 reversíveis numa linha; R4 (`tileTone:'real'` como default) é decisão estética do David; R5
 (sombras em 2-4 luzes hero) só depois, é a única com custo e risco técnico novo.
 
+**K2 nesta frente.** Constante nova da cena (fog, exposição, curvas, sombras, histereses de perf)
+= knob em `config.js` + `PERSIST` + `gen-knobs-default.js`. Tamanhos de buffer/mapa GPU e tetos de
+segurança ficam no código, com o comentário a dizer porquê. Ver §3 e regra 10.
+
 ### C · Elementos físicos
 
 **O que é.** O que existe na sala como objeto: bola (Ø, cota, X/Z, corrente, explosão), mikado
@@ -225,6 +232,9 @@ só-reload; blocos do mikado por índice e não por zona; `lampDiameter` só no 
 **Próximo.** Afinar ao vivo com o David (primeiro knob: sementes); depois posição↔mira quando o plano
 de sync o pedir.
 
+**K2 nesta frente.** Cadências, holds e histereses dos elementos (`LIGHT_HOLD_S`, cool-downs,
+comprimentos de rajada) = knob em `config.js`; pools/`MAX_*` já são knobs desde o K1. Ver §3.
+
 ### D · Luminárias & ambiente
 
 **O que é.** A maquinaria que produz o ambiente: spots que incidem na bola (mancha, fade, coreografia
@@ -267,6 +277,10 @@ largura máx` impercetível; `MB.retarget` sem caller no motor.
 **Próximo.** Não mexer antes do debate — qualquer afinação aqui é trabalho perdido se a hierarquia
 de "quem toca quando" mudar.
 
+**K2 nesta frente.** Ganhos por estrela/estado (`PROFILE`, `HERO`) e tempos de troca são
+comportamento puro: quando forem afinados ao vivo, viram knobs (`estrelato: …`) — hoje ainda são
+tabelas no `stardom.js` (ver `docs/k2-contrato.md`). Ver §3 e regra 10.
+
 ### E · Controlo, presets & UX
 
 **O que é.** O painel `d`/`k` (14 grupos por elemento, 7 favoritos), **200** knobs persistíveis
@@ -308,9 +322,11 @@ ao reabrir · `0`/`w` a disparar dentro de campos.
 grupo Focos; `Sala & Geometria` mistura luz e estrutura; `web/index-v2.html` (2D) mantém nomes
 antigos no seu painel `mb.knobs`; preset grava a skin (tira-se numa linha se incomodar).
 
-**Próximo (K2).** Contrato "todo knob novo nasce em config" para as fases S/V do
-`plan-s13-faseado.md` — página no `mapa-frentes.md` + regra 10 no CLAUDE.md (Fable). Até lá, cada
-fase nova: correr a bateria da regra 9 (padrão `9118710`) **com
+**K2 fechado** (2026-09-02). Contrato "todo o knob nasce em config" é a **regra 10 do CLAUDE.md**;
+o checklist de 5 perguntas está no §3 aqui abaixo e a auditoria das fases S14 (o que nasceu no
+código em vez de knob) está em `docs/k2-contrato.md`. Cada fase nova: passar pelo checklist K2 e
+correr `node spike-babylon/v2/test-knobs-compat.js` (bateria da regra 9 em Node, 45/45); a bateria
+manual em browser (padrão `9118710`) só quando se toca no DOM do painel, sempre **com
 snapshot/restore do localStorage**.
 
 ---
@@ -329,6 +345,22 @@ Antes de tocar em qualquer frente:
       não corta.
 - [ ] **Knob/campo novo?** Valor inicial finito (regra 7); no `PERSIST` se for afinação; nome com
       prefixo do elemento; toggle 0=off/1=on; **zero banners**.
+- [ ] **Escrevi um número novo no código?** (K2, regra 10 do CLAUDE.md — `docs/k2-contrato.md`).
+      Passa por estas cinco perguntas **antes** de commitar:
+      1. *É comportamento?* (o David podia querer outro valor ao ouvir a sala) → **é knob**.
+         Duração, cadência, limiar, ganho, histerese, timeout, curva. Se é teto de segurança
+         (0,18 · 3 Hz · 4 luzes vivas), tamanho de buffer/pool GPU ou entrada do `RENAMED` →
+         **fica no código**, com o comentário a dizer porquê.
+      2. *De quem é?* Cena → `spike-babylon/v2/config.js`. Motor → `MUSIC` no `web/music.js`
+         (§TUNE) → `music-config.json`. Um número que a cena lê do motor por poll (`MUSIC.sync.*`)
+         vive **no motor**, não duplicado nos dois — só o fallback local (regra 7) é que se repete.
+      3. *Está no ficheiro?* Cena: `PERSIST` no `panel.js` + `node spike-babylon/v2/gen-knobs-default.js`
+         (**nunca** editar `knobs-default.json` à mão). Motor: entrada no `TUNE` com `range`/`step`/
+         `label` — sem ela o knob não aparece no tuner `k` nem é validado no merge do JSON.
+      4. *Nome e valor?* Prefixo do elemento (`mikado: …`, `sombras: …`, `sync: …`), valor inicial
+         finito, toggle 0/1, e o `range` a **conter** o teto do CLAUDE.md (não a contorná-lo).
+      5. *Fecha?* `node spike-babylon/v2/test-knobs-compat.js` (bateria da regra 9 em Node) +
+         registar o knob novo no doc da fase.
 - [ ] **Rename?** Entrada no `RENAMED`; nunca apagar entradas; regenerar `knobs-default.json` com
       `node gen-knobs-default.js`; testar load de um `mb2.knobs` da versão anterior (regra 9).
 - [ ] **Mesh/material novo?** PBR com `RawCubeTexture` própria; thin instance com `setEnabled` ↔
