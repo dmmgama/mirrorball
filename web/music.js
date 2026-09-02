@@ -2295,9 +2295,12 @@ function applyToBall(o, gestInfo) {
    * segundo — o slider mexia e o valor evaporava-se. Passam para trás do MESMO disjuntor dos
    * vizinhos (`spotsMotor`, o de :2147 e o de `fireFlash`): com 'focos+flashes: motor manda' a 0
    * quem manda é o painel, incluindo nestes dois. Com o disjuntor ON (default) nada muda. */
+  /* S3c: além do disjuntor, a escrita passa a ser IDEMPOTENTE — só toca no CONFIG quando o valor
+     ainda não é o pretendido. É o mesmo padrão do V0b nas luzes: um write por frame que não muda
+     nada não é inofensivo (invalida caches a jusante e esconde quem é o dono real do número). */
   if (C.spotsMotor !== false) {
-    C.spotFadeMix = 0;
-    if (C.choreo) C.choreo.flashRate = 0;
+    if (C.spotFadeMix !== 0) C.spotFadeMix = 0;
+    if (C.choreo && C.choreo.flashRate !== 0) C.choreo.flashRate = 0;
   }
   // ⚠ NADA de setSkinAuto aqui (§0.1 ponto 1): a skin é do utilizador, ponto final.
   if (MB.setHealth && MB.getHealth() !== state.health) MB.setHealth(state.health);
@@ -2335,7 +2338,11 @@ function applyToBall(o, gestInfo) {
     // junta sem se perder quem está a marcar.
     const a = 1 + acc * (i === dom ? 1 : 0.33);
     const dim = state.dimGain[Math.min(i, 2)];
-    if (C.spotsMotor !== false) MB.setSpot(i, { intensity: clamp(s._base * o.spot * g * a * dim, 0, 1.6) });   // override do painel d
+    /* `fromMotor:true` (S3c): última chamada `MIRRORBALL.*` do motor que ainda ia sem origem
+       declarada. A guarda `spotsMotor !== false` aqui já cortava, mas o disjuntor tem de ser
+       simétrico dos DOIS lados (brief F5) — e é a flag que faz o `motorAllowed()` da bola valer.
+       Escritas do David pela consola continuam a passar (sem flag). */
+    if (C.spotsMotor !== false) MB.setSpot(i, { intensity: clamp(s._base * o.spot * g * a * dim, 0, 1.6), fromMotor: true });   // override do painel d
   });
 }
 

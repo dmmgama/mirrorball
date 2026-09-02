@@ -343,7 +343,6 @@ export function createHats(scene, CONFIG) {
        - no GESTO: `SEQ_MIN_MS` entre passos da sequência e entre disparos de "todos juntos".
      Os knobs também estão clampados no painel; este é o cinto de segurança para escritas por fora. */
   const flashState = new Array(N).fill(null);
-  let flashAcc = 0;
   // (a faixa fixa 0,10-0,30 s da F8 foi substituída pelo knob `flashMs` + jitter — ver flashLifeOf)
   const MIN_GAP_S = 1 / 3;          // teto ABSOLUTO por fixture (3 Hz)
   const SEQ_MIN_MS = 334;           // teto ABSOLUTO entre passos do gesto (3 Hz)
@@ -577,7 +576,7 @@ export function createHats(scene, CONFIG) {
          percurso, e o David via um arranque estranho ao carregar no toggle. O ramo "ligado" volta a
          posicionar/ativar tudo no loop abaixo, por isso não há nada a repor à mão. */
       for (let i = 0; i < N; i++) { flashState[i] = null; liveLightRank[i] = false; }
-      flashAcc = 0; seq.cursor = 0; seq.dir = 1; seq.nextAt = -1e9;
+      seq.cursor = 0; seq.dir = 1; seq.nextAt = -1e9;
       auto.lastBeatTick = -1; auto.lastBeatAt = -1e9; auto.nextAt = -1e9; auto.edge = false;
       return;
     }
@@ -601,13 +600,14 @@ export function createHats(scene, CONFIG) {
        nas arestas do relógio S1 (acentos em `beatTick`, apoio em `barTick`) e os knobs manuais
        `flash /min` / `modo` / `sequência ms/passo` ficam INERTES (são do modo manual). Sem
        estrelato, o agendador local `autoSchedule` corre — quantizado ao relógio, sem Poisson.
-       (Antes, o Poisson `flashAcc` e a onda `seq.nextAt` corriam SEMPRE por baixo do estrelato:
-       era o duplo comando do audit; `igniteHat` só garantia os 3 Hz, não a coerência.) */
+       (Antes, o Poisson e a onda `seq.nextAt` corriam SEMPRE por baixo do estrelato: era o duplo
+       comando do audit; `igniteHat` só garantia os 3 Hz, não a coerência. O acumulador do Poisson
+       — `flashAcc` — deixou de ter leitores no S3a e foi removido no S3c.) */
     const t = Number.isFinite(tSec) ? tSec : 0;
     if (hasCommander()) {
       diag.writer = 'estrelato';
       diag.clock = 'stardom';
-      flashAcc = 0; seq.nextAt = -1e9;   // o modo manual retoma limpo se o estrelato for desligado
+      seq.nextAt = -1e9;                 // o modo manual retoma limpo se o estrelato for desligado
     } else {
       autoSchedule(cfg, n, t, dt);
     }
