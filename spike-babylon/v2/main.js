@@ -831,7 +831,7 @@ function updateAmbientLights(tSec) {
     _tmpPos.copyFrom(dirFromAzEl(p.az, p.el)).scaleInPlace(dist);
     L.position.copyFrom(_tmpPos);
     _tmpDir.copyFrom(_tmpPos).scaleInPlace(-1).normalize();
-    L.direction.copyFrom(_tmpDir);                                  // V0b: sem `= new Vector3` por frame
+    if (L.direction) L.direction.copyFrom(_tmpDir); else L.direction = _tmpDir.clone(); // RectAreaLight nasce sem `direction`
     if (Number.isFinite(areaSize) && areaSize > 0 && (L.width !== areaSize || L.height !== areaSize)) { L.width = areaSize; L.height = areaSize; }
     const I = num(p.I, 0);
     // RectAreaLight tem escala própria (~0.1-2 lê como indireta); NÃO multiplicar por spotLightIntensity (lavava a cena a branco)
