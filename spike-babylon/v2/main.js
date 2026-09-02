@@ -1,7 +1,7 @@
 // v2/main.js — esqueleto do spike v2 (Fase 1): engine, sala, câmara, luzes mínimas, loop/HUD, painel `d`.
 // A malha da bola é responsabilidade do Opus (v2/ball.js); aqui só se importa dinamicamente com stub de recurso.
 import { buildRoom } from './room.js?v=5';
-import { initPanel } from './panel.js?v=19';
+import { initPanel } from './panel.js?v=20';
 import { applyColorToggle, hueToRgb } from './colorutil.js?v=1';
 
 const CONFIG = window.CONFIG;
@@ -400,7 +400,7 @@ const room = buildRoom(scene, CONFIG);
    entrarem na renderList do ReflectionProbe — é o coração da F8: a bola TEM de os espelhar. */
 let hats = null;
 try {
-  const mod = await import('./hats.js?v=15');
+  const mod = await import('./hats.js?v=16');
   hats = mod.createHats(scene, CONFIG);
   console.log('hats.js carregado.');
 } catch (err) {
@@ -434,7 +434,7 @@ try {
    escrito o `bola (0/1)` do localStorage. Ver o bloco F11 lá em cima. */
 let mikado = null;
 try {
-  const mod = await import('./mikado.js?v=10');
+  const mod = await import('./mikado.js?v=11');
   mikado = mod.createMikado(scene, CONFIG);
   console.log('mikado.js carregado —', mikado.barCount, 'barras.');
   /* mesmo fix S9 "parede de luz" dos robots: as PointLight do flash do mikado são fortes e estão
@@ -474,7 +474,7 @@ try {
    os módulos leem `gain` com fallback 1 e correm como na F11. */
 let stardom = null;
 try {
-  const mod = await import('./stardom.js?v=2');
+  const mod = await import('./stardom.js?v=3');
   stardom = mod.createStardom(CONFIG, { hats });
   console.log('stardom.js carregado.');
 } catch (err) {
@@ -926,7 +926,7 @@ function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
    Se ainda não existir (ou falhar), stub = esfera simples, só para se poder testar o resto. */
 let ball = null;
 try {
-  const mod = await import('./ball.js?v=8');
+  const mod = await import('./ball.js?v=9');
   ball = mod.createBall(scene, CONFIG);
   console.log('ball.js carregado —', ball && ball.tiles, 'tiles');
   // F8: pilares + chapéus + robots de teto entram na renderList do probe — a bola tem de espelhar a
@@ -2298,7 +2298,7 @@ console.log('MB2 pronto —', engine.isWebGPU ? 'WebGPU' : 'WebGL2');
       MUSIC_BASES[0] + ').');
     // Ids de DOM esperados pelos 3 scripts: só `#mus` (web/music.js:2388, HUD tecla `m`) — já existe
     // em v2/index.html, escondido por omissão (.on liga/desliga, mesmo padrão do Canvas 2D).
-    const files = ['core.js?v=1', 'music.js?v=59', 'tuner.js?v=1'];
+    const files = ['core.js?v=1', 'music.js?v=60', 'tuner.js?v=2'];
     let i = 0;
     function next() {
       if (i >= files.length) { console.log('[F5 music] core.js/music.js/tuner.js carregados.'); return; }
