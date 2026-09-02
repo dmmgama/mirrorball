@@ -211,6 +211,8 @@ function check(name, ok, detail) { results.push({ name, ok, detail }); }
   const SPIN_GRACE_MS = 1500;
   let presAboveSince = null;
   let spinViol = null, spinChecked = 0;
+  // (r,s,t) §BLACKOUT (S4): cada corrida do gesto `blackout` com o estado da sala no seu último frame
+  const blackouts = []; let boCur = null;
 
   for (let t = 0; t < LONG_MS; t += STEP) {
     env.tick(STEP);
@@ -233,6 +235,12 @@ function check(name, ok, detail) { results.push({ name, ok, detail }); }
     const gn = S.gest ? S.gest.name : null;
     if (gn && gn !== lastGest) { gestSeen[gn] = (gestSeen[gn] || 0) + 1; }
     lastGest = gn;
+    if (gn === 'blackout') {
+      if (!boCur) { boCur = { t0: env.clock, fsm: S.fsm, drop: S.dropCount, bar: S.bar, since: S.fsmSince }; blackouts.push(boCur); }
+      boCur.t1 = env.clock;
+      boCur.beamInt = env.CONFIG.beamIntensity; boCur.op = env.CONFIG.sphereOpacity; boCur.haze = env.CONFIG.haze;
+      boCur.spot = Math.max(...env.CONFIG.spots.map(s => s.intensity)); boCur.rpm = env.CONFIG.rotationRpm;
+    } else boCur = null;
   }
 
   check('(d) o motor NUNCA escreve na skin',
@@ -252,6 +260,23 @@ function check(name, ok, detail) { results.push({ name, ok, detail }); }
       ? `VIOLADO a ${(spinViol.t / 1000).toFixed(1)}s: rpm=${spinViol.rpm.toFixed(3)} com presença=${spinViol.pres.toFixed(2)} · estado=${spinViol.fsm} · gesto=${spinViol.gest} (peso ${spinViol.w.toFixed(2)})`
       : `${spinChecked} frames em regime com bombo, mínimo respeitado (grace de 1.5 s na rampa de arranque)`);
 
+  {
+    const preDrops = transitions.filter(t => t.to === 'PRE_DROP').length;   // entradas em PRE_DROP (episódios)
+    const BO_MS = env.sandbox.MUSIC.config.sync.blackoutMs;
+    const perEpisode = new Set(blackouts.map(b => b.since));               // um por episódio de PRE_DROP
+    const full = blackouts.filter(b => b.t1 - b.t0 >= BO_MS - 2 * STEP);   // não atropelados pelo drop
+    const desc = blackouts.map(b => `bar ${b.bar} ${b.fsm} drop#${b.drop + 1} ${b.t1 - b.t0}ms → feixes ${b.beamInt.toFixed(3)} spot ${b.spot.toFixed(2)} op ${b.op.toFixed(2)} haze ${b.haze.toFixed(2)} rpm ${b.rpm.toFixed(2)}`).join(' · ') || '—';
+    check('(r) blackout pré-drop: ≥ 1 no set, nunca mais de um por PRE_DROP (um por drop; PRE_DROP falhado rearma uma frase depois)',
+      blackouts.length >= 1 && blackouts.length <= preDrops && perEpisode.size === blackouts.length,
+      `${blackouts.length} blackouts em ${preDrops} PRE_DROP: ${desc}`);
+    check('(s) blackout: duração ≤ `sync.blackoutMs`, e no fim está tudo apagado menos o haze (rpm mantém)',
+      blackouts.every(b => b.t1 - b.t0 <= BO_MS + 2 * STEP) &&
+      full.every(b => b.beamInt <= 0.02 && b.spot <= 0.05 && b.op <= 0.05 && b.haze > 0.1 && b.rpm >= 1.2),
+      `knob ${BO_MS} ms · ${full.length} corridas completas`);
+    check('(t) blackout só em PRE_DROP — nunca em GROOVE/BREAKDOWN',
+      blackouts.every(b => b.fsm === 'PRE_DROP'),
+      blackouts.map(b => b.fsm).join(', ') || '—');
+  }
   check('(g) amplitude de rpm visível ao longo do set', maxRpm > 2.0 && minRpm < 0.4,
     `rpm ∈ [${minRpm.toFixed(2)}, ${maxRpm.toFixed(2)}] · spot máx=${maxSpot.toFixed(2)} · escritas no CONFIG=${env.writes.count}`);
 
