@@ -14,7 +14,7 @@ Não repete o CLAUDE.md nem os handoffs — aponta para eles.
 | Frente | O que é | Estado | Maior dívida | Próximo passo |
 |---|---|---|---|---|
 | **A · Motor de música & sync** | sidecar → `music.js` (kick/grelha/FSM/gestos) → `MUSIC.state` → peças da sala; estrelato (`stardom.js`) | **em dívida** — motor sólido, sala **sem relógio comum** (`audit-sync-motor.md`) | ninguém lê `beatPhase` exceto vultos; 9 relógios aleatórios; estrelato morre sem grelha | debate S0 **fechado** (`f16-sync.md`, S13) → **S1 relógio único** (Opus) |
-| **B · Motor visual & render** | Babylon 9, WebGPU/WebGL2, malha da bola + cadeia de cinza, probe, thin instances, pós, realismo | **maduro, perf por medir** — 5 fases sem número limpo; "parece CG" por luz/ar, não por geometria (`research-realismo.md`). **V0 (S13): G1 feito** — `freezeWorldMatrix()` nos 5 planos + pilares (`room.js`); baseline G2 **por medir pelo David** (protocolo em `docs/f17-visual.md` §0) | baseline ainda por preencher (`f17-visual.md` §0.4); renderList do probe com 1391 meshes; sem névoa real (`scene.fog` nunca tocado) | **V1 (S13) feito** — pontos em losango, knob `pontos: losango (0/1)`. David mede a baseline (§0.2-§0.3) e vê os pontos com música → depois V2 fog nativo, V3 exposição (Opus) |
+| **B · Motor visual & render** | Babylon 9, WebGPU/WebGL2, malha da bola + cadeia de cinza, probe, thin instances, pós, realismo | **maduro, perf em dívida** — V0 (freeze) e V1 (losango) feitos (S13); leitura ao vivo: ~30 ms manual, **+40 ms em modo música** dentro do `scene.render` (`f17-visual.md` §0.5); máquina degradada, baseline limpa por repetir | custo do modo música (suspeita: recompilação de shaders por luzes, armadilha 5); sem névoa real; sem sombras; renderList do probe 1391 meshes | **W1 V0b** (porquê +40 ms) · **W2** fog+exposição · **W5** sombras · **W6** mikado thin instances — em paralelo na janela Fable (handoff S13 §0) |
 | **C · Elementos físicos** | bola, corrente, mikado, chapéus, robots, vultos, sala/pilares — geometria e knobs ⟳ | **em evolução** — tudo existe, tudo por afinar ao vivo | estética "à sensação" (barras, vultos, chapéus); posição↔mira dos focos (regra 3) | afinar com o David com música real; separar posição↔mira |
 | **D · Luminárias & ambiente** | spots montados, feixes, dots, haze, wash, incidentes, flashes/strobe, choreo | **maduro** na bola, **em dívida** na coreografia da sala | choreo com relógios próprios; chapéus com duplo comando; 3 donos do `spotGain` | fica à espera do plano de sync (é a frente que ele mais toca) |
 | **E · Controlo, presets & UX** | painel `d`, **200** knobs (K1: +7), `mb2.*`, presets, `RENAMED`, disjuntores | **maduro** (auditado 2×, regra 9 com bateria) | `MANUAL.html` desatualizado; snapshot do localStorage em baterias | K2 (Fable): contrato "todo knob nasce em config" para as fases S/V |
@@ -352,9 +352,9 @@ Antes de tocar em qualquer frente:
 
 ---
 
-## 4. Prioridades (leitura de 2026-09-01)
+## 4. Prioridades (leitura de 2026-09-02, fim do S13)
 
-**Plano de execução destas prioridades:** `docs/plan-s13-faseado.md` (3 pistas S/V/K, modelo por fase, ordem por sessão).
+**Plano de execução:** `docs/plan-s13-faseado.md` (3 pistas S/V/K). **Janela Fable de 3 h (handoff S13 §0):** 6 worktrees em paralelo — W1 perf do modo música, W2 fog+exposição, W3 relógio único (S1), W4 hero+reserva (S2), W5 sombras, W6 mikado thin instances — unir na ordem W3→W4→W6→W1→W2→W5. S0 está **fechado** (`f16-sync.md`).
 
 1. **Debate do plano de sync (frente A → D).** Já decidido pelo David; é a maior dívida e a que
    determina o valor de tudo o resto — sem "quando", afinar luminárias é trabalho perdido. Entrada:
