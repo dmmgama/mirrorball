@@ -148,6 +148,80 @@ o motor a mexer nas luzes/spots a cada frame provoca recompilação de shaders (
 frente B/D, a investigar como fase **V0b** (Opus) antes de V2: medir com `spotsMotor` a 0, com os
 spots a intensidade fixa, e com `engine.getCaps()`/`material.onCompiled` a contar compilações.
 
+### 0.5b V0b (W1, S14) — porquê o modo música custava +40 ms: lido no código, corrigido na cena
+
+**O que a métrica mede.** `render` do HUD `h` = `scene.onBeforeRender → onAfterRender`; o loop
+principal (`scene.registerBeforeRender`) corre DENTRO desse intervalo. Logo "+40 ms no
+`scene.render`" inclui todo o JS por frame dos módulos (ball/spots/beams/hats/mikado…) e a
+preparação de materiais (defines/shaders), não só o draw.
+
+**Causa 1 (constante, manual e música) — `Light.setEnabled` sem guarda.** No `vendor/babylon.js`
+(9.23) `Light.setEnabled(v)` faz `super.setEnabled(v)` e depois `_resyncMeshes()` SEM verificar se
+`v` mudou: percorre TODAS as meshes da cena e, por mesh, `isEnabled()` + `canAffectMesh` (um
+`excludedMeshes.indexOf(mesh)` linear — os spots da bola excluem 5 planos + todos os vultos).
+O código chamava `setEnabled` por frame em ~25 luzes (`main.js` spots ×`MAX_SPOTS`, ambient ×3;
+`robots.js:167` ×4; `hats.js:611/613/617` ×N; `mikado.js:830/833` ×4) → dezenas de milhar de
+`indexOf` por frame com ~1400 meshes. Não é os 40 ms, mas é uma fatia do "30 ms base".
+
+**Causa 2 (só música) — luzes a ligar/desligar A CADA BATIDA → defines/shaders.** Quando o
+`setEnabled` MUDA mesmo, `_resyncLightSource` marca `_markSubMeshesAsLightDirty` em cada mesh
+afetada; no frame seguinte cada material refaz os defines (`PrepareDefinesForLights`) e, se a
+combinação (tipo de luz por índice em `mesh.lightSources`) for nova, `createEffect` → compilação
+síncrona de um shader PBR (WebGL2: dezenas de ms). Em modo música isto acontecia continuamente:
+- `music.js:fireFlash` → `MIRRORBALL.flash` → `choreo.flashes` → cada flash entra e sai de
+  `ball.mountedSpots` (`ball.js:780` só monta `I > 0.02`) → o `used` do pool muda → `main.js`
+  (antigo :602/:621/:626) fazia `light.setEnabled(I >= 0.02)` e `setEnabled(false)` nos slots
+  seguintes → 2 toggles por flash, vários flashes por segundo.
+- Gestos que levam um foco abaixo de 0,02 (single-beam, freeze, blackout, `MB.setSpot` com dim)
+  → o foco sai de `mountedSpots` (`ball.js:767`) → os slots reordenam-se e o último desliga.
+- Chapéus (`hats.js:611/613`) e mikado (`mikado.js:830/833`) ligam/desligam PointLights por
+  flash/rajada — mesma mecânica, ficheiros fora do âmbito de W1 (ver "por fazer").
+A ordem de `mesh.lightSources` depende da HISTÓRIA de enable (uma luz reativada entra no fim), por
+isso as permutações eram muitas → muitos shaders diferentes ao longo de uma música, cada um
+compilado uma vez; e mesmo com cache, o dirty obriga ~1000 submeshes a refazer defines.
+
+**Hipóteses descartadas por leitura:** `light.intensity`/`diffuse`/`specular`/`direction`/`position`
+são campos simples (sem dirty); `SpotLight.angle` tem setter que recalcula a projeção (caro mas não
+recompila) — passou a escrever-se só quando muda; `sphereOpacity` → `ball.js:1370` já só muda
+`transparencyMode` quando o modo muda; o estrobo de fundo já era idempotente (`updateStrobe`);
+`maxSimultaneousLights`/fog/haze não são tocados por frame; `Color3` novos por frame existiam em
+`spotColor()` (GC, menor) — removidos do caminho quente.
+
+**O que W1 corrigiu (`main.js`, bloco "V0b: PERF DAS LUZES"; `ball.js` só `idx` em `pushSpot`):**
+1. Patch a `BABYLON.Light.prototype.setEnabled`: devolve cedo sem `_resyncMeshes` quando o valor
+   não muda, conta as mudanças reais. Vale para TODOS os módulos (chapéus/mikado/robots incluídos).
+   Idem contadores em `AbstractMesh._markSubMeshesAsLightDirty` e `Material.markAsDirty`.
+2. Histerese nos slots do pool dos focos: um slot que deixa de ter foco/flash fica ligado a I=0
+   durante `SPOT_SLOT_HOLD_S = 2 s` e só depois `setEnabled(false)`. Flashes por batida e gestos
+   curtos deixam de mudar a lista de luzes dos materiais.
+3. Escritas idempotentes/sem alocação: `angle` só quando muda; cor por slot numa `Color3` própria
+   (`.set`, nunca `= new Color3`); direção/posição via `copyFrom`; `RectAreaLight.width/height` só
+   quando mudam; `setLightEnabled()` guarda local em spots e ambient.
+4. Cor por foco lê `CONFIG.spots[m.idx]` (o índice real) em vez do índice da lista filtrada — o
+   bug de "cor do foco errado quando um foco está apagado" desaparece de caminho.
+
+**Instrumentação — `MB2.__perf()` campos novos:** `effects` (shaders compilados no engine),
+`lightToggles`, `lightDirty`, `matDirty` (totais), `dFrames`/`dEffects`/`dLightToggles`/
+`dLightDirty`/`dMatDirty` (deltas desde a chamada anterior), `lightsOn`, `spotSlotsOn`,
+`spotSlotsHeld`, `activeMeshes`.
+
+**Protocolo de medição (David, tab em foco, WebGL2 `?webgl=1`):**
+1. Modo manual, knobs por defeito. `MB2.__perf()` duas vezes com ~10 s de intervalo. Esperado:
+   `dEffects = 0`, `dLightToggles = 0`, `dLightDirty = 0`; `medianRenderMs` = base.
+2. `?src=music` com música real. `MB2.__perf()`; esperar ~10 s de GROOVE com flashes; repetir.
+   Esperado depois do V0b: `dEffects = 0` (nenhum shader novo por batida), `dLightToggles`
+   pequeno (só chapéus/mikado — ver "por fazer"), `spotSlotsHeld` a oscilar 0-4.
+   Se `dEffects > 0` continuar a subir por batida, a fonte são as PointLights dos chapéus/mikado.
+3. Para isolar: painel `d` → `spotsMotor` 0 (o motor deixa de mexer nos focos e nos flashes) e
+   repetir 2. Depois `chapéus: máx` 0 e `mikado (0/1)` 0, um de cada vez, a olhar para
+   `dLightToggles`/`dEffects`/`medianRenderMs`.
+4. Registar as três linhas (manual / música / música sem motor nos focos) na tabela §0.5.
+
+**Por fazer (fora de W1):** `hats.js:611/613` e `mikado.js:830/833` devem manter as PointLights
+ligadas a I=0 (com a mesma histerese) em vez de `setEnabled` por flash; `robots.js:167` idem quando
+o dimmer cruza 0,005. Com o patch (1) o custo das chamadas sem mudança já desapareceu; ficam só
+as mudanças reais.
+
 
 ## 1. V2 + V3 — fog nativo e exposição/ColorCurves (W2, S14, 2026-09-02)
 

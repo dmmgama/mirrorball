@@ -719,7 +719,7 @@ export function createBall(scene, CONFIG) {
   // monta um spot no formato do original. `wide` = fonte de área (luz indireta), sem cone nem beam.
   // `isFlash` marca os flashes da coreografia (F5): entram em `mountedSpots` como qualquer foco,
   // mas o raio JÁ vem sem `spotRadiusMul` (index-v2.html:308) — quem chama é que decide.
-  function pushSpot(azDeg, elDeg, I, radius, aim, wide, areaRad, isFlash) {
+  function pushSpot(azDeg, elDeg, I, radius, aim, wide, areaRad, isFlash, idx) {   // V0b: `idx` = índice em CONFIG.spots (cor por foco no main.js)
     const S = spotDir(azDeg, elDeg);
     const Hv = norm3([S[0], S[1], S[2] + 1]);              // half-vector spot↔câmara (:286)
     const u = norm3(cross3(S, [0, 1, 0])), v = cross3(u, S);
@@ -731,7 +731,7 @@ export function createBall(scene, CONFIG) {
       r: Math.max(0.01, radius), Cx, Cy, Cz,
       wide: !!wide, area: num(areaRad, 0.5), isFlash: !!isFlash,
     });
-    return { az: azDeg, el: elDeg, S, H: Hv, C: [Cx, Cy, Cz], r: Math.max(0.01, radius), I, isFlash: !!isFlash };
+    return { az: azDeg, el: elDeg, S, H: Hv, C: [Cx, Cy, Cz], r: Math.max(0.01, radius), I, isFlash: !!isFlash, idx: Number.isInteger(idx) ? idx : -1 };
   }
 
   /* spotsIn = CONFIG.spots (formato original). Devolve spotCache; preenche mountedSpots/ambientPoses.
@@ -765,7 +765,7 @@ export function createBall(scene, CONFIG) {
       const I = num(s.intensity, 1) * gain * (0.35 + 0.65 * fade) * gI;     // :382
       if (!(I >= 0.02)) continue;                                           // :383
       const r = num(s.radius, 0.16) * rmulG;
-      mountedSpots.push(pushSpot(num(s.az, 0), num(s.el, 0), I, r, s.aim, false, 0, false));
+      mountedSpots.push(pushSpot(num(s.az, 0), num(s.el, 0), I, r, s.aim, false, 0, false, i));
     }
 
     /* flashes da coreografia (:389-392) — depois dos focos, antes da luz indireta.

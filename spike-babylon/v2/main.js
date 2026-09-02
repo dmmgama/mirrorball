@@ -498,10 +498,82 @@ function dirFromAzEl(azDeg, elDeg) {
 /* F5: os FLASHES da coreografia também entram em `ball.mountedSpots` (a seguir aos focos), por isso
    o pool tem de cobrir `spots.length + flashSlots + 2` — as luzes extra ficam pré-criadas e
    desligadas (`setEnabled(false)`); NUNCA se criam/destroem luzes por frame (recompilava shaders). */
+/* ---- V0b (S14): PERF DAS LUZES — o que o modo música custava dentro do `scene.render` ----
+   Lido no vendor/babylon.js (9.23): `Light.setEnabled(v)` faz `super.setEnabled(v)` E DEPOIS
+   `_resyncMeshes()` SEM verificar se o valor mudou — percorre TODAS as meshes da cena
+   (`_resyncLightSource`: isEnabled + `excludedMeshes.indexOf(mesh)` linear) a cada chamada. Com
+   ~1400 meshes (mikado 672, vultos, chapéus, bola) e ~25 luzes a chamar `setEnabled` por frame
+   (spots, flashes, ambient, robots, chapéus, mikado) isso é um passeio de dezenas de milhar de
+   `indexOf` por frame — custo CONSTANTE, manual e música.
+   Quando o valor MUDA mesmo, `_resyncLightSource` faz `_markSubMeshesAsLightDirty` em cada mesh
+   afetada → no frame seguinte cada material refaz os defines (`PrepareDefinesForLights`) e, se a
+   combinação de luzes por índice for nova, `createEffect` → COMPILAÇÃO de shader (WebGL2: dezenas
+   de ms, síncrona). Em modo música isto acontecia A CADA BATIDA: cada flash da coreografia
+   (`MIRRORBALL.flash` ← `music.js:fireFlash`) entra e sai de `ball.mountedSpots`, o `used` muda e
+   os slots do pool ligam/desligam (`light.setEnabled(I >= 0.02)`), e cada gesto que leva um foco
+   abaixo de 0,02 (single-beam, freeze, blackout) faz o mesmo. Chapéus e mikado ligam/desligam os
+   seus PointLight da mesma maneira (`hats.js:611/613`, `mikado.js:830/833`) — fora do âmbito
+   deste ficheiro, mas o patch (1) abaixo já lhes tira o passeio das chamadas sem mudança.
+   Correções (só do lado da cena; `music.js` intocado):
+     (1) `Light.prototype.setEnabled` passa a devolver cedo quando o valor não muda (sem
+         `_resyncMeshes`) e conta as mudanças reais — `MB2.__perf().lightToggles`.
+     (2) os slots do pool dos focos têm HISTERESE: um slot que deixou de ser usado fica ligado com
+         intensidade 0 durante `SPOT_SLOT_HOLD_S` antes de `setEnabled(false)` — os flashes de cada
+         batida deixam de ligar/desligar luzes (e de mudar a lista de luzes de cada material).
+     (3) escritas idempotentes: `angle` só quando muda (o setter recalcula a projeção), cor por
+         slot em Color3 PRÓPRIA mutada com `.set` (nunca `= new Color3`), direção via `copyFrom`,
+         sem `new Vector3`/`ballCenter()` por foco por frame.
+   Instrumentação (barata: inteiros): `MB2.__perf()` devolve `effects` (shaders compilados no
+   engine), `lightToggles`, `lightDirty` (meshes marcadas light-dirty), `matDirty`
+   (`Material.markAsDirty`), totais e deltas desde a chamada anterior (`d*`, `dFrames`). */
+const lightPerf = { toggles: 0, lightDirty: 0, matDirty: 0, frames: 0,
+  last: { toggles: 0, lightDirty: 0, matDirty: 0, frames: 0, effects: 0 } };
+(function patchLightPerf() {
+  const LP = BABYLON.Light && BABYLON.Light.prototype;
+  if (LP && !LP.__mb2SetEnabled && typeof LP.setEnabled === 'function') {
+    const orig = LP.setEnabled;
+    LP.__mb2SetEnabled = orig;
+    LP.setEnabled = function (v) {
+      v = !!v;
+      if (this.isEnabled(false) === v) return;   // sem mudança → sem `_resyncMeshes` (passeio por todas as meshes)
+      lightPerf.toggles++;
+      return orig.call(this, v);
+    };
+  }
+  const MP = BABYLON.AbstractMesh && BABYLON.AbstractMesh.prototype;
+  if (MP && !MP.__mb2LightDirty && typeof MP._markSubMeshesAsLightDirty === 'function') {
+    const orig = MP._markSubMeshesAsLightDirty;
+    MP.__mb2LightDirty = orig;
+    MP._markSubMeshesAsLightDirty = function (d) { lightPerf.lightDirty++; return orig.call(this, d); };
+  }
+  const MatP = BABYLON.Material && BABYLON.Material.prototype;
+  if (MatP && !MatP.__mb2MarkDirty && typeof MatP.markAsDirty === 'function') {
+    const orig = MatP.markAsDirty;
+    MatP.__mb2MarkDirty = orig;
+    MatP.markAsDirty = function (f) { lightPerf.matDirty++; return orig.call(this, f); };
+  }
+})();
+function compiledEffectCount() {
+  const ce = engine && engine._compiledEffects;
+  return ce ? Object.keys(ce).length : -1;
+}
+/* liga/desliga uma luz só quando muda (o patch acima já o garante; a guarda local é para o caso
+   de o patch não ter pegado numa versão futura do Babylon). */
+function setLightEnabled(L, on) {
+  on = !!on;
+  if (L.isEnabled(false) !== on) L.setEnabled(on);
+}
+const SPOT_SLOT_HOLD_S = 2.0;   // (2) histerese: quanto tempo um slot fica ligado a I=0 depois de deixar de ser usado
+let lightClockS = 0;            // relógio (s) dos slots — cópia de `tSec` feita no loop (evita TDZ: `tSec` é declarado mais abaixo)
+
 const N_SPOT_SLOTS = CONFIG.spots.length;
 const N_FLASH_SLOTS = Math.max(0, Math.round(num((CONFIG.choreo || {}).flashSlots, 4))) + 2;
 const MAX_SPOTS = N_SPOT_SLOTS + N_FLASH_SLOTS;
 const spotLights = [];
+const spotSlotLastUsed = new Float64Array(MAX_SPOTS);   // tSec da última vez que o slot teve um foco/flash
+const spotSlotAngle = new Float64Array(MAX_SPOTS);      // último `angle` escrito (idempotência)
+const spotSlotRGB = new Float64Array(MAX_SPOTS * 3);    // última cor escrita (idempotência)
+const _tmpPos = new BABYLON.Vector3(), _tmpDir = new BABYLON.Vector3(), _tmpCenter = new BABYLON.Vector3();
 for (let i = 0; i < MAX_SPOTS; i++) {
   const sp = CONFIG.spots[i] || { az: 0, el: 0, radius: 0.15, intensity: 0 };
   const dir = dirFromAzEl(sp.az, sp.el);
@@ -513,8 +585,10 @@ for (let i = 0; i < MAX_SPOTS; i++) {
   const light = new BABYLON.SpotLight('spot' + i, pos, toCenter, angle, 12, scene);
   light.intensity = CONFIG.spotLightIntensity * num(sp.intensity, 0);
   light.radius = 0.02;
-  light.diffuse = new BABYLON.Color3(1, 1, 1);
+  light.diffuse = new BABYLON.Color3(1, 1, 1);    // Color3 PRÓPRIA do slot — só se muta com `.set` (V0b)
   light.specular = new BABYLON.Color3(1, 1, 1);
+  spotSlotAngle[i] = angle; spotSlotRGB[i * 3] = spotSlotRGB[i * 3 + 1] = spotSlotRGB[i * 3 + 2] = 1;
+  spotSlotLastUsed[i] = -1e9;
   if (i >= N_SPOT_SLOTS) light.setEnabled(false);
   // o cone do pinspot continua para lá da bola e torrava a parede oposta ("parede de luz",
   // I até 2000 × albedo da sala = branco puro — visto a 2026-08-31). O pinspot real ilumina a
@@ -547,6 +621,37 @@ function spotColor(sp) {
   else if (h < 4) { g = x; b = c; } else if (h < 5) { r = x; b = c; } else { r = c; b = x; }
   return new BABYLON.Color3(r + m, g + m, b + m);
 }
+/* V0b: a mesma HSV→RGB sem alocar — escreve em `_spotRGB` (r,g,b) e devolve-o. */
+const _spotRGB = [1, 1, 1];
+function spotColorInto(sp) {
+  if (!CONFIG.spotColorOn) { _spotRGB[0] = _spotRGB[1] = _spotRGB[2] = 1; return _spotRGB; }
+  const h = ((num(sp.hue, 0) % 360) + 360) % 360 / 60, sat = Math.min(1, Math.max(0, num(CONFIG.spotSat, 1)));
+  const c = sat, x = c * (1 - Math.abs((h % 2) - 1)), m = 1 - c;
+  let r = 0, g = 0, b = 0;
+  if (h < 1) { r = c; g = x; } else if (h < 2) { r = x; g = c; } else if (h < 3) { g = c; b = x; }
+  else if (h < 4) { g = x; b = c; } else if (h < 5) { r = x; b = c; } else { r = c; b = x; }
+  _spotRGB[0] = r + m; _spotRGB[1] = g + m; _spotRGB[2] = b + m;
+  return _spotRGB;
+}
+/* V0b: escreve posição/mira/abertura/intensidade/cor num slot do pool SEM alocar e só tocando no
+   que mudou. `angle` tem setter caro (recalcula a matriz de projeção) → só quando muda de facto;
+   cor → `.set` na Color3 própria do slot, só quando muda. `enabled` fica a cargo do chamador. */
+function writeSpotSlot(k, S, I, angle, rgb) {
+  const light = spotLights[k];
+  _tmpPos.copyFrom(S).scaleInPlace(CONFIG.spotDist);
+  light.position.copyFrom(_tmpPos);
+  _tmpCenter.set(ballCenterX(), ballCenterY(), ballCenterZ());
+  _tmpDir.copyFrom(_tmpCenter).subtractInPlace(_tmpPos).normalize();
+  light.direction.copyFrom(_tmpDir);
+  if (Number.isFinite(angle) && Math.abs(angle - spotSlotAngle[k]) > 1e-5) { light.angle = angle; spotSlotAngle[k] = angle; }
+  light.intensity = CONFIG.spotLightIntensity * I;
+  const o = k * 3;
+  if (rgb[0] !== spotSlotRGB[o] || rgb[1] !== spotSlotRGB[o + 1] || rgb[2] !== spotSlotRGB[o + 2]) {
+    spotSlotRGB[o] = rgb[0]; spotSlotRGB[o + 1] = rgb[1]; spotSlotRGB[o + 2] = rgb[2];
+    light.diffuse.set(rgb[0], rgb[1], rgb[2]);
+    light.specular.set(rgb[0], rgb[1], rgb[2]);
+  }
+}
 function num(v, d) { return Number.isFinite(v) ? v : d; }
 const WHITE = new BABYLON.Color3(1, 1, 1);
 
@@ -565,13 +670,16 @@ function ballCenterY() { return num(ball && ball.centerY, 0); }
 function ballCenterX() { return num(ball && ball.centerX, 0); }
 function ballCenterZ() { return num(ball && ball.centerZ, 0); }
 
-let activeSpotCount = 0, activeFlashCount = 0;
+let activeSpotCount = 0, activeFlashCount = 0, heldSpotSlots = 0;
 function updateSpotLights() {
   /* `ball.mountedSpots` (F2) é a fonte única de verdade: já traz os focos com fade/spotFadeMix/
      spotGain/spotsOn/spotCount aplicados e, desde a F5, os FLASHES da coreografia a seguir a eles
      (`isFlash: true`, raio já sem `spotRadiusMul`). Percorre-se `mountedSpots` (não `CONFIG.spots`),
-     porque a lista já vem filtrada — o índice do array NÃO é o índice do `CONFIG.spots`. Os slots
-     do pool que sobram ficam `setEnabled(false)`.
+     porque a lista já vem filtrada — o índice do array NÃO é o índice do `CONFIG.spots` (a cor lê
+     `m.idx` quando o ball.js o publica; sem ele cai no índice da lista, como antes).
+     V0b: os slots que deixam de ser usados NÃO se desligam já — ficam a I=0 durante
+     `SPOT_SLOT_HOLD_S` (histerese) e só depois `setEnabled(false)`. Assim um flash por batida ou um
+     gesto de 300 ms nunca muda a lista de luzes dos materiais (= sem defines/shaders novos).
      Fallback (mountedSpots ainda não existe / ball em stub): az/el/intensity estáticos do CONFIG. */
   const mounted = (ball && ball.mountedSpots) || null;
   let used = 0, active = 0, flashes = 0;
@@ -580,26 +688,21 @@ function updateSpotLights() {
     for (let k = 0; k < mounted.length && used < MAX_SPOTS; k++) {
       const m = mounted[k];
       if (!m || !m.S || m.wide) continue;           // `wide` = luz indireta (RectAreaLight, não SpotLight)
-      const light = spotLights[used];
       const I = num(m.I, 0);
-      const S = new BABYLON.Vector3(m.S[0], m.S[1], m.S[2]);
       /* ⚠ REGRA 3 (handoff S10, David): a POSIÇÃO do corpo montado NUNCA muda. Com a F12 a bola
          sobe e desce ('bola: altura (m)'), mas o pinspot continua exatamente onde está pendurado
          — o que muda é a MIRA. Por isso `pos` é sempre `S·spotDist` no mundo (independente da cota
          da bola) e só a `direction` passa a apontar ao CENTRO REAL da bola (`ballCenter`). */
-      const pos = S.scale(CONFIG.spotDist);
-      light.position.copyFrom(pos);
-      light.direction = ballCenter().subtract(pos).normalize();
+      _tmpDir.set(m.S[0], m.S[1], m.S[2]);
       // o raio de `mountedSpots` já tem (ou não, se for flash) o spotRadiusMul aplicado (ball.js)
       // F13 §3: `m.r` vem em RAIOS da bola (ball.js:pushSpot) → `×ballRadius()` para metros.
-      light.angle = 2 * Math.atan(Math.max(0.01, num(m.r, 0.15)) * ballRadius() / CONFIG.spotDist) * 2.2;
-      light.intensity = CONFIG.spotLightIntensity * I;
+      const angle = 2 * Math.atan(Math.max(0.01, num(m.r, 0.15)) * ballRadius() / CONFIG.spotDist) * 2.2;
       // flashes não têm entrada em CONFIG.spots (nascem da coreografia) → cor branca
-      const col = m.isFlash ? WHITE : spotColor(CONFIG.spots[k] || {});
-      light.diffuse = col;
-      light.specular = col;
+      const src = m.isFlash ? null : (CONFIG.spots[Number.isInteger(m.idx) ? m.idx : k] || {});
+      const rgb = src ? spotColorInto(src) : (_spotRGB[0] = _spotRGB[1] = _spotRGB[2] = 1, _spotRGB);
+      writeSpotSlot(used, _tmpDir, I, angle, rgb);
       const enabled = I >= 0.02;
-      light.setEnabled(enabled);
+      if (enabled) { spotSlotLastUsed[used] = lightClockS; setLightEnabled(spotLights[used], true); }
       // HUD: focos e flashes contam-se em separado (`spots 2/2` continua a ser focos vs spotCount)
       if (enabled) { if (m.isFlash) flashes++; else active++; }
       used++;
@@ -607,23 +710,28 @@ function updateSpotLights() {
   } else {
     const n = Math.min(MAX_SPOTS, CONFIG.spots.length);
     for (let i = 0; i < n; i++) {
-      const sp = CONFIG.spots[i], light = spotLights[i];
-      const S = dirFromAzEl(sp.az, sp.el);
-      const pos = S.scale(CONFIG.spotDist);
+      const sp = CONFIG.spots[i];
       const I = num(sp.intensity, 0);
-      light.position.copyFrom(pos);
-      light.direction = ballCenter().subtract(pos).normalize();   // F12 §3: mira segue a bola (posição não)
-      light.angle = 2 * Math.atan((sp.radius * CONFIG.spotRadiusMul * ballRadius()) / CONFIG.spotDist) * 2.2; // F13 §3
-      light.intensity = CONFIG.spotLightIntensity * I;
-      const col = spotColor(sp);
-      light.diffuse = col; light.specular = col;
+      _tmpDir.copyFrom(dirFromAzEl(sp.az, sp.el));
+      const angle = 2 * Math.atan((sp.radius * CONFIG.spotRadiusMul * ballRadius()) / CONFIG.spotDist) * 2.2; // F13 §3
+      writeSpotSlot(i, _tmpDir, I, angle, spotColorInto(sp));
       const enabled = i < CONFIG.spotCount && sp.on !== false && I >= 0.02;
-      light.setEnabled(enabled);
-      if (enabled) active++;
+      if (enabled) { spotSlotLastUsed[i] = lightClockS; setLightEnabled(spotLights[i], true); active++; }
       used++;
     }
   }
-  for (let i = used; i < MAX_SPOTS; i++) spotLights[i].setEnabled(false);
+  /* slots sem foco ativo neste frame: I=0 e ficam ligados enquanto a histerese durar; depois
+     desligam-se (uma vez — `setLightEnabled` é idempotente). `held` = quantos estão no limbo. */
+  let held = 0;
+  for (let i = 0; i < MAX_SPOTS; i++) {
+    const L = spotLights[i];
+    if (!L.isEnabled(false)) continue;
+    if (lightClockS - spotSlotLastUsed[i] <= 1e-6) continue;            // usado neste frame
+    L.intensity = 0;
+    if (lightClockS - spotSlotLastUsed[i] > SPOT_SLOT_HOLD_S) setLightEnabled(L, false);
+    else held++;
+  }
+  heldSpotSlots = held;
   activeSpotCount = active; activeFlashCount = flashes;
 }
 
@@ -718,17 +826,17 @@ function updateAmbientLights(tSec) {
   let active = 0;
   for (let i = 0; i < MAX_AMBIENT; i++) {
     const L = ambientLights[i];
-    if (i >= n) { L.setEnabled(false); continue; }
+    if (i >= n) { setLightEnabled(L, false); continue; }
     const p = (poses && poses[i]) || ambientPoseFallback(i, tSec);
-    const dir = dirFromAzEl(p.az, p.el);
-    const pos = dir.scale(dist);
-    L.position.copyFrom(pos);
-    L.direction = BABYLON.Vector3.Zero().subtract(pos).normalize();
-    if (Number.isFinite(areaSize) && areaSize > 0) { L.width = areaSize; L.height = areaSize; }
+    _tmpPos.copyFrom(dirFromAzEl(p.az, p.el)).scaleInPlace(dist);
+    L.position.copyFrom(_tmpPos);
+    _tmpDir.copyFrom(_tmpPos).scaleInPlace(-1).normalize();
+    L.direction.copyFrom(_tmpDir);                                  // V0b: sem `= new Vector3` por frame
+    if (Number.isFinite(areaSize) && areaSize > 0 && (L.width !== areaSize || L.height !== areaSize)) { L.width = areaSize; L.height = areaSize; }
     const I = num(p.I, 0);
     // RectAreaLight tem escala própria (~0.1-2 lê como indireta); NÃO multiplicar por spotLightIntensity (lavava a cena a branco)
     L.intensity = I * CONFIG.ambientLightMul;
-    L.setEnabled(true);
+    setLightEnabled(L, true);                                       // V0b: só quando muda
     active++;
   }
   activeAmbientCount = active;
@@ -1731,6 +1839,8 @@ scene.registerBeforeRender(() => {
   const dt = Math.min(0.1, (now - lastFrame) / 1000);
   lastFrame = now;
   tSec += dt;
+  lightPerf.frames++;                 // V0b: denominador dos deltas de `MB2.__perf()`
+  lightClockS = tSec;
 
   // F13.5: lerp da câmara entre presets (só alpha/beta/radius — o target.y é do loop, ver camAnim)
   camPoseUpdate(dt);
@@ -1929,7 +2039,23 @@ window.MB2 = {
   scene, engine, camera, cfg: CONFIG, get ball() { return ball; },
   __perf: () => {
     const s = samples.slice().sort((a, b) => a - b);
-    return { medianRenderMs: s.length ? s[s.length >> 1] : 0, n: s.length, tiles: tileCount() };
+    /* V0b: contadores das luzes/shaders (ver bloco "PERF DAS LUZES"). Totais desde o arranque e
+       deltas (`d*`) desde a chamada ANTERIOR de `__perf()` — chamar duas vezes com ~10 s de música
+       no meio dá a taxa. `effects` = shaders compilados no engine (só deve crescer no arranque e
+       ao mudar knobs estruturais; se subir por batida, há recompilação). `lightsOn` = luzes
+       ativas na cena; `spotSlotsHeld` = slots dos focos em histerese (ligados a I=0). */
+    const P = lightPerf, L = P.last, effects = compiledEffectCount();
+    let lightsOn = 0; for (const l of scene.lights) if (l.isEnabled(false)) lightsOn++;
+    const out = {
+      medianRenderMs: s.length ? s[s.length >> 1] : 0, n: s.length, tiles: tileCount(),
+      effects, lightToggles: P.toggles, lightDirty: P.lightDirty, matDirty: P.matDirty,
+      dFrames: P.frames - L.frames, dEffects: effects - L.effects, dLightToggles: P.toggles - L.toggles,
+      dLightDirty: P.lightDirty - L.lightDirty, dMatDirty: P.matDirty - L.matDirty,
+      lightsOn, spotSlotsOn: spotLights.reduce((a, l) => a + (l.isEnabled(false) ? 1 : 0), 0), spotSlotsHeld: heldSpotSlots,
+      activeMeshes: scene.getActiveMeshes().length,
+    };
+    L.frames = P.frames; L.effects = effects; L.toggles = P.toggles; L.lightDirty = P.lightDirty; L.matDirty = P.matDirty;
+    return out;
   },
   /* Skin dark/white (Fase 4, Regra 1: só tecla `w`/botão/API — nenhum motor lhe toca). */
   setSkin,
