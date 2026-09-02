@@ -400,7 +400,7 @@ const room = buildRoom(scene, CONFIG);
    entrarem na renderList do ReflectionProbe — é o coração da F8: a bola TEM de os espelhar. */
 let hats = null;
 try {
-  const mod = await import('./hats.js?v=17');
+  const mod = await import('./hats.js?v=18');
   hats = mod.createHats(scene, CONFIG);
   console.log('hats.js carregado.');
 } catch (err) {
@@ -434,7 +434,7 @@ try {
    escrito o `bola (0/1)` do localStorage. Ver o bloco F11 lá em cima. */
 let mikado = null;
 try {
-  const mod = await import('./mikado.js?v=12');
+  const mod = await import('./mikado.js?v=13');
   mikado = mod.createMikado(scene, CONFIG);
   console.log('mikado.js carregado —', mikado.barCount, 'barras.');
   /* mesmo fix S9 "parede de luz" dos robots: as PointLight do flash do mikado são fortes e estão
@@ -474,7 +474,7 @@ try {
    os módulos leem `gain` com fallback 1 e correm como na F11. */
 let stardom = null;
 try {
-  const mod = await import('./stardom.js?v=5');
+  const mod = await import('./stardom.js?v=6');
   stardom = mod.createStardom(CONFIG, { hats });
   console.log('stardom.js carregado.');
 } catch (err) {
@@ -1560,7 +1560,7 @@ addEventListener('mb2-skin-restore', (ev) => { const s = ev.detail && ev.detail.
    O bloco `// ---- F5 music ----` (Sonnet) vem depois e não toca em nada daqui.
    ================================================================================================ */
 
-import { createChoreo } from './choreo.js?v=2';
+import { createChoreo } from './choreo.js?v=3';
 import { createExplode } from './explode.js';   // F7 (bloco `// ---- F7 explode ----`)
 const choreo = createChoreo(CONFIG);
 const reducedMotion = choreo.reducedMotion;
@@ -2332,7 +2332,7 @@ console.log('MB2 pronto —', engine.isWebGPU ? 'WebGPU' : 'WebGL2');
       MUSIC_BASES[0] + ').');
     // Ids de DOM esperados pelos 3 scripts: só `#mus` (web/music.js:2388, HUD tecla `m`) — já existe
     // em v2/index.html, escondido por omissão (.on liga/desliga, mesmo padrão do Canvas 2D).
-    const files = ['core.js?v=1', 'music.js?v=62', 'tuner.js?v=3'];
+    const files = ['core.js?v=1', 'music.js?v=63', 'tuner.js?v=3'];
     let i = 0;
     function next() {
       if (i >= files.length) { console.log('[F5 music] core.js/music.js/tuner.js carregados.'); return; }

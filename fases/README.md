@@ -19,6 +19,7 @@ Ordem de revisão sugerida (S14, 2026-09-02):
 | 10 | `S4-blackout` | v3 + 2D | Escuro antes do drop, haze fica |
 | 11 | `K2-contrato-knobs` | leitura | Regra 10 + lista de 23 constantes para decidires |
 | 12 | `S3c-housekeeping` | 2D + v3 | Disjuntor do motor na 2D, `spotGain` um escritor |
+| 13 | `K2b-ligar-knobs` | v3 tuner `k` | `compassos por frase` a mandar no estrelato, rampas no tuner |
 
 As fases lançadas depois (S3b, S4, S3c, K2…) são acrescentadas aqui pelo agente à medida que
 entram na branch. Regras fixas: nunca `music-config.json`; `?webgl=1` se algo sair preto; tab em
