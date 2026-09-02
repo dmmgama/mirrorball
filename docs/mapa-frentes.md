@@ -14,7 +14,7 @@ Não repete o CLAUDE.md nem os handoffs — aponta para eles.
 | Frente | O que é | Estado | Maior dívida | Próximo passo |
 |---|---|---|---|---|
 | **A · Motor de música & sync** | sidecar → `music.js` (kick/grelha/FSM/gestos) → `MUSIC.state` → peças da sala; estrelato (`stardom.js`) | **em dívida** — motor sólido, sala **sem relógio comum** (`audit-sync-motor.md`) | ninguém lê `beatPhase` exceto vultos; 9 relógios aleatórios; estrelato morre sem grelha | debate S0 **fechado** (`f16-sync.md`, S13) → **S1 relógio único** (Opus) |
-| **B · Motor visual & render** | Babylon 9, WebGPU/WebGL2, malha da bola + cadeia de cinza, probe, thin instances, pós, realismo | **maduro, perf em dívida** — V0 (freeze) e V1 (losango) feitos (S13); leitura ao vivo: ~30 ms manual, **+40 ms em modo música** dentro do `scene.render` (`f17-visual.md` §0.5); máquina degradada, baseline limpa por repetir | custo do modo música (suspeita: recompilação de shaders por luzes, armadilha 5); sem névoa real; sem sombras; renderList do probe 1391 meshes | **W1 V0b** (porquê +40 ms) · **W2** fog+exposição · **W5** sombras · **W6** mikado thin instances — em paralelo na janela Fable (handoff S13 §0) |
+| **B · Motor visual & render** | Babylon 9, WebGPU/WebGL2, malha da bola + cadeia de cinza, probe, thin instances, pós, realismo | **maduro, perf em dívida** — V0 (freeze) e V1 (losango) feitos (S13); leitura ao vivo: ~30 ms manual, **+40 ms em modo música** dentro do `scene.render` (`f17-visual.md` §0.5); máquina degradada, baseline limpa por repetir; **V6 feito (S14)**: mikado em thin instances, 672 → 4 meshes, cor por instância, sem materiais escritos por frame | custo do modo música (suspeita: recompilação de shaders por luzes, armadilha 5); sem névoa real; sem sombras; renderList do probe ~720 meshes (era 1391) | **W1 V0b** (porquê +40 ms) · **W2** fog+exposição · **W5** sombras — em paralelo na janela Fable (handoff S13 §0); V6 por ver ao vivo (probe/greyscale/liga-desliga) |
 | **C · Elementos físicos** | bola, corrente, mikado, chapéus, robots, vultos, sala/pilares — geometria e knobs ⟳ | **em evolução** — tudo existe, tudo por afinar ao vivo | estética "à sensação" (barras, vultos, chapéus); posição↔mira dos focos (regra 3) | afinar com o David com música real; separar posição↔mira |
 | **D · Luminárias & ambiente** | spots montados, feixes, dots, haze, wash, incidentes, flashes/strobe, choreo | **maduro** na bola, **em dívida** na coreografia da sala | choreo com relógios próprios; chapéus com duplo comando; 3 donos do `spotGain` | fica à espera do plano de sync (é a frente que ele mais toca) |
 | **E · Controlo, presets & UX** | painel `d`, **200** knobs (K1: +7), `mb2.*`, presets, `RENAMED`, disjuntores | **maduro** (auditado 2×, regra 9 com bateria) | `MANUAL.html` desatualizado; snapshot do localStorage em baterias | K2 (Fable): contrato "todo knob nasce em config" para as fases S/V |
@@ -169,7 +169,7 @@ Referência: `docs/babylon-reference.md` (armadilhas medidas), `docs/parity-canv
 
 **Dívidas.** Perf limpa; renderList do probe fixa no `attachProbe` (1391 meshes, cresce a cada
 fase — refazer no `rebuild()`); pool do probe/`refreshProbe()` caro ao arrastar sliders de geometria;
-mikado com 672 meshes base (candidato a thin instances, G3 do research); grão estático; "disco
+mikado já em thin instances (V6, S14: 4 meshes base; G3 do research fechado); grão estático; "disco
 branco de frente" mitigado por ACES, ideia `(1−Rz)^k` por fazer.
 
 **Próximo.** G1+G2 do `research-gpu-offload.md` §7: `freezeWorldMatrix` na sala (2 linhas) + baseline
