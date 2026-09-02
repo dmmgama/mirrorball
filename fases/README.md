@@ -17,6 +17,7 @@ Ordem de revisão sugerida (S14, 2026-09-02):
 | 8 | `K1-bateria-presets` | Node | Só confirmar 45/45 |
 | 9 | `S3b-mikado-choreo` | v3 música | Rajadas no tempo, cool-down do drop |
 | 10 | `S4-blackout` | v3 + 2D | Escuro antes do drop, haze fica |
+| 11 | `K2-contrato-knobs` | leitura | Regra 10 + lista de 23 constantes para decidires |
 
 As fases lançadas depois (S3b, S4, S3c, K2…) são acrescentadas aqui pelo agente à medida que
 entram na branch. Regras fixas: nunca `music-config.json`; `?webgl=1` se algo sair preto; tab em
