@@ -75,7 +75,7 @@
 // Todos com rampa, todos NaN-safe (regra 7), todos a 1.0 quando o sistema está desligado.
 //
 // KNOBS S2 (f16 §3): vivem em `MUSIC.config.sync` (motor → `music-config.json`), desenhados pelo
-// `tuner.js` secção «Sync (sala)». Lidos aqui com fallback aos defaults do research:
+// `tuner.js` a partir do §TUNE do motor. Lidos aqui com fallback aos defaults do research:
 //     sync.allOnReservePhrases   8    frases entre all-on (2-16)
 //     sync.breakdownBallHero     0    0 = bola discreta (techno) · 1 = bola+wash protagonistas
 //     sync.breakdownWash         0.3  wash da sala no breakdown discreto (0-1)
@@ -135,7 +135,10 @@ export function createStardom(CONFIG, deps = {}) {
   const hats = deps.hats || null;
   const S = () => CONFIG.stardom || {};
   const MSget = () => (typeof window !== 'undefined' && window.MUSIC && window.MUSIC.state) || null;
-  /* knobs S2: `MUSIC.config.sync` (tuner.js cria-o com os defaults); sem motor/tuner → defaults */
+  /* knobs S2: `MUSIC.config.sync` — o próprio motor (`music.js` §MUSIC.sync) publica o objeto e o
+     `music-config.json` é que manda; sem motor → `SYNC_DEFAULTS`. (Até ao S3c havia uma cópia
+     local destes knobs no `tuner.js`, criada quando o §TUNE ainda não tinha o grupo `sync`; era
+     código morto e foi removida — os defaults dos dois lados eram, e são, os mesmos.) */
   const SYNC = () => {
     const M = (typeof window !== 'undefined' && window.MUSIC && window.MUSIC.config) || null;
     const s = (M && M.sync && typeof M.sync === 'object') ? M.sync : {};
@@ -184,6 +187,7 @@ export function createStardom(CONFIG, deps = {}) {
     hatsGesture: 0,
     hatsNextAt: 0,         // próximo gesto dos chapéus (só no modo timer / sem relógio)
     hatsBeatDiv: 1,        // acentos: 1 = todos os tempos, 2 = tempos alternados… (teto 3 Hz)
+    hatsAuxAcc: 0,         // S3c: acumulador do apoio da estrela 'ball' (substitui o `Math.random()`)
     warned: false,
     changes: 0,            // trocas de estrela (HUD/diagnóstico)
   };
@@ -282,6 +286,7 @@ export function createStardom(CONFIG, deps = {}) {
     st.pending = '';
     st.hatsNextAt = tSec;
     st.hatsBeatDiv = 1;
+    st.hatsAuxAcc = 0;      // S3c: o crédito do apoio não atravessa a fronteira da secção
   }
 
   /* ---- S2: LEITOR DO RELÓGIO — contrato S1 (W3) com fallback aos campos de hoje ----
@@ -471,7 +476,13 @@ export function createStardom(CONFIG, deps = {}) {
         const periodMs = num(MS.bpmEst, 0) > 0 ? MS.bpmEst : 60000 / 128;
         const barsPerMin = 60000 / (periodMs * BEATS_PER_BAR);
         const p = clamp((perMin / Math.max(1, barsPerMin)) * (0.6 + 0.6 * a), 0, 1);
-        if (Math.random() < p) hats.pulse('one', tSec);
+        /* S3c: era `Math.random() < p`. Mesma taxa MÉDIA (`p` apoios por compasso), mas o
+           "quando" deixa de ser um dado: o acumulador soma `p` a cada compasso e dispara quando
+           passa 1, descontando 1 (nunca zerando — a fração que sobra é o crédito do compasso
+           seguinte, por isso a cadência acompanha `p` sem drift). Decisão 2 do f16-sync: o random
+           escolhe o QUÊ, o relógio decide o QUANDO. */
+        st.hatsAuxAcc = num(st.hatsAuxAcc, 0) + p;
+        if (st.hatsAuxAcc >= 1) { st.hatsAuxAcc -= 1; hats.pulse('one', tSec); }
         return;
       }
       if (tSec >= st.hatsNextAt) { st.hatsNextAt = tSec + 60 / perMin; hats.pulse('one', tSec); }

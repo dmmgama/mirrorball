@@ -720,6 +720,17 @@ function drawChain(x, yTop, spots) {
 }
 
 /* ---------------- API pública ---------------- */
+/* S3c — disjuntor do lado da BOLA (espelho de spike-babylon/v2/main.js:1657 `motorAllowed`).
+   Até aqui a bola 2D não filtrava NADA: `setSpot`/`flash`/`retarget`/`strobe` do motor entravam
+   com o knob 'focos+flashes: motor manda' a 0. Só as chamadas que declaram a ORIGEM
+   (`{fromMotor:true}`) são filtradas — a consola do David e as teclas continuam a passar. */
+function motorAllowed(kind, opts) {
+  if (!(opts && opts.fromMotor)) return true;
+  if (kind === 'spots') return CONFIG.spotsMotor !== false;
+  if (kind === 'beams') return CONFIG.beamsMotor !== false;
+  if (kind === 'opacity') return CONFIG.opacityMotor !== false;
+  return true;
+}
 window.MIRRORBALL = {
   setHealth(h) { health = clamp(+h || 0, 0, 1); syncPanel(); },
   getHealth() { return health; },
@@ -729,9 +740,14 @@ window.MIRRORBALL = {
   // Antes era ficheiro > localStorage e cada reload revertia os ajustes feitos em `d` sem "gravar".
   knobs: { get: () => knobsGet(), set: (o) => { knobFile = Object.assign({}, o || {}); const fill = {}; for (const k in (o || {})) if (!Number.isFinite(knobStore[k])) fill[k] = o[k];
     const n = knobsSet(fill, false); if (n) knobMsg.textContent = `${n} knobs do ficheiro (os teus ajustes locais mandam)`; return n; } },
-  setSpot(i, partial) { if (CONFIG.spots[i]) Object.assign(CONFIG.spots[i], partial || {}); },
+  setSpot(i, partial) {
+    if (!motorAllowed('spots', partial)) return;
+    // `fromMotor` é só o carimbo de origem — não é um campo do spot; não entra no CONFIG.
+    if (CONFIG.spots[i]) { const { fromMotor, ...p } = partial || {}; Object.assign(CONFIG.spots[i], p); }
+  },
   // flash curto num sítio novo (motor: bombo/tarola). opts: {intensity, radius, len, az, el, aim}
   flash(opts) {
+    if (!motorAllowed('spots', opts)) return;
     const o = opts || {}, C = CONFIG.choreo, p = randomPose();
     if (flashes.length >= C.flashSlots + 2) flashes.shift();
     flashes.push({ az: o.az != null ? o.az : p.az, el: o.el != null ? o.el : p.el, aim: o.aim || p.aim,
@@ -739,11 +755,14 @@ window.MIRRORBALL = {
       life: o.len || rnd(C.flashLen[0], C.flashLen[1]), age: 0 });
   },
   // re-aponta um spot já (o técnico muda o pinspot de sítio); sem pose → aleatória
-  retarget(i, pose) { const c = choreo[i]; if (!c || !CONFIG.spots[i]) return;
-    c.to = Object.assign(randomPose(), pose || {}, { pending: true }); c.mt = 0; },
+  retarget(i, pose) { if (!motorAllowed('spots', pose)) return;
+    const c = choreo[i]; if (!c || !CONFIG.spots[i]) return;
+    const { fromMotor, ...p } = pose || {};                 // carimbo de origem fora da pose
+    c.to = Object.assign(randomPose(), p, { pending: true }); c.mt = 0; },
   setChoreo(on) { CONFIG.choreo.enabled = !!on; },
   // estrobo de FUNDO (sala atrás). Só dispara se CONFIG.strobe.enabled (knob do David) e respeita minGapMs (≤ 3 Hz).
-  strobe(opts) { const ST = CONFIG.strobe, o = opts || {}; if (!ST || !ST.enabled || reducedMotion) return false;
+  strobe(opts) { if (!motorAllowed('spots', opts)) return false;
+    const ST = CONFIG.strobe, o = opts || {}; if (!ST || !ST.enabled || reducedMotion) return false;
     const t = performance.now(); if (t - strobeT0 < ST.minGapMs) return false;
     strobeT0 = t; strobeLevel = clamp(o.level != null ? o.level : ST.level, 0, 1); return true; },
   strobeEnabled() { return !!(CONFIG.strobe && CONFIG.strobe.enabled); },

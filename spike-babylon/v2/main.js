@@ -1580,7 +1580,17 @@ function effective(out) {
   A.rotationRpm = num(CONFIG.rotationRpm, 1);
   A.sphereOpacity = num(CONFIG.sphereOpacity, 1);
   A.haze = num(CONFIG.haze, 0.65);
-  out.spotGain = lerp(A.spotGain, D.spotGain, t);
+  /* S3c — `spotGain` tem UM DONO: `composeSpotGain()`.
+     `effective()` deixa de escrever o valor final e publica só a sua PARCELA (o health), em
+     `out.spotGainHealth`. O audit §b nº3 dizia "3 donos em série (health → ballOn → estrelato),
+     resultado não atribuível": eram três sítios do frame a fazer `E.spotGain = …`, e ao ler
+     qualquer um deles não se sabia se o número sobreviveria.
+     Não se colapsaram os três em um só porque não são redundantes — são três PARCELAS distintas
+     (health/silêncio · knob `bola (0/1)` · peso do estrelato) e apagar qualquer uma delas mudava
+     comportamento visível. O que muda é a forma: cada parcela é agora uma ENTRADA declarada,
+     `composeSpotGain()` é o único sítio que escreve `E.spotGain`, e a aritmética é exatamente a
+     mesma de antes (health × ballOn × estrelato, pela mesma ordem). */
+  out.spotGainHealth = lerp(A.spotGain, D.spotGain, t);
   out.rotationRpm = clamp(lerp(A.rotationRpm, D.rotationRpm, t) * (reducedMotion ? 0.03 : 1), 0, 3); // teto 3 rpm
   /* ---- F13 §2: o OVERRIDE MANUAL DA OPACIDADE tem de ser TOTAL ----
      O bug do David ("não consigo tirar o controlo da opacidade ao motor, e quando consigo não
@@ -1606,6 +1616,24 @@ function effective(out) {
   return out;
 }
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+
+/* ---- S3c: ÚNICO escritor de `E.spotGain` ----
+   Corre uma vez por frame, DEPOIS de `stardom.update()` (que publica `CONFIG.stardom.gain`) e
+   ANTES de `ball.update()` (o primeiro leitor). As três parcelas, pela ordem de sempre:
+     1. health — `E.spotGainHealth`, escrito por `effective()` (ALIVE→DEAD; o silêncio baixa a sala);
+     2. `bola (0/1)` — knob do David: com a bola desmontada tudo o que dela deriva (feixes, cone,
+        pontos, lente, auréola) tem de se calar, e o corte é 0 absoluto, não um multiplicador;
+     3. estrelato — `CONFIG.stardom.gain.ball`, o peso da bola quando a estrela é outra peça
+        (~0,45-0,55). Nunca é mute: a bola não pára nem apaga (regra 2 do CLAUDE.md).
+   Quem quiser mexer no peso da bola mexe na SUA parcela — não escreve aqui por cima. */
+function composeSpotGain(out) {
+  const health = num(out.spotGainHealth, 1);
+  if (CONFIG.ballOn === false) { out.spotGain = 0; return; }        // parcela 2: corte, não fator
+  const stardomOn = !!(stardom && CONFIG.stardom && CONFIG.stardom.on !== false);
+  const gb = stardomOn ? clamp(num(CONFIG.stardom.gain && CONFIG.stardom.gain.ball, 1), 0, 2) : 1;
+  const v = health * gb;
+  out.spotGain = Number.isFinite(v) ? v : health;                   // regra 7: rede final
+}
 
 /* ---- estrobo de FUNDO: a SALA atrás pisca, não a bola (index-v2.html:399-403) ----
    No Canvas 2D é um `fillRect` branco por cima do fundo, alpha = `level·(1 − age/lenMs)`. Aqui a
@@ -1780,7 +1808,10 @@ window.MIRRORBALL = {
   // flash curto num sítio novo (motor: bombo/tarola). opts: {intensity, radius, len, az, el, aim}
   flash(opts) { if (!motorAllowed('spots', opts)) return; choreo.flash(opts); },
   // re-aponta um spot já (o técnico muda o pinspot de sítio); sem pose → aleatória
-  retarget(i, pose) { if (!motorAllowed('spots', pose)) return; choreo.retarget(i, pose); },
+  // S3c: `fromMotor` é o carimbo de ORIGEM, não um campo da pose — o `choreo.retarget` faz
+  // `Object.assign(randomPose(), pose)` e levaria a flag para dentro do estado do spot.
+  retarget(i, pose) { if (!motorAllowed('spots', pose)) return;
+    const { fromMotor, ...p } = pose || {}; choreo.retarget(i, p); },
   setChoreo(on) { choreo.setEnabled(on); },
   // estrobo de FUNDO (sala atrás). Só dispara se CONFIG.strobe.enabled e respeita minGapMs (≤ 3 Hz).
   strobe(opts) { if (!motorAllowed('spots', opts)) return false; return fireStrobe(opts); },
@@ -1989,7 +2020,9 @@ let frameEma = 16, dotDensityLive = num(CONFIG.dotDensity, 0.8);
 /* F7: `exS`/`exFloat`/`angle0` entram no `E` com valor inicial FINITO (regra 7 — um NaN aqui
    multiplicava a geometria toda por NaN e apagava a bola). Em idle `exS` é 0 e o `ball.js` nem
    entra no caminho da explosão. */
-const E = { spotGain: 1, rotationRpm: CONFIG.rotationRpm, sphereOpacity: CONFIG.sphereOpacity, haze: CONFIG.haze, skinMix: 0,
+// S3c: `spotGainHealth` é a parcela do health; `spotGain` é o composto (`composeSpotGain`). Ambos
+// com valor inicial finito (regra 7) — o 1º frame lê-os antes de qualquer escrita.
+const E = { spotGain: 1, spotGainHealth: 1, rotationRpm: CONFIG.rotationRpm, sphereOpacity: CONFIG.sphereOpacity, haze: CONFIG.haze, skinMix: 0,
   choreoGain: [], flashes: choreo.flashes, exS: 0, exFloat: 0, angle0: 0 };
 let hatsProbeRefreshed = false; // F8: força um refresh extra do probe assim que os chapéus se posicionam (ver hats.update abaixo)
 scene.registerBeforeRender(() => {
@@ -2005,7 +2038,7 @@ scene.registerBeforeRender(() => {
 
   // ---- F5: sanitiza o que o motor escreveu no CONFIG (tetos invioláveis) e resolve o health ----
   sanitizeConfig();
-  effective(E);                       // escreve spotGain/rotationRpm/sphereOpacity/haze
+  effective(E);                       // escreve spotGainHealth/rotationRpm/sphereOpacity/haze
   choreo.step(dt);                    // gains por spot + flashes Poisson (congela em reducedMotion)
   E.choreoGain.length = CONFIG.spots.length;
   for (let i = 0; i < E.choreoGain.length; i++) E.choreoGain[i] = choreo.gainOf(i);
@@ -2045,9 +2078,11 @@ scene.registerBeforeRender(() => {
      por 5 módulos, zera-se `E.spotGain` ANTES do `ball.update`: os focos montados saem todos com
      I=0 e cada módulo já sabe apagar-se com entrada vazia (beams/dots/incident fazem
      `setEnabled(false)` + `thinInstanceCount = 0` — armadilha S9 nº1 já tratada por eles).
-     `applyBallVisibility()` (chamada mais abaixo, depois dos updates) esconde as meshes da bola. */
+     `applyBallVisibility()` (chamada mais abaixo, depois dos updates) esconde as meshes da bola.
+     S3c: o zero deixou de se escrever AQUI — é a parcela 2 do `composeSpotGain()`, chamado logo a
+     seguir ao estrelato (e na mesma, antes do `ball.update`). Esta variável fica só para a
+     visibilidade das meshes. */
   const ballMounted = CONFIG.ballOn !== false;
-  if (!ballMounted) E.spotGain = 0;
 
   /* ---- F12 §5: ESTRELATO ----
      Corre ANTES do `ball.update` porque publica `CONFIG.stardom.gain`, que a bola (via `E.spotGain`,
@@ -2061,12 +2096,11 @@ scene.registerBeforeRender(() => {
   /* O peso da BOLA no estrelato entra pelo MESMO canal que o `bola (0/1)` já usava: `E.spotGain`.
      Não é um mute (a bola nunca pára nem apaga — regra 2 do CLAUDE.md): com o mikado ou os chapéus
      como estrela a bola desce para ~0,45-0,55 do seu peso e passa a fundo, que é o que um técnico
-     faz quando quer que se olhe para outro lado. Com a bola desmontada, `E.spotGain` já é 0 acima
-     e a multiplicação mantém-no lá. */
-  if (stardom && CONFIG.stardom && CONFIG.stardom.on !== false) {
-    const gb = clamp(num(CONFIG.stardom.gain && CONFIG.stardom.gain.ball, 1), 0, 2);
-    E.spotGain = num(E.spotGain, 1) * gb;
-  }
+     faz quando quer que se olhe para outro lado.
+     S3c: a multiplicação passou para dentro do `composeSpotGain()` — a chamada é aqui, no mesmo
+     ponto do frame de sempre (depois do `stardom.update()`, antes do `ball.update()`), para que a
+     sala continue a reagir ao estrelato DESTE frame e não do anterior. */
+  composeSpotGain(E);
 
   // ball.update primeiro: monta mountedSpots/ambientPoses deste frame (fonte única de verdade),
   // as SpotLight/RectAreaLight lêem-nos a seguir, no MESMO frame.
