@@ -118,6 +118,26 @@ window.CONFIG = {
   curvesHighHue: 40,         // knob 'pós: altas matiz' (0-360) — âmbar quente
   curvesHighDensity: 10,     // knob 'pós: altas tinta' (0-100)
   curvesSaturation: 0,       // knob 'pós: curvas saturação' (-100..100, global)
+
+  /* ---- V5 (S14, research-realismo §4 #5 / §5 R5): SOMBRAS projetadas (ShadowGenerator) ----
+     Default DESLIGADO até o David aprovar ao vivo (custa um passe de profundidade por luz e por
+     frame; PointLight = 6 passes). Só as luzes "hero" da fonte escolhida projetam; enchimento
+     (wash, hemisféricas, RectAreaLight) nunca. ⚠ Os planos da sala estão em `excludedMeshes` dos
+     focos da bola, dos robots e do mikado (fix S9 "parede de luz") — uma sombra só aparece em quem
+     a luz ILUMINA, por isso com a fonte 0/1 o chão/paredes só recebem sombra se
+     `sombras: chão recebe (0/1)` tirar o CHÃO (só o chão) da exclusão dessas luzes enquanto as
+     sombras estiverem ligadas. Os chapéus (fonte 2) já pintam chão/paredes/pilares por si. */
+  shadowsOn: 0,              // knob 'sombras (0/1)'
+  shadowSource: 0,           // knob 'sombras: fonte (0=focos,1=mikado,2=chapéus)'
+  shadowMaxLights: 2,        // knob 'sombras: luzes máx' (1-4) — as N primeiras luzes da fonte
+  shadowMapPx: 1024,         // knob 'sombras: mapa (px)' (512/1024/2048)
+  shadowStrength: 0.75,      // knob 'sombras: escuridão' (0-1): 1 = preto; Babylon `darkness` = 1 − isto
+  shadowQuality: 1,          // knob 'sombras: suavização' 0 PCF baixo · 1 PCF médio · 2 PCF alto · 3 PCSS (contacto)
+  shadowBias: 0.001,         // knob 'sombras: bias' (0-0.02)
+  shadowNormalBias: 0.01,    // knob 'sombras: normal bias' (0-0.1)
+  shadowEdge: 0.15,          // knob 'sombras: orla' (0-1): frustumEdgeFalloff — esbate a sombra na orla do cone
+  shadowFloorOn: 0,          // knob 'sombras: chão recebe (0/1)' — o chão sai da exclusão das luzes com sombra
+  shadowCrowdCasts: 0,       // knob 'sombras: vultos projetam (0/1)' — 640 meshes no mapa: caro, medir
   opacityMotor: false,       // false (defeito, pedido do David) = o motor não escreve sphereOpacity; liga-se no painel d
   beamsMotor: true,          // false = o motor não toca em beamFraction/beamIntensity/haze
   spotsMotor: true,          // false = o motor não toca na intensidade dos focos (nem flashes)

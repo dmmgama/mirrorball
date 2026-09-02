@@ -594,6 +594,20 @@ export async function initPanel(CONFIG, hooks = {}) {
     // ---- dança (ao vivo, sem rebuild) ----
     ['vultos: dança amplitude', 0, 2, 0.05, v => CONFIG.crowd.danceAmp = v, () => CONFIG.crowd.danceAmp],
     ['vultos: bpm sem motor', 60, 160, 1, v => CONFIG.crowd.autoBpm = v, () => CONFIG.crowd.autoBpm],
+    /* ---- V5 (S14): SOMBRAS (ShadowGenerator) — ao vivo, o main.js recria o rig quando um destes
+       muda (on/fonte/luzes/mapa/suavização/chão/vultos) e só escreve uniforms para o resto. Default
+       0 até o David aprovar. Ver config.js (bloco V5) e docs/f17-visual.md §2. */
+    ['sombras (0/1)', 0, 1, 1, v => CONFIG.shadowsOn = (v >= 0.5 ? 1 : 0), () => (num(CONFIG.shadowsOn, 0) >= 0.5 ? 1 : 0)],
+    ['sombras: fonte (0=focos,1=mikado,2=chapéus)', 0, 2, 1, v => CONFIG.shadowSource = Math.round(v), () => num(CONFIG.shadowSource, 0)],
+    ['sombras: luzes máx', 1, 4, 1, v => CONFIG.shadowMaxLights = Math.round(v), () => num(CONFIG.shadowMaxLights, 2)],
+    ['sombras: mapa (px)', 512, 2048, 512, v => CONFIG.shadowMapPx = v, () => num(CONFIG.shadowMapPx, 1024)],
+    ['sombras: escuridão', 0, 1, 0.05, v => CONFIG.shadowStrength = v, () => num(CONFIG.shadowStrength, 0.75)],
+    ['sombras: suavização', 0, 3, 1, v => CONFIG.shadowQuality = Math.round(v), () => num(CONFIG.shadowQuality, 1)],
+    ['sombras: bias', 0, 0.02, 0.0005, v => CONFIG.shadowBias = v, () => num(CONFIG.shadowBias, 0.001)],
+    ['sombras: normal bias', 0, 0.1, 0.002, v => CONFIG.shadowNormalBias = v, () => num(CONFIG.shadowNormalBias, 0.01)],
+    ['sombras: orla', 0, 1, 0.05, v => CONFIG.shadowEdge = v, () => num(CONFIG.shadowEdge, 0.15)],
+    ['sombras: chão recebe (0/1)', 0, 1, 1, v => CONFIG.shadowFloorOn = (v >= 0.5 ? 1 : 0), () => (num(CONFIG.shadowFloorOn, 0) >= 0.5 ? 1 : 0)],
+    ['sombras: vultos projetam (0/1)', 0, 1, 1, v => CONFIG.shadowCrowdCasts = (v >= 0.5 ? 1 : 0), () => (num(CONFIG.shadowCrowdCasts, 0) >= 0.5 ? 1 : 0)],
   ];
   for (const s of newSliders) { sliders.push(s); PERSIST.add(s[0]); }
 
@@ -754,6 +768,9 @@ export async function initPanel(CONFIG, hooks = {}) {
       'cor (0/1)', 'fundo: claridade (dark)', 'sala: wash (0-1)', 'sala: wash matiz',
       'luz indireta', 'indireta: área°', 'indireta: luz ×',
       'sala: albedo base', 'sala: névoa densidade', 'sala: névoa cor (cinza)',
+      'sombras (0/1)', 'sombras: fonte (0=focos,1=mikado,2=chapéus)', 'sombras: luzes máx', 'sombras: mapa (px)',
+      'sombras: escuridão', 'sombras: suavização', 'sombras: bias', 'sombras: normal bias', 'sombras: orla',
+      'sombras: chão recebe (0/1)', 'sombras: vultos projetam (0/1)',
       'refl: chão', 'refl: teto', 'refl: paredes fundo', 'refl: paredes laterais',
       'sala: pé-direito (m)',
       'pilares: vão entre filas (m)', 'pilares: passo na fila (m)', 'pilares: lado (m)',
