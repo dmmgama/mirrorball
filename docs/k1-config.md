@@ -92,3 +92,27 @@ Cache-busters: `index.html` → `main.js?v=41`; dentro de `main.js` →
 
 `node web/test-music-f2.js`: 15/16 (mesma falha pré-existente do gerador sintético/FSM, não
 relacionada com K1 — `music.js` não foi tocado).
+
+## 6. Bateria Node da regra 9 (2026-09-02, Sonnet, worktree `agent-a2122e150859dacf1`)
+
+A bateria do §4 é manual (browser, `panel.js` toca no DOM). Esta é a versão **Node, sem browser**,
+pedida no handoff S14 §2.7: `spike-babylon/v2/test-knobs-compat.js`. Corre o `panel.js`/`config.js`
+ATUAIS (lidos de `934abc3` via `git show`, para não depender do HEAD do worktree) num sandbox `vm`
+— o MESMO padrão do `gen-knobs-default.js` — com um stub de `localStorage` PRÉ-CARREGADO com um
+`mb2.knobs` "gravado numa versão anterior" (obtido também por `git show <commit>:…/knobs-default.json`),
+mais lixo e valores não-finitos injetados. Passa pelo caminho de load REAL: `initPanel()` (camada 3,
+`startValue`) e `knobsSet()` (o caminho dos presets/botões), sem simular o parsing.
+
+**Comando:** `node spike-babylon/v2/test-knobs-compat.js`
+
+| commit testado | nº knobs no ficheiro antigo | resultado |
+|---|---|---|
+| `4d5cbbd` (pré-K1, o mais próximo disponível — 194 não existe em nenhum commit) | 193 | OK — todos sobrevivem, 0 lixo, 0 não-finitos |
+| `8a87e7c` (merge K1) | 201 | OK — todos sobrevivem, 0 lixo, 0 não-finitos |
+| `a7f42b8` (handoff S13 final) | 201 | OK — todos sobrevivem, 0 lixo, 0 não-finitos |
+
+**45/45 asserções passaram** (i-vi da tarefa, por commit, mais um teste isolado do `RENAMED` — os
+três ficheiros testados são pós-F13 e já usam o nome novo `bola: opacidade (0-1)`, por isso o rename
+em si é testado à parte com um `mb2.knobs` sintético só com o nome pré-F13
+`sphereOpacity (motor manda)`). Nenhum bug real encontrado no `panel.js` — a regra 9 aguenta os três
+pontos da história testados, incluindo os 220 knobs de hoje a carregarem um ficheiro de 193.
