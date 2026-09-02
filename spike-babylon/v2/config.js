@@ -96,7 +96,28 @@ window.CONFIG = {
   bloomBlurPx: 9,            // raio do blur (em px CSS, a meia resolução)
   bloomThreshold: 0.8,       // NOVO (F4): fonte do bloom = só o que já está quase branco (~ gl>0.35 do Canvas 2D)
   postTonemap: 1,            // NOVO (F4): 0/1 — ACES tonemap no DefaultRenderingPipeline (knob, handoff S7)
-  postExposure: 1,           // NOVO (F4): exposição do pipeline (0.3-2)
+  postExposure: 0.85,        // (F4) exposição do pipeline (0.3-2). V3 (S14): default 1 → 0.85 — clube escuro
+                             // com picos; o ACES mantém-se, só baixa o ponto de partida (knob 'pós: exposição')
+
+  /* ---- V2 (S14, research-realismo §5 R2): névoa NATIVA do Babylon (scene.fogMode EXP) ----
+     Independente do `haze` (que só pinta feixes/auréola): isto é a atenuação atmosférica de TUDO o
+     que está longe (pilares do fundo perdem nitidez). Default quase impercetível — a 10 m de
+     distância exp(-10·0.004) = 4 % de mistura; sobe-se ao vivo. Materiais aditivos (feixes, pontos,
+     auréola, incidentes) ficam FORA do fog (main.js: fogExclusions), senão a cor do fog somava-se. */
+  fogDensity: 0.004,         // knob 'sala: névoa densidade' (0-0.05, ao vivo)
+  fogGrey: 0.03,             // knob 'sala: névoa cor (cinza)' (0-1): cinza do fog em dark — coerente com
+                             // baseAlbedo 0.055 iluminado a meio; em skin white interpola para o fundo claro
+
+  /* ---- V3 (S14, research-realismo §5 R3): ColorCurves no pipeline — sombras frias, altas quentes.
+     `density` (0-100) é o que TINGE (matiz × densidade → multiplicador RGB); `saturation` só escala o
+     croma que já existe. Com 'cor (0/1)' a 0 as curvas DESLIGAM-SE (main.js) — um pixel cinza × tinta
+     ficava colorido, e a regra 6 diz greyscale neutro. Valores em unidades do Babylon ColorCurves. */
+  curvesOn: 1,               // knob 'pós: curvas (0/1)'
+  curvesShadowHue: 220,      // knob 'pós: sombras matiz' (0-360) — azul frio
+  curvesShadowDensity: 12,   // knob 'pós: sombras tinta' (0-100)
+  curvesHighHue: 40,         // knob 'pós: altas matiz' (0-360) — âmbar quente
+  curvesHighDensity: 10,     // knob 'pós: altas tinta' (0-100)
+  curvesSaturation: 0,       // knob 'pós: curvas saturação' (-100..100, global)
   opacityMotor: false,       // false (defeito, pedido do David) = o motor não escreve sphereOpacity; liga-se no painel d
   beamsMotor: true,          // false = o motor não toca em beamFraction/beamIntensity/haze
   spotsMotor: true,          // false = o motor não toca na intensidade dos focos (nem flashes)
