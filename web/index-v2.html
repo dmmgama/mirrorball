@@ -164,9 +164,11 @@ const CONFIG = {
     scramble: 8,             // quantos espelhos (±) cada faixa está desviada da posição resolvida
     snap: 1,                 // 1 = no resolvido os espelhos encaixam numa grelha de meridianos (juntas verticais de polo a polo); 0 = só rodar
     block: 3,                // xadrez: lado do bloco em espelhos
-    boltZig: 4,              // trovões: filas por perna do ziguezague
-    boltEvery: 16,           // trovões: espelhos entre raios (à volta da bola)
-    boltWidth: 2,            // trovões: largura do raio em espelhos
+    boltCount: 2,            // trovões: quantos raios ⚡ à volta da bola (2 = há quase sempre um à frente)
+    boltSlope: 0.7,          // trovões: espelhos de deslocação lateral por fila (inclinação das pernas)
+    boltJog: 12,             // trovões: comprimento do salto horizontal a meio, em espelhos
+    boltWidth: 3,            // trovões: largura do raio em espelhos
+    boltGain: 2.0,           // trovões: brilho do raio (× amp/2 somado ao cinza)
   },
   explode: {               // estoiro em estilhaços (MIRRORBALL.explode() / tecla x); tudo paramétrico em s∈[0,1] → rewind = s a descer
     burstSec: 0.16,          // 1º tempo: estoiro seco até burstS (ainda tem forma de bola, só rachada)
@@ -294,10 +296,26 @@ function rubikBuild() {
     let P;
     if (R.pattern === 'diagonais') P = (Math.floor(((c + i) % ncol) / blk) % 2) ? 0.8 + 0.2 * T.h0 : 0.2 * T.h0; // riscas de `block` espelhos
     else if (R.pattern === 'xadrez') P = ((Math.floor(c / blk) + Math.floor(i / blk)) % 2) ? 0.8 + 0.2 * T.h0 : 0.2 * T.h0;
-    else if (R.pattern === 'trovoes') { // raios em ziguezague: diagonal que inverte de sentido a cada `zig` filas
-      const zig = Math.max(2, Math.round(R.boltZig)), ph = i % (2 * zig);
-      const x = (c + (ph < zig ? ph : 2 * zig - ph) + Math.floor(i / (2 * zig)) * zig) % R.boltEvery;
-      P = x < R.boltWidth ? 0.85 + 0.15 * T.h0 : 0.15 * T.h0;
+    else if (R.pattern === 'trovoes') { // um raio ⚡ por bolt: diagonal do topo até meio, salto horizontal, diagonal até baixo
+      const d = rows - 1 - i, dm = Math.round(rows / 2);           // d = filas desde o topo (norte)
+      const n = Math.max(1, Math.round(R.boltCount)), half = R.boltWidth / 2;
+      let on = false;
+      for (let b = 0; b < n && !on; b++) {
+        // no ecrã a coluna cresce para a ESQUERDA: +x = para a esquerda (desenho do David: topo-dir → meio-esq → salto p/ dir → baixo-esq)
+        const c0 = b * ncol / n, xm = c0 + R.boltSlope * dm;       // coluna do raio no topo e a meio
+        const x = d <= dm ? c0 + R.boltSlope * d : xm - R.boltJog + R.boltSlope * (d - dm);
+        const dx = ((c + 0.5 - x) % ncol + ncol * 1.5) % ncol - ncol / 2;
+        on = Math.abs(dx) <= half;
+        if (!on && d === dm) {                                     // a perna horizontal do ⚡
+          const dj = ((xm - (c + 0.5)) % ncol + ncol) % ncol;
+          on = dj <= R.boltJog + half;
+        }
+      }
+      // fora do raio a bola fica como hoje (tom aleatório, nada somado); o raio é luz a mais
+      P = on ? 1 : T.h0;
+      T.grey = lo + lerp(T.h0, P, clamp(R.force, 0, 1)) * (hi - lo);
+      T.rk = on ? 0.5 + 0.5 * R.boltGain : 0.5;
+      continue;
     }
     else P = hash(c * 3.1 + 0.7);                                  // colunas
     T.grey = lo + lerp(T.h0, P, clamp(R.force, 0, 1)) * (hi - lo);
