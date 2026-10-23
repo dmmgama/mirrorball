@@ -42,3 +42,15 @@ boltWidth 2, amp 0.30). Com force=0 e solve=0 a bola é idêntica à de hoje.
 - Imagens (fora do git, 16 MB): `fases/R0-rubik-imagens/<padrão>/`; folha de comparação publicada
   como artifact "Rubik na bola". Leitura: colunas, xadrez e trovões leem-se no resolvido;
   diagonais só no hemisfério de baixo (precisam de trabalho).
+
+## F0 — afinações seguintes (2026-10-23)
+
+- **Encaixe** (`rubik.snap` 1): no resolvido os espelhos encaixam numa grelha de meridianos → juntas
+  verticais de polo a polo (pedido do David: "nas colunas não pode alinhar as juntas?").
+- **Raios** (pedido do David com desenho + anexos): não é ziguezague repetido — silhuetas ⚡ cheias,
+  4 variantes (`boltShape` 1 clássico · 2 esguio · 3 dois dentes · 4 fino · 0 alterna), topo desfeito
+  em pontos (`boltDissolve`), `boltCount` 2, `boltW` 22, `boltH` 0.85, `boltGain` 3.5.
+  Fora do raio a bola fica como hoje.
+- **Tons não iguais** (`rubik.jitter` 0.35): David — "um xadrez ou uma diagonal percebe-se mesmo
+  que os tons não sejam 100% iguais", e a bola fica menos aborrecida. O xadrez perde algum contraste.
+- David gosta de colunas, diagonais e xadrez; raios ok com o novo desenho.
