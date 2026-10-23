@@ -17,3 +17,14 @@ Branch `skin-rubik`, worktree `../MirrorBall-skin-rubik` (a V3 em `../MirrorBall
    V3 não correm ao mesmo tempo; se um dia for preciso, decide-se então (p.ex. :8098 no sidecar). — 2026-10-23
 3. A afinação da bola 2D vem do `web/music-config.json` (secção `ball`, 220 knobs, manda sobre o
    localStorage) — copiado da V3 para a worktree. — 2026-10-23
+
+## O efeito (David, 2026-10-23)
+
+Não é cor nem cópia do cubo — é o **mecanismo**: a bola continua a girar e a fazer tudo normalmente;
+de vez em quando **faixas da bola rodam à parte** (uma, blocos, variar; eventualmente em contra-sentido
+— experimentar) até a bola ficar **"resolvida"**, e depois **desfaz-se**. É uma nuance, não o centro
+das atenções: ligar/desligar, slider de força, e probabilidade de o motor o correr.
+
+4. "Resolvido" = **padrão escondido nos tons** dos espelhos (tom de cada espelho vem da sua posição
+   resolvida; baralhado lê-se aleatório como hoje), com ou sem **juntas alinhadas** conforme o padrão.
+   Só juntas não chega (1-2 px). Padrões possíveis: riscas verticais, diagonais, xadrez… — 2026-10-23
