@@ -166,9 +166,10 @@ const CONFIG = {
     block: 3,                // xadrez: lado do bloco em espelhos
     jitter: 0.35,            // 0 = tons do padrão iguais; →1 = cada espelho guarda mais do seu tom (padrão lê-se, bola menos chapada)
     boltCount: 2,            // trovões: quantos raios ⚡ à volta da bola (2 = há quase sempre um à frente)
-    boltShape: 0,            // trovões: 1 clássico · 2 esguio · 3 dois dentes · 4 fino · 0 = alterna entre raios
-    boltW: 22,               // trovões: largura da silhueta em espelhos
-    boltH: 0.85,             // trovões: altura do raio em fração da bola (polo a polo = 1)
+    boltShape: 1,            // trovões: 1 desenho do David · 2 esguio · 3 dois dentes · 4 fino · 0 = alterna entre raios
+    boltW: 26,               // trovões: largura da silhueta em espelhos
+    boltH: 0.92,             // trovões: altura do raio em fração da bola (polo a polo = 1)
+    boltEdge: 1.6,           // trovões: quanto escurece a orla de 1 espelho à volta do raio (contorno nítido); 0 = sem orla
     boltDissolve: 0,         // trovões: 0 = raio cheio; →1 = topo desfaz-se em pontos soltos
     boltGain: 3.5,           // trovões: brilho do raio (× amp/2 somado ao cinza); 2 lia-se fraco com a afinação ballLight 1
   },
@@ -280,7 +281,7 @@ function buildTiles() { // reconstrói a malha (knob "espelhos: filas" no painel
 const rubikDelta = [];
 // silhuetas dos raios em (x, y) normalizados: x 0 = esquerda, y 0 = topo, y 1 = ponta (anexos do David)
 const RUBIK_BOLTS = [
-  [[0.45, 0], [0.95, 0], [0.6, 0.4], [0.85, 0.4], [0.15, 1], [0.38, 0.55], [0.12, 0.55]],                 // 1 clássico
+  [[0.72, 0], [0, 0.47], [0.41, 0.46], [0.27, 1], [1, 0.36], [0.54, 0.34]],                               // 1 desenho do David (vermelho sobre o esguio, medido)
   [[0.5, 0], [0.88, 0], [0.62, 0.38], [0.8, 0.38], [0.25, 1], [0.42, 0.52], [0.24, 0.52]],                // 2 esguio
   [[0.5, 0], [0.95, 0], [0.7, 0.3], [0.88, 0.3], [0.55, 0.62], [0.72, 0.62], [0.2, 1], [0.38, 0.7],
    [0.2, 0.7], [0.42, 0.4], [0.25, 0.4]],                                                                 // 3 dois dentes
@@ -319,7 +320,8 @@ function rubikBuild() {
     else if (R.pattern === 'trovoes') { // raios ⚡ cheios (silhueta), variantes em RUBIK_BOLTS
       const yn = (rows - 1 - i + 0.5 - rows * (1 - R.boltH) / 2) / (rows * R.boltH); // 0 = topo do raio, 1 = ponta
       const n = Math.max(1, Math.round(R.boltCount));
-      let on = false;
+      let on = false, edge = false;
+      const ey = 1 / (rows * R.boltH);                             // uma fila em y normalizado
       for (let b = 0; b < n && !on; b++) {
         const c0 = b * ncol / n;                                   // coluna do centro do raio b
         const dx = ((c + 0.5 - c0) % ncol + ncol * 1.5) % ncol - ncol / 2;
@@ -327,6 +329,9 @@ function rubikBuild() {
         const shape = R.boltShape > 0 ? Math.round(R.boltShape) : 1 + (b % RUBIK_BOLTS.length);
         const poly = RUBIK_BOLTS[Math.min(RUBIK_BOLTS.length, shape) - 1];
         on = inPoly(poly, xn, yn);
+        // orla: espelho fora do raio mas encostado a ele (1 espelho em qualquer direção) → escurece = contorno nítido
+        if (!on) { const ex = 1 / R.boltW;
+          edge = edge || inPoly(poly, xn + ex, yn) || inPoly(poly, xn - ex, yn) || inPoly(poly, xn, yn + ey) || inPoly(poly, xn, yn - ey); }
         const dz = clamp(R.boltDissolve, 0, 1);
         if (dz > 0) { // topo desfeito em pontos (anexo do David): dentro rareia para cima, fora há pontos soltos à direita
           const h = hash(T.h0 * 91.7 + b);
@@ -337,7 +342,8 @@ function rubikBuild() {
       // fora do raio a bola fica como hoje (tom aleatório, nada somado); o raio é luz a mais
       P = on ? 1 : T.h0;
       T.grey = lo + lerp(T.h0, P, clamp(R.force, 0, 1)) * (hi - lo);
-      T.rk = on ? 0.5 + 0.5 * R.boltGain : 0.5;
+      T.rk = on ? 0.5 + 0.5 * R.boltGain : edge ? 0.5 - 0.5 * R.boltEdge : 0.5;
+      if (edge && !on) T.grey = lo;                                // orla no cinza mais escuro da bola
       continue;
     }
     else P = hash(c * 3.1 + 0.7);                                  // colunas
