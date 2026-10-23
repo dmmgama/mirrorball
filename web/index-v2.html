@@ -164,12 +164,12 @@ const CONFIG = {
     scramble: 8,             // quantos espelhos (±) cada faixa está desviada da posição resolvida
     snap: 1,                 // 1 = no resolvido os espelhos encaixam numa grelha de meridianos (juntas verticais de polo a polo); 0 = só rodar
     block: 3,                // xadrez: lado do bloco em espelhos
-    jitter: 0.35,            // 0 = tons do padrão iguais; →1 = cada espelho guarda mais do seu tom (padrão lê-se, bola menos chapada)
+    jitter: 0.45,            // 0 = empurrão do padrão igual em toda a zona; →1 = cada espelho com o seu (contraste como a bola de hoje)
     boltCount: 2,            // trovões: quantos raios ⚡ à volta da bola (2 = há quase sempre um à frente)
     boltShape: 1,            // trovões: 1 desenho do David · 2 esguio · 3 dois dentes · 4 fino · 0 = alterna entre raios
     boltW: 26,               // trovões: largura da silhueta em espelhos
     boltH: 0.92,             // trovões: altura do raio em fração da bola (polo a polo = 1)
-    boltEdge: 1.6,           // trovões: quanto escurece a orla de 1 espelho à volta do raio (contorno nítido); 0 = sem orla
+    boltEdge: 0,             // trovões: orla escura de 1 espelho à volta do raio; David: "sem contorno, fica mal" → 0
     boltDissolve: 0,         // trovões: 0 = raio cheio; →1 = topo desfaz-se em pontos soltos
     boltGain: 3.5,           // trovões: brilho do raio (× amp/2 somado ao cinza); 2 lia-se fraco com a afinação ballLight 1
   },
@@ -314,6 +314,8 @@ function rubikBuild() {
     T.snapDc = (E0 + E1) / 2 * dCol - ths;                         // deslocação do centro ao encaixar
     T.snapW = (E1 - E0) * dCol;                                    // largura encaixada (1+ colunas)
     const c = ((E0 % ncol) + ncol) % ncol;                         // coluna da grelha onde o espelho começa
+    T.grey = lo + T.h0 * (hi - lo);                                // tom próprio de hoje, sempre
+    const hv = hash(T.h0 * 53.1 + 7.7);                            // variação por espelho dentro do padrão
     let P;
     if (R.pattern === 'diagonais') P = (Math.floor(((c + i) % ncol) / blk) % 2) ? 0.8 + 0.2 * T.h0 : 0.2 * T.h0; // riscas de `block` espelhos
     else if (R.pattern === 'xadrez') P = ((Math.floor(c / blk) + Math.floor(i / blk)) % 2) ? 0.8 + 0.2 * T.h0 : 0.2 * T.h0;
@@ -339,17 +341,14 @@ function rubikBuild() {
           else if (!on && yn > -0.3 && yn < 0.45 && xn > 0.35 && xn < 1.25) on = h < dz * 0.45 * (1 - Math.abs(yn - 0.1) / 0.4);
         }
       }
-      // fora do raio a bola fica como hoje (tom aleatório, nada somado); o raio é luz a mais
-      P = on ? 1 : T.h0;
-      T.grey = lo + lerp(T.h0, P, clamp(R.force, 0, 1)) * (hi - lo);
-      T.rk = on ? 0.5 + 0.5 * R.boltGain : edge ? 0.5 - 0.5 * R.boltEdge : 0.5;
-      if (edge && !on) T.grey = lo;                                // orla no cinza mais escuro da bola
+      // fora do raio a bola fica como hoje; dentro cada espelho clareia à sua medida (não fica tudo do mesmo tom)
+      T.rk = on ? 0.5 + 0.5 * R.boltGain * lerp(1, hv, clamp(R.jitter, 0, 1)) : edge ? 0.5 - 0.5 * R.boltEdge : 0.5;
       continue;
     }
     else P = hash(c * 3.1 + 0.7);                                  // colunas
-    P = lerp(P, T.h0, clamp(R.jitter, 0, 1));                      // tons dentro do padrão não precisam de ser iguais (David)
-    T.grey = lo + lerp(T.h0, P, clamp(R.force, 0, 1)) * (hi - lo);
-    T.rk = P;                                                      // o render soma (P−½)·amp·força DEPOIS do contraste
+    // David: o padrão é um EMPURRÃO sobre o tom próprio de cada espelho (o cinza base fica o de hoje, T.grey
+    // intacto) — a forma lê-se pela média da zona e os contrastes entre espelhos continuam como na bola atual
+    T.rk = lerp(P, hv, clamp(R.jitter, 0, 1));                     // o render soma (rk−½)·amp·força DEPOIS do contraste
   }
 }
 buildTiles();
