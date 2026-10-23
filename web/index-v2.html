@@ -164,10 +164,12 @@ const CONFIG = {
     scramble: 8,             // quantos espelhos (±) cada faixa está desviada da posição resolvida
     snap: 1,                 // 1 = no resolvido os espelhos encaixam numa grelha de meridianos (juntas verticais de polo a polo); 0 = só rodar
     block: 3,                // xadrez: lado do bloco em espelhos
+    jitter: 0.35,            // 0 = tons do padrão iguais; →1 = cada espelho guarda mais do seu tom (padrão lê-se, bola menos chapada)
     boltCount: 2,            // trovões: quantos raios ⚡ à volta da bola (2 = há quase sempre um à frente)
-    boltSlope: 0.7,          // trovões: espelhos de deslocação lateral por fila (inclinação das pernas)
-    boltJog: 12,             // trovões: comprimento do salto horizontal a meio, em espelhos
-    boltWidth: 3,            // trovões: largura do raio em espelhos
+    boltShape: 0,            // trovões: 1 clássico · 2 esguio · 3 dois dentes · 4 fino · 0 = alterna entre raios
+    boltW: 22,               // trovões: largura da silhueta em espelhos
+    boltH: 0.85,             // trovões: altura do raio em fração da bola (polo a polo = 1)
+    boltDissolve: 0,         // trovões: 0 = raio cheio; →1 = topo desfaz-se em pontos soltos
     boltGain: 3.5,           // trovões: brilho do raio (× amp/2 somado ao cinza); 2 lia-se fraco com a afinação ballLight 1
   },
   explode: {               // estoiro em estilhaços (MIRRORBALL.explode() / tecla x); tudo paramétrico em s∈[0,1] → rewind = s a descer
@@ -205,6 +207,10 @@ const CONFIG = {
     const f = parseFloat(q.get('forca')), s = parseFloat(q.get('solve'));
     CONFIG.rubik.force = Number.isFinite(f) ? clamp(f, 0, 1) : 1;
     CONFIG.rubik.solve = Number.isFinite(s) ? clamp(s, 0, 1) : 1;
+  }
+  for (const [k, key] of [['raio', 'boltShape'], ['desfaz', 'boltDissolve'], ['jitter', 'jitter']]) {
+    const v = parseFloat(q.get(k));
+    if (Number.isFinite(v)) CONFIG.rubik[key] = v;
   }
   const sn = parseFloat(q.get('snap'));
   if (Number.isFinite(sn)) CONFIG.rubik.snap = clamp(sn, 0, 1);
@@ -272,6 +278,20 @@ function buildTiles() { // reconstrói a malha (knob "espelhos: filas" no painel
    hoje É o baralhado. O tom de cada espelho vem do padrão avaliado na longitude que ele terá resolvido
    (juntas empilhadas num meridiano), misturado com o tom aleatório de hoje por `rubik.force`. */
 const rubikDelta = [];
+// silhuetas dos raios em (x, y) normalizados: x 0 = esquerda, y 0 = topo, y 1 = ponta (anexos do David)
+const RUBIK_BOLTS = [
+  [[0.45, 0], [0.95, 0], [0.6, 0.4], [0.85, 0.4], [0.15, 1], [0.38, 0.55], [0.12, 0.55]],                 // 1 clássico
+  [[0.5, 0], [0.88, 0], [0.62, 0.38], [0.8, 0.38], [0.25, 1], [0.42, 0.52], [0.24, 0.52]],                // 2 esguio
+  [[0.5, 0], [0.95, 0], [0.7, 0.3], [0.88, 0.3], [0.55, 0.62], [0.72, 0.62], [0.2, 1], [0.38, 0.7],
+   [0.2, 0.7], [0.42, 0.4], [0.25, 0.4]],                                                                 // 3 dois dentes
+  [[0.55, 0], [0.8, 0], [0.6, 0.42], [0.75, 0.42], [0.3, 1], [0.42, 0.55], [0.3, 0.55]],                  // 4 fino
+];
+function inPoly(p, x, y) {
+  let on = false;
+  for (let a = 0, b = p.length - 1; a < p.length; b = a++)
+    if ((p[a][1] > y) !== (p[b][1] > y) && x < (p[b][0] - p[a][0]) * (y - p[a][1]) / (p[b][1] - p[a][1]) + p[a][0]) on = !on;
+  return on;
+}
 function rubikBuild() {
   const R = CONFIG.rubik, lo = CONFIG.baseTileGrey[0], hi = CONFIG.baseTileGrey[1];
   const rows = Math.max(6, Math.round(CONFIG.facetRows)), dphi = Math.PI / rows;
@@ -296,19 +316,22 @@ function rubikBuild() {
     let P;
     if (R.pattern === 'diagonais') P = (Math.floor(((c + i) % ncol) / blk) % 2) ? 0.8 + 0.2 * T.h0 : 0.2 * T.h0; // riscas de `block` espelhos
     else if (R.pattern === 'xadrez') P = ((Math.floor(c / blk) + Math.floor(i / blk)) % 2) ? 0.8 + 0.2 * T.h0 : 0.2 * T.h0;
-    else if (R.pattern === 'trovoes') { // um raio ⚡ por bolt: diagonal do topo até meio, salto horizontal, diagonal até baixo
-      const d = rows - 1 - i, dm = Math.round(rows / 2);           // d = filas desde o topo (norte)
-      const n = Math.max(1, Math.round(R.boltCount)), half = R.boltWidth / 2;
+    else if (R.pattern === 'trovoes') { // raios ⚡ cheios (silhueta), variantes em RUBIK_BOLTS
+      const yn = (rows - 1 - i + 0.5 - rows * (1 - R.boltH) / 2) / (rows * R.boltH); // 0 = topo do raio, 1 = ponta
+      const n = Math.max(1, Math.round(R.boltCount));
       let on = false;
       for (let b = 0; b < n && !on; b++) {
-        // no ecrã a coluna cresce para a ESQUERDA: +x = para a esquerda (desenho do David: topo-dir → meio-esq → salto p/ dir → baixo-esq)
-        const c0 = b * ncol / n, xm = c0 + R.boltSlope * dm;       // coluna do raio no topo e a meio
-        const x = d <= dm ? c0 + R.boltSlope * d : xm - R.boltJog + R.boltSlope * (d - dm);
-        const dx = ((c + 0.5 - x) % ncol + ncol * 1.5) % ncol - ncol / 2;
-        on = Math.abs(dx) <= half;
-        if (!on && d === dm) {                                     // a perna horizontal do ⚡
-          const dj = ((xm - (c + 0.5)) % ncol + ncol) % ncol;
-          on = dj <= R.boltJog + half;
+        const c0 = b * ncol / n;                                   // coluna do centro do raio b
+        const dx = ((c + 0.5 - c0) % ncol + ncol * 1.5) % ncol - ncol / 2;
+        const xn = 0.5 - dx / R.boltW;                             // no ecrã a coluna cresce para a ESQUERDA
+        const shape = R.boltShape > 0 ? Math.round(R.boltShape) : 1 + (b % RUBIK_BOLTS.length);
+        const poly = RUBIK_BOLTS[Math.min(RUBIK_BOLTS.length, shape) - 1];
+        on = inPoly(poly, xn, yn);
+        const dz = clamp(R.boltDissolve, 0, 1);
+        if (dz > 0) { // topo desfeito em pontos (anexo do David): dentro rareia para cima, fora há pontos soltos à direita
+          const h = hash(T.h0 * 91.7 + b);
+          if (on && yn < 0.45) on = h > dz * (0.45 - yn) / 0.45 * 0.95;
+          else if (!on && yn > -0.3 && yn < 0.45 && xn > 0.35 && xn < 1.25) on = h < dz * 0.45 * (1 - Math.abs(yn - 0.1) / 0.4);
         }
       }
       // fora do raio a bola fica como hoje (tom aleatório, nada somado); o raio é luz a mais
@@ -318,6 +341,7 @@ function rubikBuild() {
       continue;
     }
     else P = hash(c * 3.1 + 0.7);                                  // colunas
+    P = lerp(P, T.h0, clamp(R.jitter, 0, 1));                      // tons dentro do padrão não precisam de ser iguais (David)
     T.grey = lo + lerp(T.h0, P, clamp(R.force, 0, 1)) * (hi - lo);
     T.rk = P;                                                      // o render soma (P−½)·amp·força DEPOIS do contraste
   }
