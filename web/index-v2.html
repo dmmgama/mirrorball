@@ -162,6 +162,7 @@ const CONFIG = {
     amp: 0.30,               // amplitude do padrão no cinza final (somada depois do contraste: claro +amp/2, escuro −amp/2)
     solve: 0.0,              // 0 = baralhado (layout de hoje) → 1 = resolvido; aqui fixo, depois é a mecânica que o move
     scramble: 8,             // quantos espelhos (±) cada faixa está desviada da posição resolvida
+    snap: 1,                 // 1 = no resolvido os espelhos encaixam numa grelha de meridianos (juntas verticais de polo a polo); 0 = só rodar
     block: 3,                // xadrez: lado do bloco em espelhos
     boltZig: 4,              // trovões: filas por perna do ziguezague
     boltEvery: 16,           // trovões: espelhos entre raios (à volta da bola)
@@ -203,6 +204,8 @@ const CONFIG = {
     CONFIG.rubik.force = Number.isFinite(f) ? clamp(f, 0, 1) : 1;
     CONFIG.rubik.solve = Number.isFinite(s) ? clamp(s, 0, 1) : 1;
   }
+  const sn = parseFloat(q.get('snap'));
+  if (Number.isFinite(sn)) CONFIG.rubik.snap = clamp(sn, 0, 1);
   const rpm = parseFloat(q.get('rpm'));
   if (Number.isFinite(rpm)) CONFIG.rotationRpm = rpm;
 })();
@@ -270,7 +273,9 @@ const rubikDelta = [];
 function rubikBuild() {
   const R = CONFIG.rubik, lo = CONFIG.baseTileGrey[0], hi = CONFIG.baseTileGrey[1];
   const rows = Math.max(6, Math.round(CONFIG.facetRows)), dphi = Math.PI / rows;
-  const ncol = Math.round(TAU / dphi), blk = Math.max(1, Math.round(R.block));
+  const blk = Math.max(1, Math.round(R.block));
+  let ncol = 3; for (const T of tiles) ncol = Math.max(ncol, Math.round(TAU / T.dth)); // espelhos da fila mais cheia (equador)
+  const dCol = TAU / ncol;                                         // grelha de meridianos comum (juntas alinhadas no resolvido)
   rubikDelta.length = 0;
   for (const T of tiles) {
     const i = T.row;
@@ -278,8 +283,14 @@ function rubikBuild() {
       const k = Math.round((hash(i * 13.7 + 5.1) * 2 - 1) * R.scramble);
       rubikDelta[i] = -(k * T.dth + (i % 2) * T.dth * 0.5);
     }
-    const ths = ((T.th + rubikDelta[i]) % TAU + TAU) % TAU;     // longitude resolvida
-    const c = Math.round(ths / dphi) % ncol;                       // coluna "do equador" mais próxima
+    // encaixe: no resolvido as bordas do espelho vão para o meridiano da grelha mais próximo
+    const ths = T.th + rubikDelta[i];                              // longitude resolvida (sem encaixe)
+    // +1e-3: no equador as bordas caem exatamente a meio de coluna (x.5) e o arredondamento em vírgula
+    // flutuante decidia para lados diferentes nos dois vizinhos → espelhos com largura 0 (buracos)
+    const E0 = Math.round((ths - T.dth / 2) / dCol + 1e-3), E1 = Math.round((ths + T.dth / 2) / dCol + 1e-3);
+    T.snapDc = (E0 + E1) / 2 * dCol - ths;                         // deslocação do centro ao encaixar
+    T.snapW = (E1 - E0) * dCol;                                    // largura encaixada (1+ colunas)
+    const c = ((E0 % ncol) + ncol) % ncol;                         // coluna da grelha onde o espelho começa
     let P;
     if (R.pattern === 'diagonais') P = (Math.floor(((c + i) % ncol) / blk) % 2) ? 0.8 + 0.2 * T.h0 : 0.2 * T.h0; // riscas de `block` espelhos
     else if (R.pattern === 'xadrez') P = ((Math.floor(c / blk) + Math.floor(i / blk)) % 2) ? 0.8 + 0.2 * T.h0 : 0.2 * T.h0;
@@ -468,7 +479,7 @@ function frame(now) {
   const bloomItems = [];
   for (let t = 0; t < tiles.length; t++) {
     const T = tiles[t];
-    const cph = Math.cos(T.phi), sph = Math.sin(T.phi), th = T.th + angleUsed + rubikDelta[T.row] * CONFIG.rubik.solve;
+    const cph = Math.cos(T.phi), sph = Math.sin(T.phi), th = T.th + angleUsed + (rubikDelta[T.row] + T.snapDc * CONFIG.rubik.snap) * CONFIG.rubik.solve;
     const N0 = [cph * Math.cos(th), sph, cph * Math.sin(th)];
     let N = N0, P = N0, exRot = null;
     if (exOn) { // estilhaço: centro desloca-se (radial + jitter + queda), normal tomba — o reflexo varre a sala
@@ -676,7 +687,8 @@ function frame(now) {
   for (const v of visible) {
     const T = v.T, N = v.N;
     const p0 = T.phi - T.dphi * (0.5 - inset / 2), p1 = T.phi + T.dphi * (0.5 - inset / 2);
-    const t0 = v.th - T.dth * (0.5 - inset / 2), t1 = v.th + T.dth * (0.5 - inset / 2);
+    const tw = lerp(T.dth, T.snapW, CONFIG.rubik.snap * CONFIG.rubik.solve); // skin-rubik: largura encaixada no resolvido
+    const t0 = v.th - tw * (0.5 - inset / 2), t1 = v.th + tw * (0.5 - inset / 2);
     const c0 = Math.cos(p0), s0 = Math.sin(p0), c1 = Math.cos(p1), s1 = Math.sin(p1);
     let A, B, C, D;
     if (v.exRot) { // estilhaço: cantos relativos ao centro original, tombados e levados para P
