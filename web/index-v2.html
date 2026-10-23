@@ -281,7 +281,7 @@ function rubikBuild() {
     const ths = ((T.th + rubikDelta[i]) % TAU + TAU) % TAU;     // longitude resolvida
     const c = Math.round(ths / dphi) % ncol;                       // coluna "do equador" mais próxima
     let P;
-    if (R.pattern === 'diagonais') P = hash(((c + i) % ncol) * 3.1 + 0.7);
+    if (R.pattern === 'diagonais') P = (Math.floor(((c + i) % ncol) / blk) % 2) ? 0.8 + 0.2 * T.h0 : 0.2 * T.h0; // riscas de `block` espelhos
     else if (R.pattern === 'xadrez') P = ((Math.floor(c / blk) + Math.floor(i / blk)) % 2) ? 0.8 + 0.2 * T.h0 : 0.2 * T.h0;
     else if (R.pattern === 'trovoes') { // raios em ziguezague: diagonal que inverte de sentido a cada `zig` filas
       const zig = Math.max(2, Math.round(R.boltZig)), ph = i % (2 * zig);
