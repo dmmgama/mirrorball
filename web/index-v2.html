@@ -159,6 +159,7 @@ const CONFIG = {
   rubik: {
     pattern: 'colunas',      // 'colunas' | 'diagonais' | 'xadrez' | 'trovoes' — o que aparece quando a bola fica resolvida
     force: 0.0,              // 0 = tons de hoje (bola igual); 1 = tons 100% do padrão — knob 'rubik: força do padrão'
+    amp: 0.30,               // amplitude do padrão no cinza final (somada depois do contraste: claro +amp/2, escuro −amp/2)
     solve: 0.0,              // 0 = baralhado (layout de hoje) → 1 = resolvido; aqui fixo, depois é a mecânica que o move
     scramble: 8,             // quantos espelhos (±) cada faixa está desviada da posição resolvida
     block: 3,                // xadrez: lado do bloco em espelhos
@@ -289,6 +290,7 @@ function rubikBuild() {
     }
     else P = hash(c * 3.1 + 0.7);                                  // colunas
     T.grey = lo + lerp(T.h0, P, clamp(R.force, 0, 1)) * (hi - lo);
+    T.rk = P;                                                      // o render soma (P−½)·amp·força DEPOIS do contraste
   }
 }
 buildTiles();
@@ -695,6 +697,7 @@ function frame(now) {
     g += 0.45 * clamp(CONFIG.ballLight || 0, 0, 1);                // luz da bola: sobe tudo por igual; os fatores 3D abaixo continuam a esculpir
     { const mid = 0.5 * (CONFIG.baseTileGrey[0] + CONFIG.baseTileGrey[1]) + 0.45 * clamp(CONFIG.ballLight || 0, 0, 1);
       g = mid + (g - mid) * (CONFIG.ballContrast || 1); }             // contraste: abre a diferença entre facetas sem subir o nível
+    g += (T.rk - 0.5) * CONFIG.rubik.amp * clamp(CONFIG.rubik.force, 0, 1); // skin-rubik: padrão com amplitude própria (o contraste da afinação não o esmaga)
     g += CONFIG.rimStrength * smooth(0.28, 0.0, nz);            // borda clara rasante
     g -= 0.035 * smooth(0.05, 0.22, nz) * smooth(0.5, 0.25, nz); // banda mais escura logo dentro
     g *= 0.75 + 0.25 * nz;                                       // volume suave
