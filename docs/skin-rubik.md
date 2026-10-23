@@ -89,9 +89,11 @@ Knobs em `CONFIG.rubik` (todos com valor inicial finito — regra 7):
 5. **Fotos com o motor ligado:** brilhos e feixes variam entre fotos; às vezes o motor escurece a
    bola. Comparar tons e alinhamento, não reflexos.
 
-Imagens: `fases/R0-rubik-imagens/` (PNG fora do git; README no git). Capturas por subagentes com
-Chromium headless próprio (Playwright), viewport 1600×900 ×2, 4 s de espera; raios com a rotação
-fixada (`angle = π/2`) para ficarem de frente.
+Imagens: `fases/R0-rubik-imagens/` (PNG fora do git; README no git). Refazer com
+**`node tools/rubik-shots.js [grupos]`** (colunas, diagonais, xadrez, trovoes, raios; ou
+`--q "<query>" --name x.png`): Chromium headless, `?src=music&still=1` (afinação carregada, rotação
+fixa a 90° = raio de frente, imagem congelada aos 4 s). Na F0 isto foi feito por subagentes — caro
+e com fotos inconsistentes; o script substitui-os.
 
 ## 6. Histórico das afinações da F0 (2026-10-23)
 

@@ -278,6 +278,14 @@ function buildTiles() { // reconstrói a malha (knob "espelhos: filas" no painel
 /* skin-rubik: cada faixa i está hoje desviada `rubikDelta[i]` (rad) da posição resolvida — o layout de
    hoje É o baralhado. O tom de cada espelho vem do padrão avaliado na longitude que ele terá resolvido
    (juntas empilhadas num meridiano), misturado com o tom aleatório de hoje por `rubik.force`. */
+// ?still=1&ang=90&at=4 — modo foto (tools/rubik-shots.js): rotação fixa em `ang`°, a imagem congela aos `at` s
+// e marca window.__stillDone. Sem `still` nada muda.
+const STILL = (() => {
+  const q = new URLSearchParams(location.search);
+  if (q.get('still') !== '1') return null;
+  const ang = parseFloat(q.get('ang')), at = parseFloat(q.get('at'));
+  return { ang: (Number.isFinite(ang) ? ang : 90) * Math.PI / 180, at: Number.isFinite(at) ? at : 4 };
+})();
 const rubikDelta = [];
 // silhuetas dos raios em (x, y) normalizados: x 0 = esquerda, y 0 = topo, y 1 = ponta (anexos do David)
 const RUBIK_BOLTS = [
@@ -445,6 +453,7 @@ function frame(now) {
   const sk = skinMix, dk = 1 - skinMix;
   const E = effective(), tSec = now / 1000;
   angle += (E.rotationRpm / 60) * TAU * (dtMs / 1000);
+  if (STILL) angle = STILL.ang;                                  // foto: rotação fixa (o raio 0 fica de frente com 90°)
 
   // ----- explosão: avança a fase; tudo o resto lê só exS (função pura → rewind = exS a descer) -----
   const EX = CONFIG.explode;
@@ -812,6 +821,7 @@ function frame(now) {
   if (sk > 0.002) { wctx.setTransform(1, 0, 0, 1, 0, 0); wctx.drawImage(cv, 0, 0); }
   cvw.style.opacity = sk.toFixed(3);
   document.body.style.background = `rgb(${Math.round(lerp(bgG, 243, sk))},${Math.round(lerp(bgG, 247, sk))},${Math.round(lerp(bgG, 249, sk))})`;
+  if (STILL && tSec >= STILL.at) { window.__stillDone = true; return; } // foto: a imagem fica congelada
   requestAnimationFrame(frame);
 }
 
