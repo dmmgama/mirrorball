@@ -28,3 +28,17 @@ das atenções: ligar/desligar, slider de força, e probabilidade de o motor o c
 4. "Resolvido" = **padrão escondido nos tons** dos espelhos (tom de cada espelho vem da sua posição
    resolvida; baralhado lê-se aleatório como hoje), com ou sem **juntas alinhadas** conforme o padrão.
    Só juntas não chega (1-2 px). Padrões possíveis: riscas verticais, diagonais, xadrez… — 2026-10-23
+5. Fase 1 só com **colunas**; os outros padrões entram depois, se a mecânica funcionar. Antes da
+   mecânica, **ver imagens** da bola (F0). — 2026-10-23
+
+## F0 — pré-visualização estática (2026-10-23)
+
+`?rubik=colunas|diagonais|xadrez|trovoes&solve=0..1&forca=0..1&rpm=` em `web/index-v2.html`.
+Knobs em `CONFIG.rubik` (pattern, force, solve, scramble 8, block 3, boltZig 4, boltEvery 16,
+boltWidth 2, amp 0.30). Com force=0 e solve=0 a bola é idêntica à de hoje.
+
+- Achado: o padrão dentro de `baseTileGrey` [0.045, 0.14] + afinação `ballContrast 0.5` /
+  `ballLight 1` ficava com ~2-3 % de diferença → invisível. Fix: `rubik.amp` somado **depois** do contraste.
+- Imagens (fora do git, 16 MB): `fases/R0-rubik-imagens/<padrão>/`; folha de comparação publicada
+  como artifact "Rubik na bola". Leitura: colunas, xadrez e trovões leem-se no resolvido;
+  diagonais só no hemisfério de baixo (precisam de trabalho).
