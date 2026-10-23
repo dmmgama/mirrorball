@@ -2,6 +2,8 @@
 
 Bola de espelhos (Canvas 2D, greyscale, física de reflexão) que reage a **música** (motor `music.js`), a **emoções por webcam** (`emotion-v2.js`) ou a **sliders** (manual). Objetivo (verbatim do David): recriar o que sente num clube quando *um técnico de luz competente* trabalha a bola — **não** é um visualizador de áudio. Ver `docs/plan.md` §0 e §0.1 antes de tocar no motor.
 
+**Nomes:** "bola 2D" / "V2" = `web/index-v2.html` (Canvas). "V3" / "Babylon" = `spike-babylon/v2/` (a pasta chama-se v2, os `.bat` chamam-lhe v3). Na dúvida, perguntar qual.
+
 **Ritmo: side project.** Resultado visível depressa, afinar depois, fases pequenas com stop visual. Sem harness/anotações/gates pesados. O David testa ao vivo com música real e dá feedback por sensação.
 
 ## Layout
@@ -12,19 +14,19 @@ web/core.js           helpers + MB_SOURCE (arbitragem: owner manual|camera|music
 web/music.js          motor de música (Camadas 1-3 + gestos + HUD `m` + driver autónomo quando servida em /app/)
 web/emotion-v2.js     motor de emoções (webcam; face-api carregado só ao ligar câmara)
 web/bridge.js         ESP32 (Web Serial / WS)
-web/test-music-f2.js  harness Node vm (node web/test-music-f2.js) — 16 asserções
+web/test-music-f2.js  harness Node vm (node web/test-music-f2.js) — corre no pre-commit (.githooks/)
 web/replay-real.js    replay de features REAIS gravadas do sidecar (node web/replay-real.js feat.json)
 firmware/             ESP32
 Mirror-V3-Start.bat / Mirror-V3-Kill.bat    spike v3 (sidecar :3739 + serve.py :8099); `manual` como arg = sem motor. Kill mata as 2 portas.
 Mirror-2D-Start.bat                          bola 2D (web/index-v2.html) em música, servida pelo sidecar em :3739/app/.
-                                             ÚNICOS .bat. Atalhos no Desktop: start-Mirror-v3 / start-Mirror-2D / kill-Mirror-v3.
 ```
 
-**O áudio vem de fora:** `agent-os/audio-sidecar/` (repo do OS, porta **3739**, WASAPI loopback via `loopback-capture`). Emite a 50 Hz `{rms,bass,mid,high,sub,hat,centroid,density,onset,subOnset,loudness,silence}` (bandas em dB com referência própria = máximo lento ~40 s; **nunca** normalizar bandas umas contra as outras — foi o bug que fez `bass≡1.0`). Serve esta pasta em `http://127.0.0.1:3739/app/*` e o token em `/app-token` (same-origin). Contrato completo no cabeçalho de `web/music.js`.
+**O áudio vem de fora:** `agent-os/audio-sidecar/` (repo do OS, porta **3739**, WASAPI loopback via `loopback-capture`). Emite a 50 Hz `{rms,bass,mid,high,sub,hat,centroid,density,onset,subOnset,loudness,silence}` (bandas em dB com referência própria = máximo lento ~40 s; **nunca** normalizar bandas umas contra as outras — foi o bug que fez `bass≡1.0`). Serve esta pasta em `http://127.0.0.1:3739/app/*` e o token em `/app-token` (same-origin). Contrato completo no cabeçalho de `web/music.js`. **Só as origens em `SPIKE_ORIGINS` (`audio-sidecar/server.js:39`, hoje :8099 e :3739) recebem áudio** — servir a bola noutra porta = acrescentá-la lá e reiniciar o sidecar.
 
 ## Como testar
 
-- **Fora do OS:** atalho `start-Mirror-v3` (spike v3, música) ou `start-Mirror-2D` (bola 2D, `http://127.0.0.1:3739/app/index-v2.html?src=music`).
+- **Fora do OS:** `Mirror-V3-Start.bat` (spike v3, música) ou `Mirror-2D-Start.bat` (bola 2D, `http://127.0.0.1:3739/app/index-v2.html?src=music`).
+- **Testes visuais** sempre com `?src=music`: carrega a afinação do David (`music-config.json` → `ball`, p.ex. `ballContrast`/`ballLight`), que muda muito o que se vê. Validar **uma** imagem antes de abrir uma ronda de capturas.
 - **No OS:** tab `/mirrors-emotions` (modo música) ou bola **M** no seletor da sidebar. Ficheiros desta pasta são servidos **do disco** — alterar `music.js`/`index-v2.html` = recarregar a página, sem build. Só mudanças em `agent-os/source/` exigem `npm run build` + restart.
 - Cache-buster: ao alterar `music.js`, **bump** `music.js?v=N` no `index-v2.html`.
 - Teclas na bola 2D (`index-v2.html`): `m` HUD do motor (linha BOMBO), `p` perfil, `g` gerador sintético, `n` próxima fase, `w` skin, `d` sliders, `e` HUD emoções. **No spike Babylon** o HUD é `h` (sem linha BOMBO; o motor lê-se no bpm da linha dos vultos e nas trocas da linha "estrela"); `k` é o tuner do motor.

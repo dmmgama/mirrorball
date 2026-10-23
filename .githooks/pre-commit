@@ -1,0 +1,45 @@
+#!/bin/sh
+# Guardrail do repo (ativar uma vez por clone: git config core.hooksPath .githooks).
+# 1) sintaxe dos <script> embutidos em web/*.html e spike-babylon/**/*.html
+# 2) node --check nos .js de web/ e spike-babylon/v2/
+# 3) harness do motor: nº de asserções a passar não pode descer da baseline
+# 4) compatibilidade de knobs (regra 9)
+set -e
+ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT"
+
+node -e '
+const fs = require("fs"), path = require("path");
+const files = [];
+const walk = d => { if (!fs.existsSync(d)) return; for (const f of fs.readdirSync(d)) {
+  const p = path.join(d, f); if (f === "node_modules" || f === "vendor") continue;
+  fs.statSync(p).isDirectory() ? walk(p) : /\.html$/.test(f) && files.push(p); } };
+walk("web"); walk("spike-babylon");
+let bad = 0;
+for (const f of files) {
+  const h = fs.readFileSync(f, "utf8");
+  for (const m of h.matchAll(/<script(?![^>]*\bsrc=)(?![^>]*type="module")[^>]*>([\s\S]*?)<\/script>/g)) {
+    try { new Function(m[1]); } catch (e) { console.error("SINTAXE " + f + ": " + e.message); bad++; }
+  }
+}
+process.exit(bad ? 1 : 0);
+'
+
+for f in web/*.js spike-babylon/v2/*.js; do
+  [ -f "$f" ] || continue
+  node --check "$f" 2>/dev/null || node --check --input-type=module < "$f" || { echo "SINTAXE $f"; exit 1; }
+done
+
+# baseline 2026-10-23: 22/23 (a asserção que falha é conhecida). Subir quando for corrigida.
+F2_MIN=22
+OUT=$(node web/test-music-f2.js 2>&1 || true)
+PASS=$(printf '%s\n' "$OUT" | sed -n 's/^\([0-9][0-9]*\)\/[0-9][0-9]* asserções passaram.*/\1/p' | tail -1)
+if [ -z "$PASS" ] || [ "$PASS" -lt "$F2_MIN" ]; then
+  printf '%s\n' "$OUT" | tail -15
+  echo "test-music-f2: ${PASS:-?} asserções (baseline $F2_MIN)"; exit 1
+fi
+
+if [ -f spike-babylon/v2/test-knobs-compat.js ]; then
+  node spike-babylon/v2/test-knobs-compat.js > /dev/null || { node spike-babylon/v2/test-knobs-compat.js | tail -15; exit 1; }
+fi
+echo "pre-commit ok"
