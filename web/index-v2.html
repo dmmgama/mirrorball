@@ -154,7 +154,19 @@ const CONFIG = {
   skinEase: 7.0,             // crossfade dark↔white (por segundo); o emotion.js já suaviza o alvo com attack/release
   skinAutoValence: 1.6,      // auto: skinTarget = max(0, valência) × isto (neutro/triste → dark, feliz → white)
   spotFadeMix: 1.0,          // 1 = fade interno dos spots como hoje; 0 = intensidade constante, para uma fonte externa coreografar
-  explode: {                 // estoiro em estilhaços (MIRRORBALL.explode() / tecla x); tudo paramétrico em s∈[0,1] → rewind = s a descer
+  // skin-rubik (docs/skin-rubik.md): faixas de latitude rodam à parte até os tons formarem um padrão escondido.
+  // Fase 0 = só pré-visualização estática (?rubik=colunas&solve=0..1&forca=0..1&rpm=0) — sem mecânica.
+  rubik: {
+    pattern: 'colunas',      // 'colunas' | 'diagonais' | 'xadrez' | 'trovoes' — o que aparece quando a bola fica resolvida
+    force: 0.0,              // 0 = tons de hoje (bola igual); 1 = tons 100% do padrão — knob 'rubik: força do padrão'
+    solve: 0.0,              // 0 = baralhado (layout de hoje) → 1 = resolvido; aqui fixo, depois é a mecânica que o move
+    scramble: 8,             // quantos espelhos (±) cada faixa está desviada da posição resolvida
+    block: 3,                // xadrez: lado do bloco em espelhos
+    boltZig: 4,              // trovões: filas por perna do ziguezague
+    boltEvery: 16,           // trovões: espelhos entre raios (à volta da bola)
+    boltWidth: 2,            // trovões: largura do raio em espelhos
+  },
+  explode: {               // estoiro em estilhaços (MIRRORBALL.explode() / tecla x); tudo paramétrico em s∈[0,1] → rewind = s a descer
     burstSec: 0.16,          // 1º tempo: estoiro seco até burstS (ainda tem forma de bola, só rachada)
     burstS: 0.16,            // …fração do percurso percorrida no estoiro
     driftSec: 6.0,           // 2º tempo: câmara lenta — os estilhaços continuam a sair do centro (easeOut)
@@ -182,6 +194,16 @@ const CONFIG = {
     CONFIG.skin = q.get('light') === '1' ? 'white' : 'dark';   // quadrado segue a skin do OS
   }
   CONFIG.ballSizeVH *= scale;
+  // skin-rubik, pré-visualização estática: ?rubik=<padrão>&solve=&forca=&rpm=
+  const rk = q.get('rubik');
+  if (rk) {
+    CONFIG.rubik.pattern = rk;
+    const f = parseFloat(q.get('forca')), s = parseFloat(q.get('solve'));
+    CONFIG.rubik.force = Number.isFinite(f) ? clamp(f, 0, 1) : 1;
+    CONFIG.rubik.solve = Number.isFinite(s) ? clamp(s, 0, 1) : 1;
+  }
+  const rpm = parseFloat(q.get('rpm'));
+  if (Number.isFinite(rpm)) CONFIG.rotationRpm = rpm;
 })();
 const PRESETS = {
   ALIVE: { spotGain: 1.0,  rotationRpm: CONFIG.rotationRpm, sphereOpacity: CONFIG.sphereOpacity, haze: CONFIG.haze },
@@ -227,7 +249,7 @@ function buildTiles() { // reconstrói a malha (knob "espelhos: filas" no painel
     for (let j = 0; j < n; j++) {
       const h0 = hash(id), h1 = hash(id + 0.37), h2 = hash(id + 0.71);
       tiles.push({
-        phi, th: j * dth + (i % 2) * dth * 0.5, dphi, dth,
+        phi, th: j * dth + (i % 2) * dth * 0.5, dphi, dth, row: i, h0,
         grey: CONFIG.baseTileGrey[0] + h0 * (CONFIG.baseTileGrey[1] - CONFIG.baseTileGrey[0]),
         driftPhase: h1 * TAU, beamHash: h2, dotHash: hash(id + 0.53),
         // sementes fixas da explosão: trajetória e tombo determinísticos por tile (rewind exato)
@@ -237,6 +259,36 @@ function buildTiles() { // reconstrói a malha (knob "espelhos: filas" no painel
       });
       id++;
     }
+  }
+  rubikBuild();
+}
+/* skin-rubik: cada faixa i está hoje desviada `rubikDelta[i]` (rad) da posição resolvida — o layout de
+   hoje É o baralhado. O tom de cada espelho vem do padrão avaliado na longitude que ele terá resolvido
+   (juntas empilhadas num meridiano), misturado com o tom aleatório de hoje por `rubik.force`. */
+const rubikDelta = [];
+function rubikBuild() {
+  const R = CONFIG.rubik, lo = CONFIG.baseTileGrey[0], hi = CONFIG.baseTileGrey[1];
+  const rows = Math.max(6, Math.round(CONFIG.facetRows)), dphi = Math.PI / rows;
+  const ncol = Math.round(TAU / dphi), blk = Math.max(1, Math.round(R.block));
+  rubikDelta.length = 0;
+  for (const T of tiles) {
+    const i = T.row;
+    if (rubikDelta[i] === undefined) {
+      const k = Math.round((hash(i * 13.7 + 5.1) * 2 - 1) * R.scramble);
+      rubikDelta[i] = -(k * T.dth + (i % 2) * T.dth * 0.5);
+    }
+    const ths = ((T.th + rubikDelta[i]) % TAU + TAU) % TAU;     // longitude resolvida
+    const c = Math.round(ths / dphi) % ncol;                       // coluna "do equador" mais próxima
+    let P;
+    if (R.pattern === 'diagonais') P = hash(((c + i) % ncol) * 3.1 + 0.7);
+    else if (R.pattern === 'xadrez') P = ((Math.floor(c / blk) + Math.floor(i / blk)) % 2) ? 0.8 + 0.2 * T.h0 : 0.2 * T.h0;
+    else if (R.pattern === 'trovoes') { // raios em ziguezague: diagonal que inverte de sentido a cada `zig` filas
+      const zig = Math.max(2, Math.round(R.boltZig)), ph = i % (2 * zig);
+      const x = (c + (ph < zig ? ph : 2 * zig - ph) + Math.floor(i / (2 * zig)) * zig) % R.boltEvery;
+      P = x < R.boltWidth ? 0.85 + 0.15 * T.h0 : 0.15 * T.h0;
+    }
+    else P = hash(c * 3.1 + 0.7);                                  // colunas
+    T.grey = lo + lerp(T.h0, P, clamp(R.force, 0, 1)) * (hi - lo);
   }
 }
 buildTiles();
@@ -414,7 +466,7 @@ function frame(now) {
   const bloomItems = [];
   for (let t = 0; t < tiles.length; t++) {
     const T = tiles[t];
-    const cph = Math.cos(T.phi), sph = Math.sin(T.phi), th = T.th + angleUsed;
+    const cph = Math.cos(T.phi), sph = Math.sin(T.phi), th = T.th + angleUsed + rubikDelta[T.row] * CONFIG.rubik.solve;
     const N0 = [cph * Math.cos(th), sph, cph * Math.sin(th)];
     let N = N0, P = N0, exRot = null;
     if (exOn) { // estilhaço: centro desloca-se (radial + jitter + queda), normal tomba — o reflexo varre a sala
