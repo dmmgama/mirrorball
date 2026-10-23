@@ -54,3 +54,8 @@ boltWidth 2, amp 0.30). Com force=0 e solve=0 a bola é idêntica à de hoje.
 - **Tons não iguais** (`rubik.jitter` 0.35): David — "um xadrez ou uma diagonal percebe-se mesmo
   que os tons não sejam 100% iguais", e a bola fica menos aborrecida. O xadrez perde algum contraste.
 - David gosta de colunas, diagonais e xadrez; raios ok com o novo desenho.
+- **Sem contorno** (David: "fica mal") → `boltEdge` 0. Raio 1 = desenho do David (medido).
+- **Padrão = empurrão sobre o tom próprio** (David: "a bola atual é bonita porque tem contrastes;
+  dá para ver as formas sem ter tudo tom igualzinho"): `T.grey` fica o de hoje; o padrão só soma
+  `(rk−½)·amp·força`, com `rk` variado por espelho (`jitter` 0.45). Custo: formas mais subtis
+  (diagonais quase somem) — equilibrar com `amp` / `jitter` a olho.
