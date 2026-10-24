@@ -77,3 +77,17 @@ Modelo mental `mirrorball-musica-emocoes`; factos com `document_id` `mirrorball-
 - Wiki do OS (`2ndBrain/WIKI-Projetos/AI - AgentOS-MissionControl.md`) só quando se toca no `agent-os` (sidecar, tab, sidebar).
 
 Delegação (§4.1): Sonnet para mecânico, Opus para DSP/máquina de estados/debug, Fable (effort medium) orquestra e julga GROOVE/drops. Sempre com stop para o David ouvir.
+
+## Agent skills
+
+### Issue tracker
+
+Issues e specs em ficheiros markdown sob `.scratch/<feature>/` (local, sem GitHub Issues — a repo é pública). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+As 5 labels canónicas (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix), como linha `Status:`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` + `docs/adr/` na raiz (criados a pedido pelo /domain-modeling). See `docs/agents/domain.md`.

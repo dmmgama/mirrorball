@@ -7,3 +7,6 @@ web/spike
 spike-fases/
 
 .claude/worktrees/
+
+# tracker local (wayfinder/tickets) — não publicar, repo pública
+.scratch/
