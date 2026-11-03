@@ -4,6 +4,8 @@ Bola de espelhos (Canvas 2D, greyscale, física de reflexão) que reage a **mús
 
 **Nomes:** "bola 2D" / "V2" = `web/index-v2.html` (Canvas). "V3" / "Babylon" = `spike-babylon/v2/` (a pasta chama-se v2, os `.bat` chamam-lhe v3). Na dúvida, perguntar qual.
 
+**Worktree Linux:** **esta** checkout (branch `mirrorball-linux`) é a versão para **Linux (Omarchy)**. No Windows está em `../MirrorBall-linux`; no `ai-host-omarchy` (Tailscale, `dmmgama`) está em `~/Projects/David/Mirrorball-Hub/mirrorball-linux`. Como correr: `README-linux.md`. As alterações exclusivas deste branch (sidecar copiado, `.sh`, `music-config.json` commitada) estão em `mirrorball-linux.md`. Não fazer merge deste branch para o `Mirror-Ball-V3` sem o David pedir.
+
 **Ritmo: side project.** Resultado visível depressa, afinar depois, fases pequenas com stop visual. Sem harness/anotações/gates pesados. O David testa ao vivo com música real e dá feedback por sensação.
 
 ## Layout
@@ -19,7 +21,7 @@ web/replay-real.js    replay de features REAIS gravadas do sidecar (node web/rep
 firmware/             ESP32
 Mirror-V3-Start.bat / Mirror-V3-Kill.bat    spike v3 (sidecar :3739 + serve.py :8099); `manual` como arg = sem motor. Kill mata as 2 portas.
 Mirror-2D-Start.bat                          bola 2D (web/index-v2.html) em música, servida pelo sidecar em :3739/app/.
-audio-sidecar/ + mirror-*.sh                 só no branch mirrorball-linux: sidecar copiado com captura PipeWire (parec/pw-record). Ver docs/linux.md.
+audio-sidecar/ + mirror-*.sh                 só no branch mirrorball-linux: sidecar copiado com captura PipeWire (parec/pw-record). Ver README-linux.md.
 ```
 
 **O áudio vem de fora:** `agent-os/audio-sidecar/` (repo do OS, porta **3739**, WASAPI loopback via `loopback-capture`). Emite a 50 Hz `{rms,bass,mid,high,sub,hat,centroid,density,onset,subOnset,loudness,silence}` (bandas em dB com referência própria = máximo lento ~40 s; **nunca** normalizar bandas umas contra as outras — foi o bug que fez `bass≡1.0`). Serve esta pasta em `http://127.0.0.1:3739/app/*` e o token em `/app-token` (same-origin). Contrato completo no cabeçalho de `web/music.js`. **Só as origens em `SPIKE_ORIGINS` (`audio-sidecar/server.js:39`, hoje :8099 e :3739) recebem áudio** — servir a bola noutra porta = acrescentá-la lá e reiniciar o sidecar.

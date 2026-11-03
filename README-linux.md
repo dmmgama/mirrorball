@@ -1,11 +1,31 @@
-# Correr a bola em Linux (Omarchy / Arch + PipeWire)
+# READ-ME — correr a bola no Linux (Omarchy)
+
+> Branch `mirrorball-linux`. O que mudou face ao Windows, e porquê, está em
+> [`mirrorball-linux.md`](mirrorball-linux.md).
+
+## Atalho (já está instalado no `ai-host-omarchy`)
+
+```bash
+cd ~/Projects/David/Mirrorball-Hub/mirrorball-linux
+git pull                      # traz o que houver de novo no GitHub
+./mirror-2d-start.sh          # bola 2D com música  (ou ./mirror-v3-start.sh para a V3)
+./mirror-kill.sh              # parar
+```
+Põe música a tocar no PC antes de abrir. No browser, a tecla `m` abre o HUD do motor: a linha
+BOMBO tem de mexer. Se não mexer, ver "Se não houver áudio", mais abaixo.
+
+Antes do primeiro teste: a saída de som por omissão do Omarchy é a digital (`iec958`, S/PDIF).
+Se as colunas estiverem noutra saída, escolhe-a no `wiremix`/`pavucontrol`. Senão o sidecar ouve
+a saída errada e só recebe zeros.
+
+---
 
 Branch `mirrorball-linux`. O sidecar de áudio vem copiado para `audio-sidecar/` (origem:
 `agent-os/audio-sidecar/server.js`). Em Linux, captura o monitor da saída de som por omissão com
 `parec` (ou com `pw-record`, se o primeiro falhar) e não usa o WASAPI. O formato é o mesmo
 (s16le, estéreo, 48 kHz) e o contrato das features é igual ao do Windows.
 
-## Uma vez
+## Instalar noutra máquina Linux (uma vez)
 
 ```bash
 sudo pacman -S --needed git nodejs npm python libpulse   # libpulse = parec (pipewire-pulse já vem no Omarchy)
@@ -28,8 +48,8 @@ Logs: `~/.local/state/mirrorball/sidecar.log` e `serve.log`.
 
 ## Afinação
 
-A `web/music-config.json` que vem no git é a versão commitada. Para levar a afinação ao vivo do
-Windows, copia o ficheiro de lá para `web/`.
+A `web/music-config.json` deste branch traz a afinação ao vivo do David, copiada do Windows a
+2026-11-03. Se a afinação mudar numa das máquinas, faz commit e pull para a levar à outra.
 
 ## Se não houver áudio (HUD `m` parado, `silence` sempre ligado)
 
@@ -40,7 +60,6 @@ Windows, copia o ficheiro de lá para `web/`.
 3. Se o processo de captura morrer, o watcher do sidecar volta a lançá-lo ao fim de 3 s. Também
    volta a lançá-lo a cada 15 s quando só chegam zeros (por exemplo, depois de trocares a saída de som).
 
-## Manter em sincronia com o agent-os
+## Manter em sincronia
 
-Este `server.js` é uma cópia. Se o original mudar (`agent-os/audio-sidecar/server.js`), é preciso
-voltar a aplicar o diff: `startLinuxCapture` + `IS_WIN` + `APP_DIR` relativo. O cabeçalho do ficheiro lista as diferenças.
+Ver [`mirrorball-linux.md`](mirrorball-linux.md) §Sincronizar.

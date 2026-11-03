@@ -1,5 +1,8 @@
 # MirrorBall — bola de espelhos que reage a emoções (virtual + real, em sync)
 
+> **Linux (Omarchy):** este branch é a versão Linux. Para correr, ver [`README-linux.md`](README-linux.md).
+> O que mudou face ao Windows: [`mirrorball-linux.md`](mirrorball-linux.md).
+
 ```
 Webcam → face-api.js → {happy, sad, angry, surprised, …}
               ↓ suavização (1.6/s, < 3 Hz — sem strobe)
