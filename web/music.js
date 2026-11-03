@@ -797,7 +797,34 @@ function flattenKnown(obj, prefix, out) {
 const TUNE_STATE = {
   loaded: false, from: null, path: '', locations: [], active: null,
   dirty: false, saving: false, msg: '', canSave: false, token: null,
+  base: '',          // '' = sidecar na mesma origem (/app/); 'http://127.0.0.1:3739' = dentro do OS
 };
+
+/* Secção do ficheiro onde vivem os knobs do painel `d` DESTA página. A bola 2D declara
+ * `MIRRORBALL.knobsSection = 'ball2d'`; a V3 não declara nada → `ball`. Separadas para que gravar
+ * numa não apague nem misture a afinação da outra (o POST do sidecar substitui o ficheiro inteiro).
+ * Leitura (regra 9): se a secção própria não existir ainda, a 2D cai na `ball` antiga (só os nomes
+ * que conhece entram — o knobs.set ignora o resto). */
+function knobsSection() {
+  const s = window.MIRRORBALL && window.MIRRORBALL.knobsSection;
+  return (typeof s === 'string' && /^[a-z0-9]+$/i.test(s)) ? s : 'ball';
+}
+function knobsFromFile(j) {
+  if (!j || typeof j !== 'object') return null;
+  const sec = knobsSection();
+  if (j[sec] && typeof j[sec] === 'object') return j[sec];
+  return (sec !== 'ball' && j.ball && typeof j.ball === 'object') ? j.ball : null;
+}
+/* Lê o ficheiro ativo AGORA (do disco, via sidecar). null se não houver. */
+async function readTuningFileNow() {
+  if (typeof fetch !== 'function') return null;
+  const urls = TUNE_STATE.canSave ? [`${TUNE_STATE.base}/app/music-config.json?t=${Date.now()}`] : [];
+  urls.push(`music-config.json?t=${Date.now()}`);
+  for (const u of urls) {
+    try { const r = await fetch(u, { cache: 'no-store' }); if (!r.ok) continue; const t = await r.text(); if (t && t.trim()) return JSON.parse(t); } catch (e) { /* próximo */ }
+  }
+  return null;
+}
 
 /* Carrega `music-config.json` no arranque. Funciona nos DOIS contextos:
  *  · servida pelo sidecar em /app/  → pergunta ao sidecar as localizações e tenta cada uma;
@@ -828,12 +855,30 @@ async function loadTuningFile() {
         TUNE_STATE.canSave = true;
       }
     } catch (e) { /* sidecar antigo, sem a rota: fica sem save, o painel diz porquê */ }
+  } else {
+    // Dentro do AgentOS (página em /api/mirrors-emotions/asset/…): o OS dá o token do sidecar
+    // (mesma origem) e fala-se com o sidecar diretamente em :3739 — ele aceita a origem do OS
+    // (OS_ORIGINS + CORS). Fora do OS esta rota não existe e cai no catch, sem ruído.
+    try {
+      const r0 = await fetch('/api/mirrors-emotions/audio-token', { cache: 'no-store' });
+      const t = r0.ok ? await r0.json() : null;
+      if (t && t.up && t.token && /^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(t.base || '')) {
+        TUNE_STATE.token = t.token; TUNE_STATE.base = t.base;
+        const r = await fetch(`${t.base}/app-config/locations`, { cache: 'no-store', headers: { 'x-audio-token': t.token } });
+        if (r.ok) {
+          const j = await r.json();
+          TUNE_STATE.locations = Array.isArray(j.locations) ? j.locations : [];
+          TUNE_STATE.active = j.active || null;
+          TUNE_STATE.canSave = true;
+        }
+      }
+    } catch (e) { /* fora do OS ou sidecar em baixo: sem save */ }
   }
   // Ordem: a localização ativa primeiro, depois as outras, depois o ficheiro ao lado da página.
   const cands = [];
   const ordered = TUNE_STATE.locations.slice().sort((a, b) =>
     (a.id === TUNE_STATE.active ? -1 : 0) - (b.id === TUNE_STATE.active ? -1 : 0));
-  for (const l of ordered) if (l.exists) cands.push({ id: l.id, url: `/app/music-config.json?t=${Date.now()}`, path: l.path });
+  for (const l of ordered) if (l.exists) cands.push({ id: l.id, url: `${TUNE_STATE.base}/app/music-config.json?t=${Date.now()}`, path: l.path });
   cands.push({ id: 'local', url: `music-config.json?t=${Date.now()}`, path: 'music-config.json (ao lado da página)' });
 
   for (const c of cands) {
@@ -841,8 +886,9 @@ async function loadTuningFile() {
     if (!j) continue;
     const flat = flattenKnown(j, '', {});
     const n = applyTuning(flat);
-    // secção `ball`: knobs do painel d da bola (focos, cone, luz geral…) — o ficheiro manda sobre o localStorage
-    if (j.ball && window.MIRRORBALL && window.MIRRORBALL.knobs) window.MIRRORBALL.knobs.set(j.ball);
+    // secção `ball` (V3) / `ball2d` (bola 2D): knobs do painel d — ver knobsSection()
+    const kb = knobsFromFile(j);
+    if (kb && window.MIRRORBALL && window.MIRRORBALL.knobs) window.MIRRORBALL.knobs.set(kb);
     TUNE_STATE.loaded = true; TUNE_STATE.from = c.id; TUNE_STATE.path = c.path;
     TUNE_STATE.msg = `${n} valores carregados`;
     if (typeof TUNER_SYNC === 'function') TUNER_SYNC();
@@ -2797,6 +2843,8 @@ window.MUSIC = {
     },
     /* Grava no sidecar. O destino é um ID da lista que o servidor ofereceu — nunca um caminho
      * construído aqui (é essa a guarda contra path traversal, do lado de lá também). */
+    /* secção `ball`/`ball2d` do ficheiro tal como está AGORA no disco (botão 'repor ficheiro gravado') */
+    async readKnobsFile() { return knobsFromFile(await readTuningFileNow()); },
     async save(locationId) {
       if (!TUNE_STATE.canSave || typeof fetch !== 'function') return { ok: false, error: 'sem sidecar' };
       TUNE_STATE.saving = true;
@@ -2815,10 +2863,15 @@ window.MUSIC = {
           }
           cur[parts[parts.length - 1]] = v;
         }
-        // + knobs do painel d da bola (secção `ball`), para os dois painéis viverem no mesmo ficheiro
-        if (window.MIRRORBALL && window.MIRRORBALL.knobs) cfg.ball = window.MIRRORBALL.knobs.get();
+        // + knobs do painel d DESTA página na secção dela (`ball` V3 / `ball2d` 2D). O sidecar
+        // substitui o ficheiro inteiro, por isso as secções de painel das OUTRAS páginas são
+        // relidas do disco e mantidas tal como estão — gravar na 2D nunca apaga a V3 e vice-versa.
+        const sec = knobsSection();
+        const onDisk = await readTuningFileNow();
+        if (onDisk) for (const k of ['ball', 'ball2d']) if (k !== sec && onDisk[k] && typeof onDisk[k] === 'object') cfg[k] = onDisk[k];
+        if (window.MIRRORBALL && window.MIRRORBALL.knobs) cfg[sec] = window.MIRRORBALL.knobs.get();
         const body = JSON.stringify({ location: locationId || TUNE_STATE.active || undefined, config: cfg });
-        const r = await fetch('/app-config', {
+        const r = await fetch(`${TUNE_STATE.base}/app-config`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', 'x-audio-token': TUNE_STATE.token || '' },
           body,

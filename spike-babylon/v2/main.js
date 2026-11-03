@@ -2332,7 +2332,7 @@ console.log('MB2 pronto —', engine.isWebGPU ? 'WebGPU' : 'WebGL2');
       MUSIC_BASES[0] + ').');
     // Ids de DOM esperados pelos 3 scripts: só `#mus` (web/music.js:2388, HUD tecla `m`) — já existe
     // em v2/index.html, escondido por omissão (.on liga/desliga, mesmo padrão do Canvas 2D).
-    const files = ['core.js?v=1', 'music.js?v=63', 'tuner.js?v=3'];
+    const files = ['core.js?v=1', 'music.js?v=64', 'tuner.js?v=3'];
     let i = 0;
     function next() {
       if (i >= files.length) { console.log('[F5 music] core.js/music.js/tuner.js carregados.'); return; }

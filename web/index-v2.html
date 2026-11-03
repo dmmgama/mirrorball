@@ -735,6 +735,9 @@ window.MIRRORBALL = {
   setHealth(h) { health = clamp(+h || 0, 0, 1); syncPanel(); },
   getHealth() { return health; },
   config: CONFIG,
+  // secção do music-config.json com os knobs do painel d DESTA bola — separada da `ball` da V3
+  // (web/music.js knobsSection): gravar aqui não mexe na afinação da V3 e vice-versa.
+  knobsSection: 'ball2d',
   // knobs do painel d (persistidos): get() → {nome: valor}; set(obj) aplica (localStorage > ficheiro `ball` > defaults)
   // ⚠ prioridade: o que o David tocou por último (localStorage) GANHA; o ficheiro só preenche knobs nunca mexidos.
   // Antes era ficheiro > localStorage e cada reload revertia os ajustes feitos em `d` sem "gravar".
@@ -896,7 +899,9 @@ const knobMsg = document.createElement('div'); knobMsg.style.cssText = 'margin-t
   // de quando a página abriu. O snapshot só serve de recurso se o fetch falhar (sem servidor).
   mk('repor ficheiro gravado', async () => {
     let src = null, from = 'ficheiro';
-    try { const r = await fetch(`music-config.json?t=${Date.now()}`, { cache: 'no-store' }); if (r.ok) { const j = await r.json(); if (j && j.ball) src = j.ball; } } catch (e) { /* sem servidor/ficheiro */ }
+    const T = window.MUSIC && window.MUSIC.tune;
+    if (T && typeof T.readKnobsFile === 'function') { try { src = await T.readKnobsFile(); } catch (e) { /* */ } }
+    else { try { const r = await fetch(`music-config.json?t=${Date.now()}`, { cache: 'no-store' }); if (r.ok) { const j = await r.json(); src = j && (j.ball2d || j.ball) || null; } } catch (e) { /* sem servidor/ficheiro */ } }
     if (src) knobFile = Object.assign({}, src); else if (knobFile) { src = knobFile; from = 'ficheiro (cópia do arranque — não consegui reler)'; }
     if (!src) { knobMsg.textContent = 'sem secção ball no music-config.json'; return; }
     const n = knobsSet(src, true); knobMsg.textContent = `${n} knobs repostos do ${from}`; });
@@ -937,7 +942,7 @@ requestAnimationFrame(frame);
 <script src="core.js?v=1"></script>
 <script src="bridge.js?v=2"></script>
 <script src="emotion-v2.js?v=1"></script>
-<script src="music.js?v=63"></script>
+<script src="music.js?v=64"></script>
 <!-- painel de calibração ao vivo (tecla k). Inerte sem window.MUSIC (bola manual/câmara). -->
 <script src="tuner.js?v=3"></script>
 </body>
