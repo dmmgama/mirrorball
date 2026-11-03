@@ -44,7 +44,7 @@ const CTL = path.join(ROOT, 'mirror-wall-ctl.sh');
 const wallStatus = () => { try { return execFileSync(CTL, ['status']).toString().trim().split(' ')[0] || 'off'; } catch { return 'off'; } };
 const wallTone = () => { try { const m = execFileSync(CTL, ['status']).toString().match(/tone=([^:\s]+):(#[0-9a-fA-F]{6})/); return m ? { name: m[1], hex: m[2] } : null; } catch { return null; } };
 const wallTheme = () => { try { const m = execFileSync(CTL, ['status']).toString().match(/theme-(ball|noball)/); return m ? m[1] : 'off'; } catch { return 'off'; } };
-const status = async () => ({ sidecar: await up(3739), v3: await up(8099), wall: wallStatus(), theme: wallTheme(), tone: wallTone() });
+const status = async () => ({ sidecar: await up(3739), v3: await up(8099), wall: wallStatus(), theme: wallTheme(), tone: wallTone(), beams: /beams=flip/.test(execFileSync(CTL, ['status']).toString()) });
 
 const send = (res, code, body, type = 'application/json') => { res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' }); res.end((typeof body === 'string' || Buffer.isBuffer(body)) ? body : JSON.stringify(body)); };
 
@@ -61,9 +61,9 @@ http.createServer(async (req, res) => {
         if (o[1] === 'v3') await start('serve');
         return send(res, 200, { msg: 'aberto', ...(await status()) });
       }
-      const w = u.pathname.match(/^\/api\/wall\/(black|white|off|skin|theme|tone)$/);
+      const w = u.pathname.match(/^\/api\/wall\/(black|white|off|skin|theme|tone|beams)$/);
       if (w) {   // fundo vivo do Omarchy: muda o fundo do tema; o watcher liga/desliga bola + sidecar
-        execFileSync(CTL, w[1] === 'off' ? ['off'] : w[1] === 'skin' ? ['skin'] : w[1] === 'theme' ? ['theme'] : w[1] === 'tone' ? ['tone'] : ['on', w[1]]);
+        execFileSync(CTL, w[1] === 'off' ? ['off'] : w[1] === 'skin' ? ['skin'] : w[1] === 'theme' ? ['theme'] : w[1] === 'tone' ? ['tone'] : w[1] === 'beams' ? ['beams'] : ['on', w[1]]);
         await new Promise(r => setTimeout(r, 400));
         return send(res, 200, { msg: w[1] === 'off' ? 'fundo vivo desligado' : 'fundo vivo ligado', ...(await status()) });
       }

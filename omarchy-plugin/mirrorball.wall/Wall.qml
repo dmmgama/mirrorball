@@ -1,4 +1,4 @@
-// Widget da barra, 4 botões: [on/off do fundo vivo] [preta/branca] [fundo do tema: off → on-ball → on-noball] [tom da paleta].
+// Widget da barra, 5 botões: [on/off do fundo vivo] [preta/branca] [fundo do tema: off → on-ball → on-noball] [tom da paleta] [feixes: tom da bola/oposto].
 // @CTL@ é substituído por mirror-wall-install.sh (caminho do mirror-wall-ctl.sh).
 import QtQuick
 import Quickshell
@@ -14,6 +14,7 @@ BarWidget {
   property string themeMode: "off"   // off | ball | noball
   property string toneName: ""       // tom da paleta do tema usado no fundo
   property string toneHex: ""
+  property bool beamsFlip: false    // feixes com o tom da skin oposta à da bola
   readonly property bool isOn: wallState !== "off"
   implicitWidth: row.implicitWidth
   implicitHeight: row.implicitHeight
@@ -32,6 +33,7 @@ BarWidget {
           var t = p[i].substring(5).split(":")
           root.toneName = t[0]; root.toneHex = t.length > 1 ? t[1] : ""
         }
+        root.beamsFlip = p.indexOf("beams=flip") >= 0
         root.themeMode = p.indexOf("theme-ball") >= 0 ? "ball" : (p.indexOf("theme-noball") >= 0 ? "noball" : "off")
       }
     }
@@ -69,6 +71,13 @@ BarWidget {
       active: root.themeMode !== "off"
       tooltipText: "Tom do tema: " + root.toneName + " " + root.toneHex + " (clique para rodar)"
       onPressed: function(b) { root.act("tone") }
+    }
+    BarIconButton {   // feixes: tom da bola / tom oposto
+      bar: root.bar
+      text: root.beamsFlip ? "✦" : "✧"
+      active: root.beamsFlip
+      tooltipText: "Feixes com o tom " + (root.beamsFlip ? "oposto ao da bola" : "da bola") + " (clique para trocar)"
+      onPressed: function(b) { root.act("beams") }
     }
   }
 }

@@ -18,6 +18,7 @@ case "$1" in
       c=$("$ROOT/mirror-wall-ctl.sh" color 2>/dev/null)   # tom escolhido da paleta do tema (hex sem #)
       [ -n "$c" ] && extra="&bgcolor=$c"; [ "$tb" = 2 ] && extra="$extra&bgmode=noball"
     fi
+    [ "$(cat "$LOGDIR/wall-beams" 2>/dev/null)" = 1 ] && extra="$extra&beams=flip"
     (setsid nohup "$BIN" "http://127.0.0.1:3739/app/index-v2.html?src=music&wall=1&skin=$skin$extra" >"$LOGDIR/wall.log" 2>&1 &)
     ;;
   off) stop_wall; stop_sidecar ;;

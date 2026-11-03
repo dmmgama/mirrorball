@@ -190,14 +190,17 @@ const CONFIG = {
     document.documentElement.classList.add('wall');
     CONFIG.skin = q.get('skin') === 'white' ? 'white' : 'dark';
     addEventListener('keydown', e => e.stopImmediatePropagation(), true);
-    // ?bgcolor=RRGGBB (cor de fundo do tema do Omarchy) + ?bgmode=ball|noball:
-    //  ball   : a bola e os feixes também levam a cor (dark: overlay screen; white: paragens do #tone)
-    //  noball : só fora do círculo da bola (máscara radial). dark: overlay screen com buraco; white: 2.º canvas
-    //           com um #tone2 temático por cima do original, com buraco onde está a bola
-    const bc = q.get('bgcolor');
-    if (/^[0-9a-f]{6}$/i.test(bc || '')) {
-      const noBall = q.get('bgmode') === 'noball';
-      const rgb = [0, 2, 4].map(i => parseInt(bc.substr(i, 2), 16) / 255);
+    // Camadas extra do modo wall (todas só aqui; a bola normal não é tocada):
+    //  ?bgcolor=RRGGBB + ?bgmode=ball|noball : fundo com a cor do tema do Omarchy
+    //     ball   : a bola e os feixes também levam a cor (dark: overlay screen; white: paragens do #tone)
+    //     noball : só fora do círculo da bola (máscara radial). dark: overlay screen com buraco; white: #tone2 temático
+    //  ?beams=flip : fora do círculo da bola (feixes, pontos, sala) usa o tom da skin OPOSTA à da bola.
+    //     Um canvas extra (#mbo) copia o render, com máscara "fora do círculo" e filtro #tone (ou nenhum).
+    //     Limitação: feixes que passam por cima da bola (dentro do círculo) ficam com o tom da bola.
+    const bc = /^[0-9a-f]{6}$/i.test(q.get('bgcolor') || '') ? q.get('bgcolor') : null;
+    const noBall = !!bc && q.get('bgmode') === 'noball', flip = q.get('beams') === 'flip';
+    if (bc || flip) {
+      const rgb = bc ? [0, 2, 4].map(i => parseInt(bc.substr(i, 2), 16) / 255) : null;
       const themeTable = f => {   // as 4 primeiras paragens ("ar" → tinta) partem da cor do tema
         ['R', 'G', 'B'].forEach((ch, c) => {
           const fn = f.querySelector('feFunc' + ch); if (!fn) return;
@@ -206,32 +209,49 @@ const CONFIG = {
           fn.setAttribute('tableValues', t.map(v => v.toFixed(4)).join(' '));
         });
       };
-      const ov = document.createElement('div');
-      ov.style.cssText = `position:fixed;inset:0;background:#${bc};mix-blend-mode:screen;pointer-events:none;z-index:1`;
-      document.body.appendChild(ov);
-      let cvw2 = null, w2ctx = null;
-      if (noBall) {
-        const f2 = document.getElementById('tone').cloneNode(true); f2.id = 'tone2'; themeTable(f2);
-        document.getElementById('tone').parentNode.appendChild(f2);
-        cvw2 = document.createElement('canvas');
-        cvw2.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;display:block;filter:url(#tone2);opacity:0;pointer-events:none';
-        document.body.insertBefore(cvw2, document.getElementById('mbw').nextSibling);
+      const mkCanvas = filter => {
+        const c = document.createElement('canvas');
+        c.style.cssText = `position:fixed;inset:0;width:100%;height:100%;display:block;pointer-events:none;${filter ? 'filter:url(#' + filter + ');' : ''}opacity:0`;
+        return c;
+      };
+      let ov = null, cvw2 = null, w2ctx = null, cvo = null, octx = null, toneId = 'tone';
+      if (bc) {
+        ov = document.createElement('div');
+        ov.style.cssText = `position:fixed;inset:0;background:#${bc};mix-blend-mode:screen;pointer-events:none;z-index:2`;
+        document.body.appendChild(ov);
+        if (noBall) {
+          const f2 = document.getElementById('tone').cloneNode(true); f2.id = 'tone2'; themeTable(f2);
+          document.getElementById('tone').parentNode.appendChild(f2); toneId = 'tone2';
+        } else themeTable(document.getElementById('tone'));
+      }
+      if (noBall && !flip) {
+        cvw2 = mkCanvas('tone2'); document.body.insertBefore(cvw2, document.getElementById('mbw').nextSibling);
         w2ctx = cvw2.getContext('2d', { alpha: false });
-      } else themeTable(document.getElementById('tone'));
+      }
+      if (flip) {
+        cvo = mkCanvas(null); cvo.style.zIndex = 1; cvo.style.opacity = 1;
+        document.body.appendChild(cvo); octx = cvo.getContext('2d', { alpha: false });
+      }
       let maskKey = '';
       window.__wallBgFrame = function (sk) {
-        ov.style.opacity = (1 - sk).toFixed(3);
-        if (!noBall) return;
+        const skOut = flip ? (CONFIG.skin === 'white' ? 0 : 1) : sk;   // skin de "fora do círculo"
+        if (ov) ov.style.opacity = (1 - skOut).toFixed(3);
+        if (!noBall && !flip) return;
         const cx = W * CONFIG.ballCenter[0], cy = H * CONFIG.ballCenter[1], r = CONFIG.ballSizeVH * H / 2 * 1.03;
         const key = cx + ',' + cy + ',' + r;
         if (key !== maskKey) {
           maskKey = key;
           const m = `radial-gradient(circle at ${cx}px ${cy}px, transparent ${r}px, #000 ${r + 2}px)`;
-          ov.style.webkitMaskImage = ov.style.maskImage = m; cvw2.style.webkitMaskImage = cvw2.style.maskImage = m;
+          [ov && noBall ? ov : null, cvw2, cvo].forEach(e => { if (e) e.style.webkitMaskImage = e.style.maskImage = m; });
         }
-        if (cvw2.width !== cv.width || cvw2.height !== cv.height) { cvw2.width = cv.width; cvw2.height = cv.height; }
-        if (sk > 0.002) { w2ctx.setTransform(1, 0, 0, 1, 0, 0); w2ctx.drawImage(cv, 0, 0); }
-        cvw2.style.opacity = sk.toFixed(3);
+        const sync = c => { if (c.width !== cv.width || c.height !== cv.height) { c.width = cv.width; c.height = cv.height; } };
+        if (flip) {
+          sync(cvo); octx.setTransform(1, 0, 0, 1, 0, 0); octx.drawImage(cv, 0, 0);
+          cvo.style.filter = skOut > 0.5 ? `url(#${toneId})` : 'none';
+        } else {
+          sync(cvw2); if (sk > 0.002) { w2ctx.setTransform(1, 0, 0, 1, 0, 0); w2ctx.drawImage(cv, 0, 0); }
+          cvw2.style.opacity = sk.toFixed(3);
+        }
       };
     }
   }
