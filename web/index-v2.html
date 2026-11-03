@@ -891,7 +891,15 @@ function knobsSet(obj, persist) {
 const knobMsg = document.createElement('div'); knobMsg.style.cssText = 'margin-top:4px;color:#8a8a8a;font-size:11px';
 { const row = document.createElement('div'); row.style.cssText = 'margin-top:6px;display:flex;gap:6px';
   const mk = (txt, fn) => { const b = document.createElement('button'); b.textContent = txt; b.style.cssText = 'font:inherit;background:#222;color:#ccc;border:1px solid #444;padding:2px 8px;cursor:pointer'; b.onclick = fn; row.appendChild(b); return b; };
-  mk('repor ficheiro gravado', () => { if (!knobFile) { knobMsg.textContent = 'sem secção ball no music-config.json'; return; } const n = knobsSet(knobFile, true); knobMsg.textContent = `${n} knobs repostos do ficheiro`; });
+  // relê o ficheiro do disco no clique: o snapshot do arranque (knobFile) fica velho depois de um
+  // "gravar" (aqui, no painel k ou na V3, que partilham a secção `ball`) e o botão repunha o valor
+  // de quando a página abriu. O snapshot só serve de recurso se o fetch falhar (sem servidor).
+  mk('repor ficheiro gravado', async () => {
+    let src = null, from = 'ficheiro';
+    try { const r = await fetch(`music-config.json?t=${Date.now()}`, { cache: 'no-store' }); if (r.ok) { const j = await r.json(); if (j && j.ball) src = j.ball; } } catch (e) { /* sem servidor/ficheiro */ }
+    if (src) knobFile = Object.assign({}, src); else if (knobFile) { src = knobFile; from = 'ficheiro (cópia do arranque — não consegui reler)'; }
+    if (!src) { knobMsg.textContent = 'sem secção ball no music-config.json'; return; }
+    const n = knobsSet(src, true); knobMsg.textContent = `${n} knobs repostos do ${from}`; });
   mk('repor knobs (defaults)', () => { knobsSet(KNOB_DEFAULTS, false); knobStore = {}; try { localStorage.removeItem('mb.knobs'); } catch (e) { /* */ } knobMsg.textContent = 'defaults do código repostos (por gravar)'; });
   // grava no MESMO music-config.json do painel k (secção `ball`), via MUSIC.save → sidecar /app-config
   mk('gravar (music-config.json)', async () => {
