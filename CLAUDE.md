@@ -19,6 +19,7 @@ web/replay-real.js    replay de features REAIS gravadas do sidecar (node web/rep
 firmware/             ESP32
 Mirror-V3-Start.bat / Mirror-V3-Kill.bat    spike v3 (sidecar :3739 + serve.py :8099); `manual` como arg = sem motor. Kill mata as 2 portas.
 Mirror-2D-Start.bat                          bola 2D (web/index-v2.html) em música, servida pelo sidecar em :3739/app/.
+audio-sidecar/ + mirror-*.sh                 só no branch mirrorball-linux: sidecar copiado com captura PipeWire (parec/pw-record). Ver docs/linux.md.
 ```
 
 **O áudio vem de fora:** `agent-os/audio-sidecar/` (repo do OS, porta **3739**, WASAPI loopback via `loopback-capture`). Emite a 50 Hz `{rms,bass,mid,high,sub,hat,centroid,density,onset,subOnset,loudness,silence}` (bandas em dB com referência própria = máximo lento ~40 s; **nunca** normalizar bandas umas contra as outras — foi o bug que fez `bass≡1.0`). Serve esta pasta em `http://127.0.0.1:3739/app/*` e o token em `/app-token` (same-origin). Contrato completo no cabeçalho de `web/music.js`. **Só as origens em `SPIKE_ORIGINS` (`audio-sidecar/server.js:39`, hoje :8099 e :3739) recebem áudio** — servir a bola noutra porta = acrescentá-la lá e reiniciar o sidecar.

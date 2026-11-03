@@ -1,0 +1,14 @@
+{
+  "name": "mirrorball-audio-sidecar",
+  "private": true,
+  "version": "0.0.1",
+  "description": "System-audio capture + feature extraction sidecar (cópia Linux do agent-os/audio-sidecar). Windows: WASAPI via loopback-capture; Linux: parec/pw-record (PipeWire).",
+  "type": "commonjs",
+  "scripts": { "start": "node server.js" },
+  "dependencies": {
+    "ws": "8.18.3"
+  },
+  "optionalDependencies": {
+    "loopback-capture": "2.0.0"
+  }
+}
