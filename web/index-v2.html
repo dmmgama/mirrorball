@@ -41,6 +41,9 @@
        padding:10px 12px;border:1px solid #2a2a2a;white-space:pre;display:none;z-index:9}
   #emo.on{display:block}
   html.mini #ui,html.mini #cam{display:none}
+  /* ?wall=1 (fundo do Omarchy): só a bola — sem botões, câmara, HUDs nem painéis */
+  html.wall #ui,html.wall #cam,html.wall #dbg,html.wall #emo,html.wall #mus,html.wall #tun{display:none!important}
+  html.wall,html.wall body{cursor:none}
   /* HUD do motor musical (tecla m) — canto inferior esquerdo, para não colidir com #emo (topo/direita) */
   #mus{position:fixed;left:12px;bottom:44px;background:rgba(10,10,10,.86);color:#cfcfcf;font:11px/1.5 ui-monospace,Consolas,monospace;
        padding:10px 12px;border:1px solid #2a2a2a;white-space:pre;display:none;z-index:9;max-height:70vh;overflow:hidden}
@@ -180,6 +183,13 @@ const CONFIG = {
       dotScale: 0.5, bloomBlurPx: 5, grain: 0.02, vignette: 0.35, facetRows: 39 });
     document.documentElement.classList.add('mini');
     CONFIG.skin = q.get('light') === '1' ? 'white' : 'dark';   // quadrado segue a skin do OS
+  }
+  // Fundo do Omarchy (mirror-wall): ?wall=1&skin=dark|white. Layout normal da bola, afinação do
+  // music-config.json (via ?src=music), sem UI e sem teclas (capture + stopImmediatePropagation).
+  if (q.get('wall') === '1') {
+    document.documentElement.classList.add('wall');
+    CONFIG.skin = q.get('skin') === 'white' ? 'white' : 'dark';
+    addEventListener('keydown', e => e.stopImmediatePropagation(), true);
   }
   CONFIG.ballSizeVH *= scale;
 })();

@@ -74,3 +74,18 @@ Tudo o resto (`web/`, `spike-babylon/`, motor, knobs) é **igual ao `Mirror-Ball
   `diff <agent-os>/audio-sidecar/server.js audio-sidecar/server.js`.
 - **Não fazer merge deste branch para o `Mirror-Ball-V3`** sem o David decidir (trazia o sidecar
   para a repo principal e a `music-config.json` commitada).
+
+## Fundo vivo do Omarchy (bola preta / bola branca)
+
+Dois fundos do tema `sakura-mochi` ligam a bola 2D como wallpaper. Qualquer outro fundo desliga-a.
+
+| Peça | O quê |
+|---|---|
+| `~/.config/omarchy/backgrounds/sakura-mochi/mirrorball-{black,white}.png` | Os 2 fundos (placeholders lisos). Pasta oficial de fundos do utilizador por tema: aparecem no `omarchy theme bg next` e no `bg-switcher`. |
+| `web/index-v2.html?src=music&wall=1&skin=dark\|white` | Modo "wall": só a bola, sem botões/câmara/HUDs/painéis nem teclas; afinação `ball2d` do `music-config.json`. |
+| `wall/` (`main.cpp`, `wall.qml`) | Binário Qt (WebEngine + LayerShellQt) numa layer-shell **Bottom** (acima do wallpaper, abaixo das janelas), sem input, um por ecrã. Compilar: `cd wall && qmake6 && make`. (O WebEngine não arranca dentro do quickshell.) |
+| `mirror-wall.sh on black\|white \| off` | Liga/desliga sidecar (:3739) + bola. |
+| `mirror-wall-watch.sh` | Vigia `~/.local/state/omarchy/current/background`: `mirrorball-black.*`/`mirrorball-white.*` → `on`; outro fundo → `off`. Uma instância (flock). |
+
+Instalação/remoção e tudo o que toca o OS: [`docs/omarchy-wall-os.md`](docs/omarchy-wall-os.md) (`./mirror-wall-install.sh install|uninstall`).
+Notas: o ficheiro de fundo é só o gatilho (o que se vê é a bola ao vivo); sem música/saída de som certa a bola fica parada.

@@ -1,0 +1,6 @@
+mirror-wall
+*.o
+moc_*
+qrc_*
+Makefile
+.qmake.stash
