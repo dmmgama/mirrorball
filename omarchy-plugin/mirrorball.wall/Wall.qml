@@ -1,4 +1,4 @@
-// Widget da barra, 3 botões: [on/off do fundo vivo] [preta/branca] [fundo do tema: off → on-ball → on-noball].
+// Widget da barra, 4 botões: [on/off do fundo vivo] [preta/branca] [fundo do tema: off → on-ball → on-noball] [tom da paleta].
 // @CTL@ é substituído por mirror-wall-install.sh (caminho do mirror-wall-ctl.sh).
 import QtQuick
 import Quickshell
@@ -12,6 +12,8 @@ BarWidget {
   readonly property string ctl: "@CTL@"
   property string wallState: "off"   // off | black | white
   property string themeMode: "off"   // off | ball | noball
+  property string toneName: ""       // tom da paleta do tema usado no fundo
+  property string toneHex: ""
   readonly property bool isOn: wallState !== "off"
   implicitWidth: row.implicitWidth
   implicitHeight: row.implicitHeight
@@ -26,6 +28,10 @@ BarWidget {
       onStreamFinished: {
         var p = text.trim().split(" ")
         root.wallState = p[0] || "off"
+        for (var i = 0; i < p.length; i++) if (p[i].indexOf("tone=") === 0) {
+          var t = p[i].substring(5).split(":")
+          root.toneName = t[0]; root.toneHex = t.length > 1 ? t[1] : ""
+        }
         root.themeMode = p.indexOf("theme-ball") >= 0 ? "ball" : (p.indexOf("theme-noball") >= 0 ? "noball" : "off")
       }
     }
@@ -56,6 +62,13 @@ BarWidget {
       active: root.themeMode !== "off"
       tooltipText: "Fundo do tema: " + (root.themeMode === "off" ? "off" : (root.themeMode === "ball" ? "on, bola também" : "on, sem afetar a bola")) + " (clique para rodar)"
       onPressed: function(b) { root.act("theme") }
+    }
+    BarIconButton {   // tom da paleta do tema (roda pelas cores do colors.toml)
+      bar: root.bar
+      text: "◆"
+      active: root.themeMode !== "off"
+      tooltipText: "Tom do tema: " + root.toneName + " " + root.toneHex + " (clique para rodar)"
+      onPressed: function(b) { root.act("tone") }
     }
   }
 }
