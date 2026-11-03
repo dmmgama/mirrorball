@@ -197,9 +197,11 @@ const CONFIG = {
     //  ?beams=flip : fora do círculo da bola (feixes, pontos, sala) usa o tom da skin OPOSTA à da bola.
     //     Um canvas extra (#mbo) copia o render, com máscara "fora do círculo" e filtro #tone (ou nenhum).
     //     Limitação: feixes que passam por cima da bola (dentro do círculo) ficam com o tom da bola.
+    //  Ganho dos feixes claros (display, NÃO toca no beamIntensity ≤ 0.18 do motor): wall-live.json {beamGain} (poll 700 ms,
+    //  escrito por mirror-wall-ctl.sh gain). Só atua fora do círculo da bola e quando "fora" é a skin escura (feixes claros).
     const bc = /^[0-9a-f]{6}$/i.test(q.get('bgcolor') || '') ? q.get('bgcolor') : null;
     const noBall = !!bc && q.get('bgmode') === 'noball', flip = q.get('beams') === 'flip';
-    if (bc || flip) {
+    {
       const rgb = bc ? [0, 2, 4].map(i => parseInt(bc.substr(i, 2), 16) / 255) : null;
       const themeTable = f => {   // as 4 primeiras paragens ("ar" → tinta) partem da cor do tema
         ['R', 'G', 'B'].forEach((ch, c) => {
@@ -214,7 +216,7 @@ const CONFIG = {
         c.style.cssText = `position:fixed;inset:0;width:100%;height:100%;display:block;pointer-events:none;${filter ? 'filter:url(#' + filter + ');' : ''}opacity:0`;
         return c;
       };
-      let ov = null, cvw2 = null, w2ctx = null, cvo = null, octx = null, toneId = 'tone';
+      let ov = null, cvw2 = null, w2ctx = null, cvo = null, octx = null, toneId = 'tone', beamGain = 1;
       if (bc) {
         ov = document.createElement('div');
         ov.style.cssText = `position:fixed;inset:0;background:#${bc};mix-blend-mode:screen;pointer-events:none;z-index:2`;
@@ -228,27 +230,34 @@ const CONFIG = {
         cvw2 = mkCanvas('tone2'); document.body.insertBefore(cvw2, document.getElementById('mbw').nextSibling);
         w2ctx = cvw2.getContext('2d', { alpha: false });
       }
-      if (flip) {
-        cvo = mkCanvas(null); cvo.style.zIndex = 1; cvo.style.opacity = 1;
-        document.body.appendChild(cvo); octx = cvo.getContext('2d', { alpha: false });
-      }
+      const pollGain = () => fetch('wall-live.json?t=' + Date.now(), { cache: 'no-store' }).then(r => r.ok ? r.json() : null)
+        .then(j => { const g = j && +j.beamGain; if (g >= 1 && g <= 6) beamGain = g; }).catch(() => {});
+      pollGain(); setInterval(pollGain, 700);
       let maskKey = '';
       window.__wallBgFrame = function (sk) {
-        const skOut = flip ? (CONFIG.skin === 'white' ? 0 : 1) : sk;   // skin de "fora do círculo"
+        const outDark = flip ? CONFIG.skin === 'white' : CONFIG.skin === 'dark';   // "fora do círculo" tem a skin escura?
+        const skOut = flip ? (outDark ? 0 : 1) : sk;                                 // skin de "fora do círculo" (0 escura … 1 branca)
         if (ov) ov.style.opacity = (1 - skOut).toFixed(3);
-        if (!noBall && !flip) return;
+        const needO = flip || (outDark && beamGain > 1.01);
+        if (!noBall && !needO) { if (cvo) cvo.style.display = 'none'; return; }
         const cx = W * CONFIG.ballCenter[0], cy = H * CONFIG.ballCenter[1], r = CONFIG.ballSizeVH * H / 2 * 1.03;
         const key = cx + ',' + cy + ',' + r;
+        if (needO && !cvo) {
+          cvo = mkCanvas(null); cvo.style.zIndex = 1; cvo.style.opacity = 1;
+          document.body.appendChild(cvo); octx = cvo.getContext('2d', { alpha: false }); maskKey = '';
+        }
         if (key !== maskKey) {
           maskKey = key;
           const m = `radial-gradient(circle at ${cx}px ${cy}px, transparent ${r}px, #000 ${r + 2}px)`;
           [ov && noBall ? ov : null, cvw2, cvo].forEach(e => { if (e) e.style.webkitMaskImage = e.style.maskImage = m; });
         }
         const sync = c => { if (c.width !== cv.width || c.height !== cv.height) { c.width = cv.width; c.height = cv.height; } };
-        if (flip) {
+        if (needO) {
+          cvo.style.display = 'block';
           sync(cvo); octx.setTransform(1, 0, 0, 1, 0, 0); octx.drawImage(cv, 0, 0);
-          cvo.style.filter = skOut > 0.5 ? `url(#${toneId})` : 'none';
-        } else {
+          cvo.style.filter = !outDark ? `url(#${toneId})` : (beamGain > 1.01 ? `brightness(${beamGain.toFixed(2)})` : 'none');
+        } else if (cvo) cvo.style.display = 'none';
+        if (cvw2 && !flip) {
           sync(cvw2); if (sk > 0.002) { w2ctx.setTransform(1, 0, 0, 1, 0, 0); w2ctx.drawImage(cv, 0, 0); }
           cvw2.style.opacity = sk.toFixed(3);
         }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Controlo do fundo vivo (usado pelo widget da barra e pelo launcher :3700).
-#   mirror-wall-ctl.sh status|on [black|white]|off|toggle|skin|theme|tone|beams   (status: `off|black|white` + ` theme-ball|theme-noball` se o fundo segue o tema; `theme` roda off → on-ball → on-noball)
+#   mirror-wall-ctl.sh status|on [black|white]|off|toggle|skin|theme|tone|beams|gain   (status: `off|black|white` + ` theme-ball|theme-noball` se o fundo segue o tema; `theme` roda off → on-ball → on-noball)
 # Truque: liga/desliga = mudar o FUNDO do tema; o mirror-wall-watch.sh trata da bola e do sidecar.
 BGDIR="$HOME/.config/omarchy/backgrounds/sakura-mochi"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/mirrorball"; mkdir -p "$STATE"
@@ -15,8 +15,14 @@ palette() {
 }
 tone_idx() { local n i; n=$(palette | wc -l); i=$(cat "$STATE/wall-themetone" 2>/dev/null || echo 0); [ "$n" -gt 0 ] && echo $(( i % n )) || echo 0; }
 tone() { palette | sed -n "$(( $(tone_idx) + 1 ))p"; }   # "nome #hex"
+gain() { cat "$STATE/wall-beamgain" 2>/dev/null || echo 1; }   # ganho de display dos feixes claros (1 … 4); a página lê-o ao vivo de web/wall-live.json
+set_gain() {
+  local g; g=$(awk -v v="$1" 'BEGIN{ if (v+0<1) v=1; if (v+0>4) v=4; printf "%.2f", v }')
+  echo "$g" > "$STATE/wall-beamgain"
+  printf '{"beamGain":%s}\n' "$g" > "$(dirname "${BASH_SOURCE[0]}")/web/wall-live.json"
+}
 beams() { [ "$(cat "$STATE/wall-beams" 2>/dev/null)" = 1 ] && echo flip || echo same; }   # feixes (e tudo fora da bola) com o tom da skin oposta
-status() { local b t o; b=$(base); t=$(tmode); o=$(tone); [ "$t" = off ] && echo "$b tone=${o%% *}:${o##* } beams=$(beams)" || echo "$b theme-$t tone=${o%% *}:${o##* } beams=$(beams)"; }
+status() { local b t o; b=$(base); t=$(tmode); o=$(tone); [ "$t" = off ] && echo "$b tone=${o%% *}:${o##* } beams=$(beams) gain=$(gain)" || echo "$b theme-$t tone=${o%% *}:${o##* } beams=$(beams) gain=$(gain)"; }
 last_skin() { cat "$STATE/wall-skin" 2>/dev/null || echo black; }
 on() {
   local skin=${1:-$(last_skin)}; [ "$skin" = white ] || skin=black
@@ -43,8 +49,9 @@ case "$1" in
          s=$(base); [ "$s" != off ] && "$(dirname "${BASH_SOURCE[0]}")/mirror-wall.sh" on "$s" ;;   # relança já com o novo fundo
   beams) n=$([ "$(beams)" = flip ] && echo 0 || echo 1); echo "$n" > "$STATE/wall-beams"
          s=$(base); [ "$s" != off ] && "$(dirname "${BASH_SOURCE[0]}")/mirror-wall.sh" on "$s" ;;
+  gain) case "$2" in up) set_gain "$(awk -v g="$(gain)" 'BEGIN{print g+0.25}')";; down) set_gain "$(awk -v g="$(gain)" 'BEGIN{print g-0.25}')";; *) set_gain "${2:-1}";; esac ;;   # up|down|<1-4>
   color) tone | cut -d' ' -f2 | tr -d '#' ;;
   tone) echo $(( $(tone_idx) + 1 )) > "$STATE/wall-themetone"
         s=$(base); [ "$s" != off ] && [ "$(tmode)" != off ] && "$(dirname "${BASH_SOURCE[0]}")/mirror-wall.sh" on "$s" ;;   # relança com o novo tom
-  *) echo "uso: $0 status|on [black|white]|off|toggle|skin|theme|tone|beams|color"; exit 2 ;;
+  *) echo "uso: $0 status|on [black|white]|off|toggle|skin|theme|tone|beams|gain up|down|N|color"; exit 2 ;;
 esac

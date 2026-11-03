@@ -14,13 +14,14 @@ BarWidget {
   property string themeMode: "off"   // off | ball | noball
   property string toneName: ""       // tom da paleta do tema usado no fundo
   property string toneHex: ""
+  property real beamGain: 1.0
   property bool beamsFlip: false    // feixes com o tom da skin oposta à da bola
   readonly property bool isOn: wallState !== "off"
   implicitWidth: row.implicitWidth
   implicitHeight: row.implicitHeight
 
   function poll() { if (!statusProc.running) statusProc.running = true }
-  function act(cmd) { Quickshell.execDetached([ctl, cmd]); fast.restart() }
+  function act(cmd) { Quickshell.execDetached([ctl].concat(cmd.split(" "))); fast.restart() }
 
   Process {
     id: statusProc
@@ -33,6 +34,7 @@ BarWidget {
           var t = p[i].substring(5).split(":")
           root.toneName = t[0]; root.toneHex = t.length > 1 ? t[1] : ""
         }
+        for (var j = 0; j < p.length; j++) if (p[j].indexOf("gain=") === 0) root.beamGain = parseFloat(p[j].substring(5)) || 1.0
         root.beamsFlip = p.indexOf("beams=flip") >= 0
         root.themeMode = p.indexOf("theme-ball") >= 0 ? "ball" : (p.indexOf("theme-noball") >= 0 ? "noball" : "off")
       }
@@ -76,8 +78,9 @@ BarWidget {
       bar: root.bar
       text: root.beamsFlip ? "✦" : "✧"
       active: root.beamsFlip
-      tooltipText: "Feixes com o tom " + (root.beamsFlip ? "oposto ao da bola" : "da bola") + " (clique para trocar)"
+      tooltipText: "Feixes com o tom " + (root.beamsFlip ? "oposto ao da bola" : "da bola") + " · brilho ×" + root.beamGain.toFixed(2) + " (clique: trocar · roda: brilho)"
       onPressed: function(b) { root.act("beams") }
+      onWheelMoved: function(delta) { root.act(delta > 0 ? "gain up" : "gain down") }
     }
   }
 }

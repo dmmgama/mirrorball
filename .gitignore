@@ -10,3 +10,6 @@ spike-fases/
 
 # tracker local (wayfinder/tickets) — não publicar, repo pública
 .scratch/
+
+# estado ao vivo do fundo do Omarchy (mirror-wall-ctl.sh gain); runtime, não gita
+web/wall-live.json
