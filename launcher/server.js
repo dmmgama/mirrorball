@@ -42,7 +42,7 @@ async function stop(name) {
 }
 const CTL = path.join(ROOT, 'mirror-wall-ctl.sh');
 const wallStatus = () => { try { return execFileSync(CTL, ['status']).toString().trim().split(' ')[0] || 'off'; } catch { return 'off'; } };
-const wallTheme = () => { try { return /theme/.test(execFileSync(CTL, ['status']).toString()); } catch { return false; } };
+const wallTheme = () => { try { const m = execFileSync(CTL, ['status']).toString().match(/theme-(ball|noball)/); return m ? m[1] : 'off'; } catch { return 'off'; } };
 const status = async () => ({ sidecar: await up(3739), v3: await up(8099), wall: wallStatus(), theme: wallTheme() });
 
 const send = (res, code, body, type = 'application/json') => { res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' }); res.end((typeof body === 'string' || Buffer.isBuffer(body)) ? body : JSON.stringify(body)); };

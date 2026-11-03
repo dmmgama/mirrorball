@@ -1,4 +1,4 @@
-// Widget da barra, 3 botões: [on/off do fundo vivo] [preta/branca] [fundo = cor do tema on/off].
+// Widget da barra, 3 botões: [on/off do fundo vivo] [preta/branca] [fundo do tema: off → on-ball → on-noball].
 // @CTL@ é substituído por mirror-wall-install.sh (caminho do mirror-wall-ctl.sh).
 import QtQuick
 import Quickshell
@@ -11,7 +11,7 @@ BarWidget {
   moduleName: "mirrorball.wall"
   readonly property string ctl: "@CTL@"
   property string wallState: "off"   // off | black | white
-  property bool themeBg: false
+  property string themeMode: "off"   // off | ball | noball
   readonly property bool isOn: wallState !== "off"
   implicitWidth: row.implicitWidth
   implicitHeight: row.implicitHeight
@@ -26,7 +26,7 @@ BarWidget {
       onStreamFinished: {
         var p = text.trim().split(" ")
         root.wallState = p[0] || "off"
-        root.themeBg = p.indexOf("theme") >= 0
+        root.themeMode = p.indexOf("theme-ball") >= 0 ? "ball" : (p.indexOf("theme-noball") >= 0 ? "noball" : "off")
       }
     }
   }
@@ -52,9 +52,9 @@ BarWidget {
     }
     BarIconButton {   // fundo = cor do tema
       bar: root.bar
-      text: root.themeBg ? "◼" : "◻"
-      active: root.themeBg
-      tooltipText: "Fundo com a cor do tema: " + (root.themeBg ? "on" : "off")
+      text: root.themeMode === "off" ? "◻" : (root.themeMode === "ball" ? "◼" : "▣")
+      active: root.themeMode !== "off"
+      tooltipText: "Fundo do tema: " + (root.themeMode === "off" ? "off" : (root.themeMode === "ball" ? "on, bola também" : "on, sem afetar a bola")) + " (clique para rodar)"
       onPressed: function(b) { root.act("theme") }
     }
   }

@@ -34,7 +34,7 @@ const $=id=>document.getElementById(id);let S={sidecar:false,v3:false,wall:'off'
 function render(){
  $('sc').classList.toggle('on',S.sidecar);$('sct').textContent=S.sidecar?'a correr (:3739)':'desligado';
  $('scb').textContent=S.sidecar?'Desligar':'Ligar';
- $('wl').classList.toggle('on',S.wall!=='off');$('wlt').textContent=S.wall==='off'?'desligado':'ligado — bola '+(S.wall==='white'?'branca':'preta');$('wlh').textContent='Fundo do tema: '+(S.theme?'on':'off');$('wlb').textContent=S.wall==='off'?'Ligar':'Desligar';
+ $('wl').classList.toggle('on',S.wall!=='off');$('wlt').textContent=S.wall==='off'?'desligado':'ligado — bola '+(S.wall==='white'?'branca':'preta');$('wlh').textContent='Fundo do tema: '+({ball:'on (com bola)',noball:'on (sem bola)'}[S.theme]||'off');$('wlb').textContent=S.wall==='off'?'Ligar':'Desligar';
  $('v3').classList.toggle('on',S.v3);$('v3b').textContent=S.v3?'Parar serve.py':'Ligar';
 }
 async function api(p,m='GET'){const r=await fetch(p,{method:m,headers:{'X-MB':'1'}});const j=await r.json();if(!r.ok)throw new Error(j.error);return j}

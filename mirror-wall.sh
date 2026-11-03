@@ -13,9 +13,10 @@ case "$1" in
     start_sidecar
     stop_wall; sleep 0.3
     extra=""   # modo tema (flag em $LOGDIR/wall-themebg): fundo com a cor do tema do Omarchy
-    if [ "$(cat "$LOGDIR/wall-themebg" 2>/dev/null)" = 1 ]; then
+    tb=$(cat "$LOGDIR/wall-themebg" 2>/dev/null)   # 0 off | 1 on-ball | 2 on-noball
+    if [ "$tb" = 1 ] || [ "$tb" = 2 ]; then
       c=$(sed -n 's/^background *= *"#\([0-9a-fA-F]\{6\}\)".*/\1/p' "$HOME/.local/state/omarchy/current/theme/colors.toml" 2>/dev/null | head -1)
-      [ -n "$c" ] && extra="&bgcolor=$c"
+      [ -n "$c" ] && extra="&bgcolor=$c"; [ "$tb" = 2 ] && extra="$extra&bgmode=noball"
     fi
     (setsid nohup "$BIN" "http://127.0.0.1:3739/app/index-v2.html?src=music&wall=1&skin=$skin$extra" >"$LOGDIR/wall.log" 2>&1 &)
     ;;

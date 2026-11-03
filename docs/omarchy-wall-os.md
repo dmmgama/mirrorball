@@ -25,9 +25,10 @@ Dependências (pacman): `qt6-webengine`, `qt6-declarative`, `layer-shell-qt`, `l
 
 ## Controlos (todos fazem o mesmo: mudam o fundo do tema; o watcher liga/desliga bola + sidecar)
 
-- **Barra do Omarchy:** widget `mirrorball.wall` com 3 botões: **●/○** liga/desliga o fundo vivo (bola + sidecar); **◐/◑** alterna bola preta/branca; **◼/◻** fundo com a cor do tema, on/off.
+- **Barra do Omarchy:** widget `mirrorball.wall` com 3 botões: **●/○** liga/desliga o fundo vivo (bola + sidecar); **◐/◑** alterna bola preta/branca; **◻/◼/▣** fundo com a cor do tema, que roda por 3 estados: **off → on-ball → on-noball**.
   Depois de mudar o QML do widget é preciso `omarchy-restart-shell` (o shell não recarrega QML já carregado).
-- **Fundo = cor do tema** (`mirror-wall-ctl.sh theme`): a página recebe `?bgcolor=RRGGBB` (o `background` de `~/.local/state/omarchy/current/theme/colors.toml`). Skin preta: overlay `mix-blend-mode: screen` que tinge a sala; skin branca: as primeiras paragens do filtro `#tone` passam a partir da cor do tema. Bola, feixes e glints mantêm o tom da skin. Com temas escuros a bola preta fica pouco contrastada. A flag fica em `~/.local/state/mirrorball/wall-themebg`.
+- **Fundo = cor do tema** (`mirror-wall-ctl.sh theme`, roda off → on-ball → on-noball): a página recebe `?bgcolor=RRGGBB` (o `background` de `~/.local/state/omarchy/current/theme/colors.toml`). Skin preta: overlay `mix-blend-mode: screen` que tinge a sala; skin branca: as primeiras paragens do filtro `#tone` passam a partir da cor do tema. Bola, feixes e glints mantêm o tom da skin. Com temas escuros a bola preta fica pouco contrastada. A flag fica em `~/.local/state/mirrorball/wall-themebg` (0 off, 1 on-ball, 2 on-noball).
+  **on-noball** (`&bgmode=noball`): a bola mantém o render original; só fora do círculo da bola (máscara radial, +3%) o fundo toma a cor do tema. Na skin preta o overlay `screen` tem um buraco onde está a bola; na branca há um 2.º canvas com um `#tone2` temático por cima do original, com o mesmo buraco. Medido: bola 111/129/137 (sem tema 109/128/136) contra 15/31/39 em on-ball. Feixes e pontos fora do círculo levam a cor do tema nos dois modos.
 - **Launcher web** (`mirror-app.sh` → `http://127.0.0.1:3700`): card "MirrorBall plugin" com Ligar/Desligar, Preta, Branca e Fundo do tema.
 - **Linha de comandos:** `./mirror-wall-ctl.sh status|on [black|white]|off|toggle|skin|theme`.
 - Ao ligar, guarda o fundo atual em `~/.local/state/mirrorball/wall-prev-bg` e repõe-no ao desligar (sem ele, usa o 1.º fundo do tema).

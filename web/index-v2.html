@@ -190,21 +190,49 @@ const CONFIG = {
     document.documentElement.classList.add('wall');
     CONFIG.skin = q.get('skin') === 'white' ? 'white' : 'dark';
     addEventListener('keydown', e => e.stopImmediatePropagation(), true);
-    // ?bgcolor=RRGGBB (cor de fundo do tema do Omarchy): a bola/feixes mantêm o tom da skin, só o fundo muda.
-    //  dark : overlay com mix-blend screen (a sala quase preta passa à cor do tema; realces ficam), opacidade (1-skinMix) por frame
-    //  white: as 4 primeiras paragens do #tone ("ar" claro → tinta) passam a ir da cor do tema → tinta
+    // ?bgcolor=RRGGBB (cor de fundo do tema do Omarchy) + ?bgmode=ball|noball:
+    //  ball   : a bola e os feixes também levam a cor (dark: overlay screen; white: paragens do #tone)
+    //  noball : só fora do círculo da bola (máscara radial). dark: overlay screen com buraco; white: 2.º canvas
+    //           com um #tone2 temático por cima do original, com buraco onde está a bola
     const bc = q.get('bgcolor');
     if (/^[0-9a-f]{6}$/i.test(bc || '')) {
+      const noBall = q.get('bgmode') === 'noball';
       const rgb = [0, 2, 4].map(i => parseInt(bc.substr(i, 2), 16) / 255);
+      const themeTable = f => {   // as 4 primeiras paragens ("ar" → tinta) partem da cor do tema
+        ['R', 'G', 'B'].forEach((ch, c) => {
+          const fn = f.querySelector('feFunc' + ch); if (!fn) return;
+          const t = fn.getAttribute('tableValues').trim().split(/\s+/).map(Number);
+          for (let i = 0; i < 4; i++) t[i] = rgb[c] + (t[4] - rgb[c]) * (i / 4);
+          fn.setAttribute('tableValues', t.map(v => v.toFixed(4)).join(' '));
+        });
+      };
       const ov = document.createElement('div');
       ov.style.cssText = `position:fixed;inset:0;background:#${bc};mix-blend-mode:screen;pointer-events:none;z-index:1`;
-      document.body.appendChild(ov); window.__wallOv = ov;
-      ['R', 'G', 'B'].forEach((ch, c) => {
-        const f = document.querySelector('#tone feFunc' + ch); if (!f) return;
-        const t = f.getAttribute('tableValues').trim().split(/\s+/).map(Number);
-        for (let i = 0; i < 4; i++) t[i] = rgb[c] + (t[4] - rgb[c]) * (i / 4);
-        f.setAttribute('tableValues', t.map(v => v.toFixed(4)).join(' '));
-      });
+      document.body.appendChild(ov);
+      let cvw2 = null, w2ctx = null;
+      if (noBall) {
+        const f2 = document.getElementById('tone').cloneNode(true); f2.id = 'tone2'; themeTable(f2);
+        document.getElementById('tone').parentNode.appendChild(f2);
+        cvw2 = document.createElement('canvas');
+        cvw2.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;display:block;filter:url(#tone2);opacity:0;pointer-events:none';
+        document.body.insertBefore(cvw2, document.getElementById('mbw').nextSibling);
+        w2ctx = cvw2.getContext('2d', { alpha: false });
+      } else themeTable(document.getElementById('tone'));
+      let maskKey = '';
+      window.__wallBgFrame = function (sk) {
+        ov.style.opacity = (1 - sk).toFixed(3);
+        if (!noBall) return;
+        const cx = W * CONFIG.ballCenter[0], cy = H * CONFIG.ballCenter[1], r = CONFIG.ballSizeVH * H / 2 * 1.03;
+        const key = cx + ',' + cy + ',' + r;
+        if (key !== maskKey) {
+          maskKey = key;
+          const m = `radial-gradient(circle at ${cx}px ${cy}px, transparent ${r}px, #000 ${r + 2}px)`;
+          ov.style.webkitMaskImage = ov.style.maskImage = m; cvw2.style.webkitMaskImage = cvw2.style.maskImage = m;
+        }
+        if (cvw2.width !== cv.width || cvw2.height !== cv.height) { cvw2.width = cv.width; cvw2.height = cv.height; }
+        if (sk > 0.002) { w2ctx.setTransform(1, 0, 0, 1, 0, 0); w2ctx.drawImage(cv, 0, 0); }
+        cvw2.style.opacity = sk.toFixed(3);
+      };
     }
   }
   CONFIG.ballSizeVH *= scale;
@@ -723,7 +751,7 @@ function frame(now) {
   // ----- skin white: mesma imagem, tonemap SVG no overlay, crossfade por opacidade -----
   if (sk > 0.002) { wctx.setTransform(1, 0, 0, 1, 0, 0); wctx.drawImage(cv, 0, 0); }
   cvw.style.opacity = sk.toFixed(3);
-  if (window.__wallOv) window.__wallOv.style.opacity = (1 - sk).toFixed(3);
+  if (window.__wallBgFrame) window.__wallBgFrame(sk);
   document.body.style.background = `rgb(${Math.round(lerp(bgG, 243, sk))},${Math.round(lerp(bgG, 247, sk))},${Math.round(lerp(bgG, 249, sk))})`;
   requestAnimationFrame(frame);
 }
