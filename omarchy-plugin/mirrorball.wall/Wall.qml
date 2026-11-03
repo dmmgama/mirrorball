@@ -1,4 +1,4 @@
-// Widget da barra: esquerdo = liga/desliga o fundo vivo (bola + sidecar), direito = preta/branca.
+// Widget da barra, 3 botões: [on/off do fundo vivo] [preta/branca] [fundo = cor do tema on/off].
 // @CTL@ é substituído por mirror-wall-install.sh (caminho do mirror-wall-ctl.sh).
 import QtQuick
 import Quickshell
@@ -11,8 +11,10 @@ BarWidget {
   moduleName: "mirrorball.wall"
   readonly property string ctl: "@CTL@"
   property string wallState: "off"   // off | black | white
-  implicitWidth: button.implicitWidth
-  implicitHeight: button.implicitHeight
+  property bool themeBg: false
+  readonly property bool isOn: wallState !== "off"
+  implicitWidth: row.implicitWidth
+  implicitHeight: row.implicitHeight
 
   function poll() { if (!statusProc.running) statusProc.running = true }
   function act(cmd) { Quickshell.execDetached([ctl, cmd]); fast.restart() }
@@ -20,21 +22,40 @@ BarWidget {
   Process {
     id: statusProc
     command: [root.ctl, "status"]
-    stdout: StdioCollector { onStreamFinished: root.wallState = text.trim() || "off" }
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var p = text.trim().split(" ")
+        root.wallState = p[0] || "off"
+        root.themeBg = p.indexOf("theme") >= 0
+      }
+    }
   }
   Timer { interval: 3000; running: true; repeat: true; triggeredOnStart: true; onTriggered: root.poll() }
   Timer { id: fast; interval: 800; onTriggered: root.poll() }
 
-  BarIconButton {
-    id: button
-    anchors.fill: parent
-    bar: root.bar
-    text: root.wallState === "off" ? "○" : (root.wallState === "white" ? "◌" : "●")
-    active: root.wallState !== "off"
-    tooltipText: root.wallState === "off" ? "MirrorBall: desligado" : "MirrorBall: bola " + (root.wallState === "white" ? "branca" : "preta")
-    onPressed: function(b) {
-      if (b === Qt.RightButton) root.act("skin")
-      else root.act("toggle")
+  Row {
+    id: row
+    spacing: 0
+    BarIconButton {   // on/off
+      bar: root.bar
+      text: root.isOn ? "●" : "○"
+      active: root.isOn
+      tooltipText: root.isOn ? "MirrorBall: desligar" : "MirrorBall: ligar"
+      onPressed: function(b) { root.act("toggle") }
+    }
+    BarIconButton {   // preta / branca
+      bar: root.bar
+      text: root.wallState === "white" ? "◑" : "◐"
+      active: root.isOn
+      tooltipText: "Bola " + (root.wallState === "white" ? "branca (trocar para preta)" : "preta (trocar para branca)")
+      onPressed: function(b) { root.act("skin") }
+    }
+    BarIconButton {   // fundo = cor do tema
+      bar: root.bar
+      text: root.themeBg ? "◼" : "◻"
+      active: root.themeBg
+      tooltipText: "Fundo com a cor do tema: " + (root.themeBg ? "on" : "off")
+      onPressed: function(b) { root.act("theme") }
     }
   }
 }

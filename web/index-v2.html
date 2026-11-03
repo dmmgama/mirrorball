@@ -190,6 +190,22 @@ const CONFIG = {
     document.documentElement.classList.add('wall');
     CONFIG.skin = q.get('skin') === 'white' ? 'white' : 'dark';
     addEventListener('keydown', e => e.stopImmediatePropagation(), true);
+    // ?bgcolor=RRGGBB (cor de fundo do tema do Omarchy): a bola/feixes mantêm o tom da skin, só o fundo muda.
+    //  dark : overlay com mix-blend screen (a sala quase preta passa à cor do tema; realces ficam), opacidade (1-skinMix) por frame
+    //  white: as 4 primeiras paragens do #tone ("ar" claro → tinta) passam a ir da cor do tema → tinta
+    const bc = q.get('bgcolor');
+    if (/^[0-9a-f]{6}$/i.test(bc || '')) {
+      const rgb = [0, 2, 4].map(i => parseInt(bc.substr(i, 2), 16) / 255);
+      const ov = document.createElement('div');
+      ov.style.cssText = `position:fixed;inset:0;background:#${bc};mix-blend-mode:screen;pointer-events:none;z-index:1`;
+      document.body.appendChild(ov); window.__wallOv = ov;
+      ['R', 'G', 'B'].forEach((ch, c) => {
+        const f = document.querySelector('#tone feFunc' + ch); if (!f) return;
+        const t = f.getAttribute('tableValues').trim().split(/\s+/).map(Number);
+        for (let i = 0; i < 4; i++) t[i] = rgb[c] + (t[4] - rgb[c]) * (i / 4);
+        f.setAttribute('tableValues', t.map(v => v.toFixed(4)).join(' '));
+      });
+    }
   }
   CONFIG.ballSizeVH *= scale;
 })();
@@ -707,6 +723,7 @@ function frame(now) {
   // ----- skin white: mesma imagem, tonemap SVG no overlay, crossfade por opacidade -----
   if (sk > 0.002) { wctx.setTransform(1, 0, 0, 1, 0, 0); wctx.drawImage(cv, 0, 0); }
   cvw.style.opacity = sk.toFixed(3);
+  if (window.__wallOv) window.__wallOv.style.opacity = (1 - sk).toFixed(3);
   document.body.style.background = `rgb(${Math.round(lerp(bgG, 243, sk))},${Math.round(lerp(bgG, 247, sk))},${Math.round(lerp(bgG, 249, sk))})`;
   requestAnimationFrame(frame);
 }

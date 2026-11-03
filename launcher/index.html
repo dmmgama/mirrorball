@@ -26,7 +26,7 @@ h2{font-size:17px;margin:0 0 4px}.mut{color:var(--mut);font-size:14px;margin:0 0
 </div>
 <div class="card" id="wl"><h2>MirrorBall plugin <span class="mut">(fundo vivo do Omarchy)</span></h2>
  <p class="mut"><span class="dot"></span><span id="wlt">desligado</span> — liga a bola por baixo das janelas e o sidecar</p>
- <button id="wlb">…</button> <button id="wlk">Preta</button> <button id="wlw">Branca</button></div>
+ <button id="wlb">…</button> <button id="wlk">Preta</button> <button id="wlw">Branca</button> <button id="wlh">Fundo: tema</button></div>
 <div id="msg"></div>
 </main>
 <script>
@@ -34,20 +34,20 @@ const $=id=>document.getElementById(id);let S={sidecar:false,v3:false,wall:'off'
 function render(){
  $('sc').classList.toggle('on',S.sidecar);$('sct').textContent=S.sidecar?'a correr (:3739)':'desligado';
  $('scb').textContent=S.sidecar?'Desligar':'Ligar';
- $('wl').classList.toggle('on',S.wall!=='off');$('wlt').textContent=S.wall==='off'?'desligado':'ligado — bola '+(S.wall==='white'?'branca':'preta');$('wlb').textContent=S.wall==='off'?'Ligar':'Desligar';
+ $('wl').classList.toggle('on',S.wall!=='off');$('wlt').textContent=S.wall==='off'?'desligado':'ligado — bola '+(S.wall==='white'?'branca':'preta');$('wlh').textContent='Fundo do tema: '+(S.theme?'on':'off');$('wlb').textContent=S.wall==='off'?'Ligar':'Desligar';
  $('v3').classList.toggle('on',S.v3);$('v3b').textContent=S.v3?'Parar serve.py':'Ligar';
 }
 async function api(p,m='GET'){const r=await fetch(p,{method:m,headers:{'X-MB':'1'}});const j=await r.json();if(!r.ok)throw new Error(j.error);return j}
 async function toggle(btn,key){btn.disabled=true;$('msg').textContent='…';
- try{const j=await api(`/api/${key}/${S[key]?'off':'on'}`,'POST');S={sidecar:j.sidecar,v3:j.v3,wall:j.wall};$('msg').textContent=j.msg}
+ try{const j=await api(`/api/${key}/${S[key]?'off':'on'}`,'POST');S={sidecar:j.sidecar,v3:j.v3,wall:j.wall,theme:j.theme};$('msg').textContent=j.msg}
  catch(e){$('msg').textContent='Erro: '+e.message}btn.disabled=false;render()}
-async function wall(a){$('msg').textContent='…';try{const j=await api('/api/wall/'+a,'POST');S={sidecar:j.sidecar,v3:j.v3,wall:j.wall};$('msg').textContent=j.msg}catch(e){$('msg').textContent='Erro: '+e.message}render()}
-$('wlb').onclick=()=>wall(S.wall==='off'?'black':'off');$('wlk').onclick=()=>wall('black');$('wlw').onclick=()=>wall('white');
+async function wall(a){$('msg').textContent='…';try{const j=await api('/api/wall/'+a,'POST');S={sidecar:j.sidecar,v3:j.v3,wall:j.wall,theme:j.theme};$('msg').textContent=j.msg}catch(e){$('msg').textContent='Erro: '+e.message}render()}
+$('wlb').onclick=()=>wall(S.wall==='off'?'black':'off');$('wlk').onclick=()=>wall('black');$('wlw').onclick=()=>wall('white');$('wlh').onclick=()=>wall('theme');
 $('scb').onclick=()=>toggle($('scb'),'sidecar');$('v3b').onclick=()=>toggle($('v3b'),'v3');
 // Abrir uma bola = ligar o que falta e navegar NA MESMA janela.
 const URLS={'2d':'http://127.0.0.1:3739/app/index-v2.html?src=music','v3':'http://127.0.0.1:8099/app/spike/v2/index.html?src=music'};
 async function open(key){$('msg').textContent='a ligar…';
- try{const j=await api('/api/open/'+key,'POST');S={sidecar:j.sidecar,v3:j.v3,wall:j.wall};render();location.href=URLS[key]}
+ try{const j=await api('/api/open/'+key,'POST');S={sidecar:j.sidecar,v3:j.v3,wall:j.wall,theme:j.theme};render();location.href=URLS[key]}
  catch(e){$('msg').textContent='Erro: '+e.message}}
 $('go2d').onclick=e=>{e.preventDefault();open('2d')};$('gov3').onclick=e=>{e.preventDefault();open('v3')};
 async function poll(){try{S=await api('/api/status')}catch{}render()}poll();setInterval(poll,3000);

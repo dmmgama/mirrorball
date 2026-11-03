@@ -12,7 +12,12 @@ case "$1" in
     [ -x "$BIN" ] || { echo "falta compilar: (cd wall && qmake6 && make)"; exit 1; }
     start_sidecar
     stop_wall; sleep 0.3
-    (setsid nohup "$BIN" "http://127.0.0.1:3739/app/index-v2.html?src=music&wall=1&skin=$skin" >"$LOGDIR/wall.log" 2>&1 &)
+    extra=""   # modo tema (flag em $LOGDIR/wall-themebg): fundo com a cor do tema do Omarchy
+    if [ "$(cat "$LOGDIR/wall-themebg" 2>/dev/null)" = 1 ]; then
+      c=$(sed -n 's/^background *= *"#\([0-9a-fA-F]\{6\}\)".*/\1/p' "$HOME/.local/state/omarchy/current/theme/colors.toml" 2>/dev/null | head -1)
+      [ -n "$c" ] && extra="&bgcolor=$c"
+    fi
+    (setsid nohup "$BIN" "http://127.0.0.1:3739/app/index-v2.html?src=music&wall=1&skin=$skin$extra" >"$LOGDIR/wall.log" 2>&1 &)
     ;;
   off) stop_wall; stop_sidecar ;;
   *) echo "uso: $0 on black|white | off"; exit 2 ;;

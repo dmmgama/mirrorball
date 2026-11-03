@@ -25,9 +25,11 @@ Dependências (pacman): `qt6-webengine`, `qt6-declarative`, `layer-shell-qt`, `l
 
 ## Controlos (todos fazem o mesmo: mudam o fundo do tema; o watcher liga/desliga bola + sidecar)
 
-- **Barra do Omarchy:** widget `mirrorball.wall` (círculo vazio = desligado, cheio = ligado). Esquerdo liga/desliga, direito alterna preta/branca.
-- **Launcher web** (`mirror-app.sh` → `http://127.0.0.1:3700`): card "MirrorBall plugin" com Ligar/Desligar, Preta, Branca.
-- **Linha de comandos:** `./mirror-wall-ctl.sh status|on [black|white]|off|toggle|skin`.
+- **Barra do Omarchy:** widget `mirrorball.wall` com 3 botões: **●/○** liga/desliga o fundo vivo (bola + sidecar); **◐/◑** alterna bola preta/branca; **◼/◻** fundo com a cor do tema, on/off.
+  Depois de mudar o QML do widget é preciso `omarchy-restart-shell` (o shell não recarrega QML já carregado).
+- **Fundo = cor do tema** (`mirror-wall-ctl.sh theme`): a página recebe `?bgcolor=RRGGBB` (o `background` de `~/.local/state/omarchy/current/theme/colors.toml`). Skin preta: overlay `mix-blend-mode: screen` que tinge a sala; skin branca: as primeiras paragens do filtro `#tone` passam a partir da cor do tema. Bola, feixes e glints mantêm o tom da skin. Com temas escuros a bola preta fica pouco contrastada. A flag fica em `~/.local/state/mirrorball/wall-themebg`.
+- **Launcher web** (`mirror-app.sh` → `http://127.0.0.1:3700`): card "MirrorBall plugin" com Ligar/Desligar, Preta, Branca e Fundo do tema.
+- **Linha de comandos:** `./mirror-wall-ctl.sh status|on [black|white]|off|toggle|skin|theme`.
 - Ao ligar, guarda o fundo atual em `~/.local/state/mirrorball/wall-prev-bg` e repõe-no ao desligar (sem ele, usa o 1.º fundo do tema).
 
 ## Voltar a pôr (após reinstalar o sistema, noutra máquina, ou depois de remover)
