@@ -537,7 +537,8 @@ const server = http.createServer((req, res) => {
       // than persisted. The engine validates every leaf again on load (it must never trust this).
       const ALLOWED_KEYS = new Set(['bandOnset', 'bpmAuto', 'kick', 'bpm', 'activity', 'hat', 'map', 'tau', 'norm', 'grid', 'fsm', 'gesture', 'silence', 'emit', 'outMin', 'outMax', 'rpmStopTau', 'profile',
         'snare', 'flash', 'dimmer', 'profileAuto', 'explode', 'strobe',   // knobs do painel k mais recentes (antes caiam em silencio)
-        'ball']);                                              // knobs do painel d da bola (index-v2.html)
+        'ball',                                                // knobs do painel d da V3 (spike-babylon)
+        'ball2d']);                                            // knobs do painel d da bola 2D (index-v2.html) — separados da V3
       const clean = {};
       for (const k of Object.keys(cfg)) if (ALLOWED_KEYS.has(k)) clean[k] = cfg[k];
       if (!Object.keys(clean).length) return json(res, 400, { error: 'no known config keys' });
