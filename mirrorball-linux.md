@@ -29,6 +29,7 @@ era o **audio-sidecar** (`agent-os/audio-sidecar`, porta 3739), por três razõe
 | `mirror-2d-start.sh` | Equivalente ao `Mirror-2D-Start.bat`: sidecar e bola 2D em `:3739/app/index-v2.html?src=music`. |
 | `mirror-v3-start.sh` | Equivalente ao `Mirror-V3-Start.bat`: sidecar, `serve.py` em :8099 e a V3. O argumento `manual` abre sem motor. |
 | `mirror-kill.sh` | Equivalente ao `Mirror-V3-Kill.bat`. Usa SIGTERM (via `ss`), por isso o sidecar fecha limpo e apaga o token e o pid. |
+| **`.bat` removidos** | `Mirror-2D-Start.bat`, `Mirror-V3-Start.bat`, `Mirror-V3-Kill.bat` e os `fases/*/start.bat` saíram deste branch, porque em Linux não fazem sentido. Os `mirror-*.sh` substituem os da raiz. Os das fases não têm equivalente: abrir à mão o URL indicado no `README.md` de cada fase. |
 | `README-linux.md` | Como correr e o que fazer se não houver áudio. |
 | `README.md`, `CLAUDE.md` | Avisos de que este é o branch Linux. |
 | `web/music-config.json` | Afinação ao vivo do David, commitada aqui de propósito (no `Mirror-Ball-V3` não se commita) para chegar à máquina Linux. |
@@ -65,7 +66,8 @@ Tudo o resto (`web/`, `spike-babylon/`, motor, knobs) é **igual ao `Mirror-Ball
 
 - **Mudanças na bola/motor:** fazem-se no `Mirror-Ball-V3` e trazem-se para aqui com
   `git merge Mirror-Ball-V3`. Os ficheiros acima não existem lá, por isso não há conflitos, exceto
-  em `README.md`, `CLAUDE.md` e `music-config.json`.
+  em `README.md`, `CLAUDE.md` e `music-config.json`. Se um `.bat` mudar lá, o merge dá conflito
+  modify/delete. Resolve-se com `git rm <ficheiro>.bat`.
 - **Mudanças no sidecar do agent-os:** este `server.js` é uma cópia e **não acompanha o original
   sozinho**. Para atualizar, copia o original por cima e volta a aplicar as 3 diferenças. O
   cabeçalho do ficheiro lista-as. Para ver o que mudou:

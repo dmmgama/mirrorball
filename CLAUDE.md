@@ -19,7 +19,7 @@ web/bridge.js         ESP32 (Web Serial / WS)
 web/test-music-f2.js  harness Node vm (node web/test-music-f2.js) — corre no pre-commit (.githooks/)
 web/replay-real.js    replay de features REAIS gravadas do sidecar (node web/replay-real.js feat.json)
 firmware/             ESP32
-Mirror-V3-Start.bat / Mirror-V3-Kill.bat    spike v3 (sidecar :3739 + serve.py :8099); `manual` como arg = sem motor. Kill mata as 2 portas.
+Mirror-V3-Start.bat / Mirror-V3-Kill.bat    [não existem no branch mirrorball-linux → mirror-*.sh] spike v3 (sidecar :3739 + serve.py :8099); `manual` como arg = sem motor. Kill mata as 2 portas.
 Mirror-2D-Start.bat                          bola 2D (web/index-v2.html) em música, servida pelo sidecar em :3739/app/.
 audio-sidecar/ + mirror-*.sh                 só no branch mirrorball-linux: sidecar copiado com captura PipeWire (parec/pw-record). Ver README-linux.md.
 ```
