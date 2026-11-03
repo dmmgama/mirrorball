@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "mirrorball.wall",
+  "name": "MirrorBall wall",
+  "version": "1.0.0",
+  "author": "David",
+  "description": "Fundo vivo da bola de espelhos: liga/desliga a bola (e o audio-sidecar) e alterna preta/branca",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "Wall.qml" },
+  "barWidget": {
+    "displayName": "MirrorBall wall",
+    "description": "Esquerdo: liga/desliga · direito: preta/branca",
+    "category": "Media",
+    "allowMultiple": false
+  }
+}

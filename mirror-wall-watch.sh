@@ -7,13 +7,14 @@ exec 9>"${XDG_RUNTIME_DIR:-/tmp}/mirror-wall-watch.lock"; flock -n 9 || exit 0
 apply() {
   local t; t=$(basename "$(readlink -f "$DIR/background" 2>/dev/null)")
   case "$t" in
-    mirrorball-black.*) "$ROOT/mirror-wall.sh" on black ;;
-    mirrorball-white.*) "$ROOT/mirror-wall.sh" on white ;;
-    *) "$ROOT/mirror-wall.sh" off ;;
+    mirrorball-black.*) "$ROOT/mirror-wall.sh" on black 9>&- ;;
+    mirrorball-white.*) "$ROOT/mirror-wall.sh" on white 9>&- ;;
+    *) "$ROOT/mirror-wall.sh" off 9>&- ;;
   esac
 }
 last=$(readlink "$DIR/background"); apply
-inotifywait -m -q -e create -e moved_to -e delete "$DIR" --format '%f' | while read -r f; do
+# 9>&-: o inotifywait não herda o lock (senão sobrevive ao watcher e impede o seguinte de arrancar)
+inotifywait -m -q -e create -e moved_to -e delete "$DIR" --format '%f' 9>&- | while read -r f; do
   [ "$f" = background ] || continue
   sleep 0.3; cur=$(readlink "$DIR/background"); [ "$cur" = "$last" ] && continue; last=$cur; apply
 done
